@@ -1,0 +1,32 @@
+# Working material: specs, hackathon planning, experiment notes. Not shipped.
+scratch/
+
+# Rust
+/target/
+**/*.rs.bk
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Local Mooshik state (autobiography lives in SQLite/Postgres, never in the repo)
+*.db
+*.db-shm
+*.db-wal
+mooshik.db*
+
+# Node sidecar / ADK ingester
+node_modules/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editors and OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
