@@ -35,7 +35,9 @@ M0 ─→ M1 ─→ M2 ─→ M4 ─→ M5 ─→ M10 ─┐
             M3 ─────────┘           │
 M2 ─→ M8 ─→ M9 ─────────────────────┘
 
-M7 is not a node. The CLI grows with M2–M6; see M7.
+(M5, M6) ─→ M7        validate and repair the CLI grown across M2–M6
+
+The CLI itself is not deferred to M7 — it grows with each milestone. M7 is the sweep.
 M11 is last on purpose and is allowed to fail; see M11.
 ```
 
@@ -199,18 +201,27 @@ always on, is a product decision rather than a security one.
 
 ---
 
-## M7 — The CLI
+## M7 — The CLI: validate and repair
 
-**Not a phase. A rule: nothing is done until it has a CLI surface.**
+**The standing rule stays: nothing in M2–M6 is done until it has a CLI surface.** Every milestone
+lands with the commands that drive it — `mooshik chat`, `recall`, `stats`, `secret set/get/list`,
+`permissions`, `config` — written as that milestone is written, not retrofitted afterwards. Built
+alongside, it costs each milestone an hour; built at the end, it costs a day nobody has.
 
-M7 sits here in the numbering for the decision it carries, but the work is spread across M2–M6.
-Every milestone lands with the commands that drive it — `mooshik chat`, `recall`, `stats`,
-`secret set/get/list`, `permissions`, `config` — written as that milestone is written, not
-retrofitted afterwards.
+**M7 is the sweep that follows.** One pass over the whole surface by an implementation agent, with
+authority to change what it finds. Six milestones written days apart produce six dialects: flags
+named three ways, errors that report a Rust type instead of a cause, help text that describes a
+flag that moved. Nobody notices from inside a single milestone, and everybody notices in the demo.
 
-The reason is scheduling, not taste. A surface built at the end is a surface built under deadline
-pressure, and it is the part a judge, a reader and a future contributor actually touch. Built
-alongside, it costs each milestone an hour. Built at the end, it costs a day nobody has.
+**The floor, even if nothing else changes: the messages have to be right.**
+
+* Every error says what failed, why, and what to do next. "Not found" is not a message.
+* No `Debug` output, no Rust type names, no `unwrap` panics reaching a user.
+* **No vault value can appear in an error string**, including inside a wrapped source error. This
+  is `SecretToken`'s job (see M4's lift table) and M7 is where it gets verified rather than assumed.
+* One voice and one casing across every command.
+* Exit codes distinguish user error from internal failure, so the demo script can branch on them.
+* Every example in `--help` actually runs as written.
 
 **Decided: a chat with context.** A persistent conversational loop, not one-shot subcommands.
 Ambience and continuity are the product's claim, and a one-shot command cannot demonstrate either.
@@ -218,9 +229,10 @@ The other commands stay one-shot; `chat` is the one that holds a session.
 
 This decision does more work than it looks like it does — see below.
 
-**Depends on:** M3 for `chat`; each other command on its own milestone.
-**Done when:** every shipped capability is reachable from the CLI, with `--help` that reads like it
-was written on purpose, and the demo can be driven end to end without the TUI existing.
+**Depends on:** M5 and M6 — it audits the surface those complete. `chat` itself needs M3.
+**Done when:** the demo can be driven end to end from the CLI with the TUI not existing, and a
+reader who has never seen the project can get from `mooshik --help` to a recall without asking
+anyone.
 
 ---
 
@@ -418,7 +430,7 @@ the CLI and this is cut, which is a decision rather than a failure.
 | ~~4~~ | ~~Chat loop or one-shot CLI~~ | — | **Decided: a chat with context.** See M7. |
 | 5 | Ingester repo location | M8 | Cheap now, awkward once CI and docs exist |
 | 6 | Default grant set for the demo | M5 | Only bites at recording time, but bites hard |
-| ~~7~~ | ~~Where the surface effort goes~~ | — | **Decided: CLI throughout, TUI last.** See M7 and M11. |
+| ~~7~~ | ~~Where the surface effort goes~~ | — | **Decided: CLI throughout, a repair sweep at M7, TUI last.** See M7 and M11. |
 | ~~8~~ | ~~Companion loop: framework or hand-rolled~~ | — | **Decided: hand-rolled.** See below. |
 
 Five settled. The two remaining are genuinely late-binding: the vault key source when M6 starts,
