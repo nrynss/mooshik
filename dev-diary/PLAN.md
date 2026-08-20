@@ -2,10 +2,8 @@
 
 What Mooshik itself must build, as atomic tasks with their real dependencies.
 
-**Authority:** `../scratch/PRODUCT_SPEC.md`. **Clock:** `../scratch/hackathon.md` (submission
-2026-09-01, 05:30 IST). Both are gitignored and do not travel with this repo — carry them between
-machines yourself.
-**Lambo side:** `~/work/lambo/dev-diary/lambo-for-mooshik/` on branch `lambo-for-mooshik`.
+**Authority:** [docs/SPEC.md](../docs/SPEC.md). **Deadline:** 2026-09-01, 05:30 IST.
+**Lambo side:** `dev-diary/lambo-for-mooshik/` on the `lambo-for-mooshik` branch of `nrynss/lambo`.
 
 Where this doc and the spec disagree about Mooshik, the spec wins.
 
@@ -86,7 +84,8 @@ default it is unreachable and Lambo's J2 proxy cannot forward to it. Derive the 
 `LeaseHolder::reachable_at()`. Roughly a morning, and it is what stops the bootstrap from being an
 outage — see consequence 1 below for why the store-identity half of the path matters.
 
-**Decided: one unified session.** Matches spec §3.3's single autobiographical memory, and the
+**Decided: one unified session.** Matches the single unified memory the spec promises under
+*Storage*, and the
 bootstrap already produces one graph. Lambo issue #4's missing session-discovery surface stays
 irrelevant this month — nothing needs to enumerate sessions. Recall scoping across projects
 becomes a query concern rather than a storage one.
@@ -101,8 +100,8 @@ stays small by construction"*, citing 41 concepts in one exhibit session and ~1,
 The bootstrap corpus is 17,106 commits and 8.7M words of markdown. Whatever concept count that
 extracts to, it is not 1,400. So this decision:
 
-* puts real pressure on the single-writer throughput question the hackathon doc already flags as
-  "probably the first real finding";
+* puts real pressure on single-writer throughput, which is probably the first real finding this
+  build produces;
 * moves Lambo **F1's revisit trigger from hypothetical to likely** — exact scan over the whole
   autobiography per query is a different proposition from exact scan over one session's 41
   concepts. At 1536 dims that is ~6 KB per concept in vectors alone;
@@ -166,7 +165,8 @@ survived review. In `~/work/lambo/src/mcp/`:
 
 ## M5 — Permissions
 
-The `[permissions]` block from spec §3.6, enforced in Rust **at the tool-call boundary**, plus a
+The `[permissions]` block from the spec's *Autonomy is granted, not configured*, enforced in Rust
+**at the tool-call boundary**, plus a
 command that prints the resolved grant set.
 
 This is the design, not a feature of it. Autonomy is the sum of grants; without enforcement the
@@ -318,7 +318,7 @@ workaround: one graph, one hub, and the companion stays up while the corpus load
 to reason about; a subdirectory here means one link in the submission and one clone for a judge.
 Judges have to find it either way, so the tiebreaker is probably the submission, not the code.
 
-Ingest rules, unchanged from the hackathon doc: allowlist by extension rather than denylist, a
+Ingest rules: allowlist by extension rather than denylist, a
 secret scanner over every candidate document with a hit dropping the document rather than
 redacting it, and **no `git diff` content** — commit messages and metadata only, because diffs are
 where secrets hide.
@@ -377,14 +377,14 @@ walks into the same trap. Features here are `client` and `transport-child-proces
 ### Two constraints, or this breaks things already decided
 
 **Exposure is an allowlist, per server.** Aggregation's default behaviour is to hand the model
-every tool every server offers, and spec §3.1 trims the surface precisely to stop a small local
+every tool every server offers, and the spec's *companion slot* trims the surface to stop a small local
 model misrouting. Config names which tools are exposed; the companion still sees roughly eight,
 not forty. Without this, M10 breaks the local-companion premise rather than extending it.
 
-**Server credentials come from the vault.** Spec §3.4's example puts `GITHUB_PERSONAL_ACCESS_TOKEN
-= "ghp_..."` inline in `config.toml`, which contradicts M6 outright. Env is resolved from the vault
-at spawn time. This is also the better vault demonstration — a real credential reaching a real tool
-and never a prompt, rather than a script echoing a variable.
+**Server credentials come from the vault.** A server's `env` holds vault references, resolved at
+spawn time — never literal tokens. A literal would put a live credential in a readable config file,
+which is the exact thing M6 exists to prevent. This is also the better vault demonstration: a real
+credential reaching a real tool and never a prompt, rather than a script echoing a variable.
 
 MCP tools are tools: they pass M5's gate like everything else, which means the grant syntax needs
 to name them (`mcp.github.*`). That is the one place M5 has to be written knowing M10 exists.

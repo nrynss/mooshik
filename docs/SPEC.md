@@ -103,7 +103,7 @@ routes badly:
 * `search_web` · `fetch_page` — research, returned as clean Markdown
 * `run_scratch_script` — throwaway Python or bash in a sandbox, with a hard timeout
 * `lambo_recall` · `lambo_derive` · `lambo_stats` — read, write and inspect memory
-* `delegate_to_omp` — hand a real code change to the coding agent
+* `delegate_to_coder` — hand a real code change to the coding agent you configured
 
 ### Memory that has to be earned
 
