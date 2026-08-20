@@ -30,10 +30,13 @@ So: start M0–M2 in parallel with Lambo's A and B, not after.
 ## Task graph
 
 ```
-M0 ─→ M1 ─→ M2 ─→ M4 ─→ M5
-      └───→ M6 ──────↗  │
-            M3 ─────────┘
-M2 ─→ M8 ─→ M9
+M0 ─→ M1 ─→ M2 ─→ M4 ─→ M5 ─┐
+      └───→ M6 ──────↗  │    ├─→ M10
+            M3 ─────────┘    │
+M2 ─→ M8 ─→ M9 ──────────────┘
+
+M7 is not a node. The CLI grows with M2–M6; see M7.
+M10 is last on purpose and is allowed to fail; see M10.
 ```
 
 ---
@@ -126,8 +129,12 @@ egress redaction demonstrable — a script echoing `$TOKEN` is the exact failure
 claims to prevent, and it is the only tool in this build that shows autonomy rather than recall.
 Carries a sandbox, a hard timeout, and the permission-prompt path.
 
-Out, per the hackathon doc: `search_web`, `fetch_page`, `delegate_to_omp`, and MCP host
+Out, per the hackathon doc: `search_web`, `fetch_page`, `delegate_to_coder`, and MCP host
 aggregation. The companion can talk and remember; it does not browse.
+
+Delegation stays out on scope, not on difficulty. A coding agent is a subprocess with a prompt and
+a working directory, so when it lands it is one tool behind the existing gate and sandbox — no
+bridge, no sidecar. Nothing in M4 needs to anticipate it.
 
 **Depends on:** M2, M3.
 
@@ -170,17 +177,28 @@ always on, is a product decision rather than a security one.
 
 ---
 
-## M7 — Surface
+## M7 — The CLI
 
-CLI first. A `ratatui` TUI only if time survives, which it probably will not, and saying so now
-means it is a cut rather than a disappointment.
+**Not a phase. A rule: nothing is done until it has a CLI surface.**
+
+M7 sits here in the numbering for the decision it carries, but the work is spread across M2–M6.
+Every milestone lands with the commands that drive it — `mooshik chat`, `recall`, `stats`,
+`secret set/get/list`, `permissions`, `config` — written as that milestone is written, not
+retrofitted afterwards.
+
+The reason is scheduling, not taste. A surface built at the end is a surface built under deadline
+pressure, and it is the part a judge, a reader and a future contributor actually touch. Built
+alongside, it costs each milestone an hour. Built at the end, it costs a day nobody has.
 
 **Decided: a chat with context.** A persistent conversational loop, not one-shot subcommands.
 Ambience and continuity are the product's claim, and a one-shot command cannot demonstrate either.
+The other commands stay one-shot; `chat` is the one that holds a session.
 
 This decision does more work than it looks like it does — see below.
 
-**Depends on:** M3.
+**Depends on:** M3 for `chat`; each other command on its own milestone.
+**Done when:** every shipped capability is reachable from the CLI, with `--help` that reads like it
+was written on purpose, and the demo can be driven end to end without the TUI existing.
 
 ---
 
@@ -261,6 +279,28 @@ does.
 
 ---
 
+## M10 — The TUI
+
+**The intended face of the product, and deliberately the last thing built.**
+
+An always-on companion wants a surface you leave open: the conversation, what the graph is doing
+underneath it, what was recalled and why, what is pending approval. That is a `ratatui` job, and it
+is what Mooshik should look like.
+
+It goes last for one reason. Every capability is already reachable from the CLI by the time this
+starts, so the TUI is a second view over finished behaviour rather than the only way to reach it.
+If it lands, the product has its face. If it runs out of clock, is unstable, or simply looks worse
+than the CLI, it is dropped on the day with nothing lost — no capability lives only here.
+
+That safety only holds if M7 was honoured. A TUI built last on top of a half-built CLI is not a
+final task, it is the surface arriving late; the whole point of the ordering is that this milestone
+can fail.
+
+**Depends on:** everything shipped. **Done when:** the demo runs in the TUI — or the demo runs in
+the CLI and this is cut, which is a decision rather than a failure.
+
+---
+
 ## Decisions needed, in the order they bite
 
 | # | Decision | Blocks | Cost of deciding late |
@@ -271,6 +311,17 @@ does.
 | ~~4~~ | ~~Chat loop or one-shot CLI~~ | — | **Decided: a chat with context.** See M7. |
 | 5 | Ingester repo location | M8 | Cheap now, awkward once CI and docs exist |
 | 6 | Default grant set for the demo | M5 | Only bites at recording time, but bites hard |
+| ~~7~~ | ~~Where the surface effort goes~~ | — | **Decided: CLI throughout, TUI last.** See M7 and M10. |
+| ~~8~~ | ~~Companion loop: framework or hand-rolled~~ | — | **Decided: hand-rolled.** See below. |
 
-Three settled. The two remaining are genuinely late-binding: the vault key source when M6 starts,
+Five settled. The two remaining are genuinely late-binding: the vault key source when M6 starts,
 the ingester's home when M8 does. Decision 6 only bites at recording time.
+
+**On decision 8**, since it will be proposed again: the companion targets exactly one wire format,
+OpenAI-compatible `/v1`, which every candidate endpoint already speaks. A framework's value is an
+abstraction over provider variation Mooshik does not have, and the parts of M3 that are actually
+hard — partial-stream cancellation, a tool call arriving mid-stream, context pressure answered by
+recall rather than truncation — are not what a framework hands you. The deciding argument is M5:
+the permission gate belongs at the tool-call boundary, and owning the loop is how that is held
+outright instead of depending on someone else's hook granularity. The dependency taken is an SSE
+parser, not a harness.
