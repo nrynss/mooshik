@@ -30,14 +30,13 @@ So: start M0–M2 in parallel with Lambo's A and B, not after.
 ## Task graph
 
 ```
-M0 ─→ M1 ─→ M2 ─→ M4 ─→ M5 ─→ M11 ─┐
-      └───→ M6 ──────↗  │  ────↗    ├─→ M10
+M0 ─→ M1 ─→ M2 ─→ M4 ─→ M5 ─→ M10 ─┐
+      └───→ M6 ──────↗  │  ────↗    ├─→ M11
             M3 ─────────┘           │
 M2 ─→ M8 ─→ M9 ─────────────────────┘
 
 M7 is not a node. The CLI grows with M2–M6; see M7.
-M11 is an id, not a position: after M6, before M10.
-M10 is last on purpose and is allowed to fail; see M10.
+M11 is last on purpose and is allowed to fail; see M11.
 ```
 
 ---
@@ -137,7 +136,7 @@ claims to prevent, and it is the only tool in this build that shows autonomy rat
 Carries a sandbox, a hard timeout, and the permission-prompt path.
 
 Out: `delegate_to_coder`. Also `search_web` and `fetch_page` **as hand-written Rust tools** — they
-come back through M11 as configured servers instead, which is the whole argument for M11.
+come back through M10 as configured servers instead, which is the whole argument for M10.
 
 Delegation stays out on scope, not on difficulty. A coding agent is a subprocess with a prompt and
 a working directory, so when it lands it is one tool behind the existing gate and sandbox — no
@@ -154,7 +153,7 @@ survived review. In `~/work/lambo/src/mcp/`:
 | `RecallParams`, `DeriveParams`, `WireConcept`, `WireResource`, `RecordActionParams` | `server.rs` (118, 159, 140, 176, 180) | Plain `serde` + `schemars`, no rmcp coupling — checked. `deny_unknown_fields` plus length and range caps already chosen. These *are* M4's tool schemas. |
 | `SecretToken` and its hand-written `Debug` | `serve.rs` 207, 233 | A newtype that refuses to print its own value. Exactly the shape M6 wants for `secret://`, so a vault value cannot reach a log line by accident. |
 | `bad_param`, and the panic-contained tool wrapper | `server.rs` 709, 758 | M5's gate wants the same discipline at the same boundary: a tool that panics returns an error, not a dead process. |
-| `init_tracing` | `mod.rs` 30 | The code is trivial; the doc comment is the point — under stdio, stdout **is** the JSON-RPC channel and one stray log line corrupts framing. Mooshik meets this from both sides once M11 spawns servers. |
+| `init_tracing` | `mod.rs` 30 | The code is trivial; the doc comment is the point — under stdio, stdout **is** the JSON-RPC channel and one stray log line corrupts framing. Mooshik meets this from both sides once M10 spawns servers. |
 
 **Grep by name, not by line.** Those numbers are true at `166a3c8` and will not stay true —
 `server.rs` went from 2,577 to 4,625 lines in a day while J1 and J2 landed.
@@ -342,9 +341,7 @@ quality is G's to calibrate, not something to tune from inside Mooshik.
 
 ---
 
-## M11 — The MCP host
-
-*(An id, not a position. This lands after M6 and before M10.)*
+## M10 — The MCP host
 
 Without this the tool surface is seven tools welded into the binary, and every new capability is a
 Rust PR. With it, capability is configuration: a search server restores `search_web` and
@@ -356,9 +353,9 @@ same crate.
 
 Do not expect to lift code from `src/mcp/`. It is the other half of the protocol —
 `#[tool_router]`, `ServerHandler`, inbound HTTP transport, rate limiter, auth token — and none of
-it is a client. What M4 lifts from there is listed under M4; M11's own plumbing is new. The one
+it is a client. What M4 lifts from there is listed under M4; M10's own plumbing is new. The one
 exception worth reading first is `proxy.rs`, which is a client: it dials a socket and forwards
-tool calls, which is structurally what M11 does to every configured server.
+tool calls, which is structurally what M10 does to every configured server.
 
 **Copy Lambo's dependency line carefully.** It pins `default-features = false` and its comment says
 that is required rather than stylistic: rmcp's optional `reqwest` is `^0.13.2`, and a repo pinning
@@ -370,7 +367,7 @@ walks into the same trap. Features here are `client` and `transport-child-proces
 **Exposure is an allowlist, per server.** Aggregation's default behaviour is to hand the model
 every tool every server offers, and spec §3.1 trims the surface precisely to stop a small local
 model misrouting. Config names which tools are exposed; the companion still sees roughly eight,
-not forty. Without this, M11 breaks the local-companion premise rather than extending it.
+not forty. Without this, M10 breaks the local-companion premise rather than extending it.
 
 **Server credentials come from the vault.** Spec §3.4's example puts `GITHUB_PERSONAL_ACCESS_TOKEN
 = "ghp_..."` inline in `config.toml`, which contradicts M6 outright. Env is resolved from the vault
@@ -378,7 +375,7 @@ at spawn time. This is also the better vault demonstration — a real credential
 and never a prompt, rather than a script echoing a variable.
 
 MCP tools are tools: they pass M5's gate like everything else, which means the grant syntax needs
-to name them (`mcp.github.*`). That is the one place M5 has to be written knowing M11 exists.
+to name them (`mcp.github.*`). That is the one place M5 has to be written knowing M10 exists.
 
 **Depends on:** M4, M5, M6.
 
@@ -389,7 +386,7 @@ September.
 
 ---
 
-## M10 — The TUI
+## M11 — The TUI
 
 **The intended face of the product, and deliberately the last thing built.**
 
@@ -421,7 +418,7 @@ the CLI and this is cut, which is a decision rather than a failure.
 | ~~4~~ | ~~Chat loop or one-shot CLI~~ | — | **Decided: a chat with context.** See M7. |
 | 5 | Ingester repo location | M8 | Cheap now, awkward once CI and docs exist |
 | 6 | Default grant set for the demo | M5 | Only bites at recording time, but bites hard |
-| ~~7~~ | ~~Where the surface effort goes~~ | — | **Decided: CLI throughout, TUI last.** See M7 and M10. |
+| ~~7~~ | ~~Where the surface effort goes~~ | — | **Decided: CLI throughout, TUI last.** See M7 and M11. |
 | ~~8~~ | ~~Companion loop: framework or hand-rolled~~ | — | **Decided: hand-rolled.** See below. |
 
 Five settled. The two remaining are genuinely late-binding: the vault key source when M6 starts,
