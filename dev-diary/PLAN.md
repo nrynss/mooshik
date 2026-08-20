@@ -143,6 +143,22 @@ Delegation stays out on scope, not on difficulty. A coding agent is a subprocess
 a working directory, so when it lands it is one tool behind the existing gate and sandbox — no
 bridge, no sidecar. Nothing in M4 needs to anticipate it.
 
+### Lift these from Lambo rather than writing them
+
+Mooshik exposes the *same* lambo tools its MCP server does, just backed by in-process `Memory`
+instead of JSON-RPC. The schemas are therefore already written, already bounded, and already
+survived review. In `~/work/lambo/src/mcp/`:
+
+| What | Where | Why it is worth taking |
+| --- | --- | --- |
+| `RecallParams`, `DeriveParams`, `WireConcept`, `WireResource`, `RecordActionParams` | `server.rs` (118, 159, 140, 176, 180) | Plain `serde` + `schemars`, no rmcp coupling — checked. `deny_unknown_fields` plus length and range caps already chosen. These *are* M4's tool schemas. |
+| `SecretToken` and its hand-written `Debug` | `serve.rs` 207, 233 | A newtype that refuses to print its own value. Exactly the shape M6 wants for `secret://`, so a vault value cannot reach a log line by accident. |
+| `bad_param`, and the panic-contained tool wrapper | `server.rs` 709, 758 | M5's gate wants the same discipline at the same boundary: a tool that panics returns an error, not a dead process. |
+| `init_tracing` | `mod.rs` 30 | The code is trivial; the doc comment is the point — under stdio, stdout **is** the JSON-RPC channel and one stray log line corrupts framing. Mooshik meets this from both sides once M11 spawns servers. |
+
+**Grep by name, not by line.** Those numbers are true at `166a3c8` and will not stay true —
+`server.rs` went from 2,577 to 4,625 lines in a day while J1 and J2 landed.
+
 **Depends on:** M2, M3.
 
 ---
@@ -337,6 +353,12 @@ github, obsidian and whatever else without touching the tool code.
 
 `rmcp` is already a Lambo dependency for its MCP **server**; this is the **client** half of the
 same crate.
+
+Do not expect to lift code from `src/mcp/`. It is the other half of the protocol —
+`#[tool_router]`, `ServerHandler`, inbound HTTP transport, rate limiter, auth token — and none of
+it is a client. What M4 lifts from there is listed under M4; M11's own plumbing is new. The one
+exception worth reading first is `proxy.rs`, which is a client: it dials a socket and forwards
+tool calls, which is structurally what M11 does to every configured server.
 
 **Copy Lambo's dependency line carefully.** It pins `default-features = false` and its comment says
 that is required rather than stylistic: rmcp's optional `reqwest` is `^0.13.2`, and a repo pinning
