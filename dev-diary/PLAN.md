@@ -79,6 +79,12 @@ Build against **SQLite plus `FixtureEmbedder`** first. That combination needs no
 and no cloud account, so M3–M6 can be developed and tested offline. Gemini and Postgres become a
 config change, not a rewrite — which is the whole point of the `GraphStore` seam.
 
+**M2b — publish a session endpoint.** Mooshik is a lease holder that is not a `serve`, so by
+default it is unreachable and Lambo's J2 proxy cannot forward to it. Derive the address with
+`SessionEndpoint::resolve`, serve Lambo's MCP surface on it, publish it with
+`LeaseHolder::reachable_at()`. Roughly a morning, and it is what stops the bootstrap from being an
+outage — see consequence 1 below for why the store-identity half of the path matters.
+
 **Decided: one unified session.** Matches spec §3.3's single autobiographical memory, and the
 bootstrap already produces one graph. Lambo issue #4's missing session-discovery surface stays
 irrelevant this month — nothing needs to enumerate sessions. Recall scoping across projects
@@ -207,33 +213,58 @@ was written on purpose, and the demo can be driven end to end without the TUI ex
 
 Three consequences, and the first is a collision that has to be resolved before M8 runs.
 
-### 1. Two writers on one session, and the store now refuses
+### 1. Two writers on one session — J2 changes the answer, but not for free
 
-Lambo's single-writer lease became **store-enforced** in T8.6: a per-session lease row acquired
-atomically, *"refused fail-closed when a live one is already held by someone else"*, with
-explicitly no preemption — a live holder keeps its heartbeat and the newcomer simply loses.
+**Updated 2026-08-20 after pulling `lambo-for-mooshik`. The old resolution here — stop Mooshik
+while the bootstrap runs — is superseded, and the thing that replaces it is a task, not a freebie.**
 
-Combine the two decisions already made — one unified session, plus an always-on Mooshik holding
-`lambo::Memory` in process — and the bootstrap ingester writing through `lambo serve` is a
-**second writer on the same session**. It does not queue, retry or degrade. It is refused.
+The lease is unchanged: one writer per session, store-enforced, no preemption. What changed is
+what happens to the loser. Lambo's **J2** makes a refused `lambo serve` bind nothing and instead
+*proxy* to the holder — it reads the winner's address out of the new `session_leases.endpoint`
+column, connects, and forwards every call. Full read and write for every client, real
+read-your-writes, no client config change. First process to start becomes the hub.
 
-The cheapest resolution for this month: **the bootstrap is a one-time job and Mooshik is stopped
-while it runs.** Write that down as an operational fact rather than discovering it as a failed
-Cloud Run job on day 4. The alternatives are worse: routing Mooshik through `lambo serve` too
-contradicts the in-process design in spec §2, and giving the bootstrap its own session contradicts
-the one-session decision.
+**The catch, and it lands squarely on M2.** The endpoint is published by the *holder*, opt-in, via
+`LeaseHolder::reachable_at()` — and `serve` is what calls it. `store/lease.rs:212` names the gap
+out loud: a row carries no endpoint when the holder is *"a writer that is not a serve"*. Mooshik
+holding `lambo::Memory` in process is exactly that writer. Left alone it wins the lease, publishes
+no address, and the bootstrap's `serve` loses to a holder it cannot reach — refused, same as
+before, except now the failure looks like a bug in J2 rather than a known constraint.
 
-Worth stating in the write-up rather than hiding — an always-on companion and a bulk importer
-genuinely contend for one memory, and fail-closed is the right answer.
+So M2 gains a task: **Mooshik binds a session endpoint and publishes it like a holder does.**
 
-### 2. A crash loses the write-behind tail
+* Derive the path with `SessionEndpoint::resolve` rather than inventing one. It is keyed on the
+  session id **and the store's canonicalized identity**, and that discriminator is load-bearing —
+  J2-R1-2 records two graphs landing on one socket when a relative `path = "./lambo.db"` was
+  hashed verbatim, at which point one holder's stale-socket cleanup unlinked the other's live
+  socket and a proxy forwarded writes into the wrong graph.
+* Serve Lambo's MCP surface on it, so an arriving proxy finds what it expects.
+* Publish with `reachable_at()` at acquire time.
+
+What this buys: the bootstrap ingester stops being an outage. Mooshik stays up while a decade of
+history loads through it, which is a materially better demo than a companion that has to be shut
+off to be filled.
+
+Still worth saying in the write-up — an always-on companion and a bulk importer genuinely contend
+for one memory. The finding is just no longer "fail-closed is the right answer"; it is that
+process-level locking was reading as agent-level outage, and the fix was to make the loser useful.
+
+### 2. A crash loses the write-behind tail — and J3 gives it a dial
 
 The lease module is explicit that a lease expiring proves nothing about durability: *"the tail
 lived in the crashed process's in-RAM log and died with it."* A long-running chat process
 accumulates unflushed mutations between flush intervals, so a crash silently loses the most recent
 memory — the part the user just created and is most likely to notice missing.
 
-The flush interval is now a product setting, not a performance knob. Pick it deliberately in M1.
+The flush interval is a product setting, not a performance knob. Pick it deliberately in M1.
+
+**J3 adds the other half.** Writes are acknowledged before the embedder runs — a warm
+`lambo_derive` is 27ms of which 22–25ms is embedding — and the ack carries a **receipt id**.
+Outcomes come back piggybacked on that agent's next tool response, and the receipt is opt-in
+synchrony: a caller that needs its write applied can wait on it. So Mooshik gets read-your-writes
+where it matters without paying the embedder on every derive. Note the rule J3 states: `derive`
+and `record_action` may ack async, **`lambo_reserve` may not** — its result *is* the caller's next
+action.
 
 ### 3. Context pressure becomes the demo, not a bug
 
@@ -250,7 +281,11 @@ loop is persistent. It should be designed in M3 rather than patched when the win
 ## M8 — The bootstrap ingester
 
 An ADK agent on Cloud Run that walks this machine's history, has Gemini Flash extract concepts at
-volume, and writes through `lambo serve` over MCP as the single writer.
+volume, and writes through `lambo serve` over MCP.
+
+**Not "as the single writer" any more.** Post-J2 its `serve` loses the lease to a running Mooshik
+and proxies into it, provided M2b published an endpoint. That is the intended path, not a
+workaround: one graph, one hub, and the companion stays up while the corpus loads.
 
 **Open decision: where does it live?** It is Python, and Mooshik is Rust. Its own repo is cleaner
 to reason about; a subdirectory here means one link in the submission and one clone for a judge.
@@ -275,6 +310,17 @@ precision and no value.
 This is the intellectual contribution and the reason the project is not a plumbing exercise. It
 is also the first thing to get squeezed, so the sampling harness should exist before the corpus
 does.
+
+**Check embedding coverage before reporting anything about recall.** Lambo's own dogfood run found
+*92 of 100 concepts with no durable embedding* — semantic memory mostly blind, while recall still
+returned plausible-looking results off the keyword leg. A precision number measured over a corpus
+in that state is measuring the wrong system. Read `DOGFOOD-FINDINGS.md` before designing the
+sample, and report coverage alongside precision.
+
+Two more from the same log worth reading rather than rediscovering: canonical=0 on a real corpus
+(which is C's motivating evidence, and matches what M2's SoloPolicy note already predicts), and
+G's finding that a flat `RECENT_SCORE` floor can erase a correct cosine ranking — so recall
+quality is G's to calibrate, not something to tune from inside Mooshik.
 
 **Depends on:** M8.
 
