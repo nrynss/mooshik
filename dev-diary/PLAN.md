@@ -30,12 +30,13 @@ So: start M0–M2 in parallel with Lambo's A and B, not after.
 ## Task graph
 
 ```
-M0 ─→ M1 ─→ M2 ─→ M4 ─→ M5 ─┐
-      └───→ M6 ──────↗  │    ├─→ M10
-            M3 ─────────┘    │
-M2 ─→ M8 ─→ M9 ──────────────┘
+M0 ─→ M1 ─→ M2 ─→ M4 ─→ M5 ─→ M11 ─┐
+      └───→ M6 ──────↗  │  ────↗    ├─→ M10
+            M3 ─────────┘           │
+M2 ─→ M8 ─→ M9 ─────────────────────┘
 
 M7 is not a node. The CLI grows with M2–M6; see M7.
+M11 is an id, not a position: after M6, before M10.
 M10 is last on purpose and is allowed to fail; see M10.
 ```
 
@@ -129,8 +130,8 @@ egress redaction demonstrable — a script echoing `$TOKEN` is the exact failure
 claims to prevent, and it is the only tool in this build that shows autonomy rather than recall.
 Carries a sandbox, a hard timeout, and the permission-prompt path.
 
-Out, per the hackathon doc: `search_web`, `fetch_page`, `delegate_to_coder`, and MCP host
-aggregation. The companion can talk and remember; it does not browse.
+Out: `delegate_to_coder`. Also `search_web` and `fetch_page` **as hand-written Rust tools** — they
+come back through M11 as configured servers instead, which is the whole argument for M11.
 
 Delegation stays out on scope, not on difficulty. A coding agent is a subprocess with a prompt and
 a working directory, so when it lands it is one tool behind the existing gate and sandbox — no
@@ -276,6 +277,47 @@ is also the first thing to get squeezed, so the sampling harness should exist be
 does.
 
 **Depends on:** M8.
+
+---
+
+## M11 — The MCP host
+
+*(An id, not a position. This lands after M6 and before M10.)*
+
+Without this the tool surface is seven tools welded into the binary, and every new capability is a
+Rust PR. With it, capability is configuration: a search server restores `search_web` and
+`fetch_page` without either being written here, and `[mcp_servers.*]` in `config.toml` covers
+github, obsidian and whatever else without touching the tool code.
+
+`rmcp` is already a Lambo dependency for its MCP **server**; this is the **client** half of the
+same crate.
+
+**Copy Lambo's dependency line carefully.** It pins `default-features = false` and its comment says
+that is required rather than stylistic: rmcp's optional `reqwest` is `^0.13.2`, and a repo pinning
+reqwest 0.12 compiles it twice otherwise. Mooshik pins reqwest for the companion client, so it
+walks into the same trap. Features here are `client` and `transport-child-process`.
+
+### Two constraints, or this breaks things already decided
+
+**Exposure is an allowlist, per server.** Aggregation's default behaviour is to hand the model
+every tool every server offers, and spec §3.1 trims the surface precisely to stop a small local
+model misrouting. Config names which tools are exposed; the companion still sees roughly eight,
+not forty. Without this, M11 breaks the local-companion premise rather than extending it.
+
+**Server credentials come from the vault.** Spec §3.4's example puts `GITHUB_PERSONAL_ACCESS_TOKEN
+= "ghp_..."` inline in `config.toml`, which contradicts M6 outright. Env is resolved from the vault
+at spawn time. This is also the better vault demonstration — a real credential reaching a real tool
+and never a prompt, rather than a script echoing a variable.
+
+MCP tools are tools: they pass M5's gate like everything else, which means the grant syntax needs
+to name them (`mcp.github.*`). That is the one place M5 has to be written knowing M11 exists.
+
+**Depends on:** M4, M5, M6.
+
+**Cost, honestly:** process lifecycle, stdio JSON-RPC, discovery, and reconnect-on-crash is a real
+day even with rmcp, and it competes with M8 and M9. If the clock forces a choice, this is the
+better thing to cut than M9 — M9 is the finding, this is plumbing that will still be here in
+September.
 
 ---
 
