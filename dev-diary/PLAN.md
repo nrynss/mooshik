@@ -49,6 +49,30 @@ against gets rewritten, so this stays deliberately thin.
 
 **Depends on:** nothing. **Done when:** `mooshik --help` runs and CI builds it.
 
+**Status: built 2026-08-21, commit `fca2f13`.** `mooshik --help` runs; CI builds it.
+
+Two conventions were set here that later milestones must follow:
+
+* **User-facing strings live in TOML, not Rust.** `src/text/en.toml` holds every
+  help line and message, resolved by dotted key through `text::get`. This was
+  chosen for localization, but it also serves the line budget: prose stops
+  counting against a file's size. A missing or empty key fails CI via test, not
+  the demo.
+* **File-size discipline:** soft target ~600 lines per file including tests;
+  CI fails past 1000. Split at seams into directory modules, never to satisfy
+  the counter. `mod.rs` stays thin.
+
+Implementation notes worth keeping:
+
+* clap uses the **builder API**, not derive — derive attributes only accept
+  string literals, so runtime-loaded text forces the choice. Subcommands
+  register there as they land.
+* CI actions are pinned to **commit SHAs**, never tags (checkout v7.0.1,
+  dtolnay/rust-toolchain master). Bumping one is a deliberate act.
+* Per the warning above, no milestone directories (`companion/`, `vault/`, …)
+  were scaffolded — the module table in `src/lib.rs` documents the intended
+  layout instead, and each directory arrives with its milestone.
+
 ---
 
 ## M1 — Configuration and the home directory
