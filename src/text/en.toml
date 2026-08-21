@@ -1,0 +1,14 @@
+# All user-facing strings for the default locale (English).
+#
+# Every string a user can see — help text, error messages, labels — lives here,
+# never inline in Rust source. New surface added by a milestone adds its keys
+# under the matching section. Localization later means shipping another file
+# with the same schema and selecting it in config; no call sites change.
+#
+# Key lookup is dotted (`app.about` → `[app] about = ...`). A missing key is a
+# programmer error and panics at the call site; keep this file and its tests in
+# sync.
+
+[app]
+about = "An ambient, local-first AI cowork partner and workspace orchestrator"
+after_help = "Mooshik runs alongside you as a peer: it holds your workspace's memory, researches the web, and delegates code changes to coding agents.\nDocs: docs/SPEC.md · Build plan: dev-diary/PLAN.md"
