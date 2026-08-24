@@ -12,3 +12,43 @@
 [app]
 about = "An ambient, local-first AI cowork partner and workspace orchestrator"
 after_help = "Mooshik runs alongside you as a peer: it holds your workspace's memory, researches the web, and delegates code changes to coding agents.\nDocs: docs/SPEC.md · Build plan: dev-diary/PLAN.md"
+
+[config]
+init_help = "Create the Mooshik home directory and its private files"
+show_help = "Print the resolved configuration"
+read_failed = "Could not read the Mooshik configuration. Check the file and its permissions."
+home_unavailable = "Could not determine your home directory. Set MOOSHIK_HOME and try again."
+invalid_toml = "The Mooshik configuration is not valid TOML. Fix it and try again."
+invalid_value = "The Mooshik configuration contains an unsupported value. Use keyring or passphrase."
+show_failed = "Could not load the Mooshik configuration. Fix the file and try again."
+
+[home]
+init_failed = "Could not initialize the Mooshik home directory. Check its path and permissions."
+missing = "The Mooshik home does not exist yet. Run `mooshik init` first, or set MOOSHIK_HOME to an initialized home."
+init_done = "Mooshik home initialized."
+unsafe_path = "The Mooshik home contains a symbolic link or unsafe path component. Choose a private, non-symlinked path."
+migration_required = "The existing private directory is not marked as a Mooshik home. Back it up, move it aside, then run `mooshik init`; existing data will not be modified automatically."
+layout_conflict = "The Mooshik home has an incompatible vault layout. Move the old vault directory and try again."
+
+[vault]
+set_help = "Encrypt and store a secret value"
+set_after_help = "Value input: when MOOSHIK_SECRET_VALUE is set, Mooshik reads the value from that environment variable; otherwise it reads bounded input from stdin. Trailing CR/LF is removed; input must be non-empty and at most 1 MiB. Literal secret values cannot be supplied as command-line arguments."
+get_help = "Decrypt and print a secret value"
+list_help = "List secret names without revealing values"
+name_help = "Secret name"
+set_failed = "Could not store the secret. Check the name, home directory, and key provider."
+get_failed = "Could not read that secret. Check its name, the key provider, and passphrase."
+list_failed = "Could not list secrets. Check the home directory and key provider."
+io_failed = "The encrypted vault could not be read or written. Check its permissions."
+invalid_format = "The encrypted vault has an invalid format. Restore a valid vault or remove it to start over."
+authentication_failed = "The vault could not be authenticated. Check the passphrase or keyring entry."
+keyring_failed = "The operating-system keyring is unavailable. Select passphrase mode and provide MOOSHIK_VAULT_PASSPHRASE."
+random_failed = "The system secure random source was unavailable. Try again."
+key_derivation_failed = "The passphrase could not be processed securely. Try again."
+missing_passphrase = "Passphrase mode requires a non-empty MOOSHIK_VAULT_PASSPHRASE environment variable."
+invalid_name = "Secret names must be 1–64 ASCII letters, digits, dots, underscores, or hyphens."
+not_found = "That secret does not exist. Check the name and try again."
+unsafe_path = "The encrypted vault path contains a symbolic link or unsafe component. Choose a private, non-symlinked home."
+lock_failed = "The encrypted vault could not be locked safely. Check its permissions and try again."
+missing_value = "Secret values must be non-empty. Provide MOOSHIK_SECRET_VALUE or stdin."
+input_too_large = "That secret input or encrypted vault is larger than the supported limit. Reduce it and try again."

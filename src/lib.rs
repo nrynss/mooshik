@@ -24,7 +24,11 @@
 //! `mod.rs` thin (re-exports, shared types).
 
 pub mod cli;
+pub mod config;
+pub mod home;
+mod secure_path;
 pub mod text;
+pub mod vault;
 
 pub fn run() -> anyhow::Result<()> {
     cli::run()
