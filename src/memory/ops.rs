@@ -188,4 +188,98 @@ mod tests {
             "open must not publish a session endpoint"
         );
     }
+
+    fn redact_secrets(message: &str) -> String {
+        let mut redacted = message.to_owned();
+        for scheme in ["postgres://", "postgresql://"] {
+            if let Some(start) = redacted.find(scheme) {
+                let after = start + scheme.len();
+                if let Some(at) = redacted[after..].find('@') {
+                    redacted.replace_range(after..after + at, "***");
+                }
+            }
+        }
+        redacted
+    }
+
+    /// Operator-runnable: Cloud SQL + Vertex Gemini.
+    ///
+    ///     cargo test --locked --lib memory::ops::tests::live_postgres_and_gemini_round_trip \
+    ///       -- --ignored --nocapture
+    ///
+    /// Needs `LAMBO_POSTGRES_DSN` and `GCP_LAMBO_CREDENTIALS` (or
+    /// `GOOGLE_APPLICATION_CREDENTIALS`). Skips if either is unset.
+    #[tokio::test]
+    #[ignore = "live Cloud SQL + Vertex; needs LAMBO_POSTGRES_DSN and GCP credentials"]
+    async fn live_postgres_and_gemini_round_trip() {
+        let dsn = std::env::var("LAMBO_POSTGRES_DSN")
+            .ok()
+            .filter(|value| !value.is_empty());
+        let creds = std::env::var("GCP_LAMBO_CREDENTIALS")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                std::env::var("GOOGLE_APPLICATION_CREDENTIALS")
+                    .ok()
+                    .filter(|value| !value.is_empty())
+            });
+        if dsn.is_none() || creds.is_none() {
+            eprintln!("skipping: set LAMBO_POSTGRES_DSN and GCP_LAMBO_CREDENTIALS");
+            return;
+        }
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let session = format!("mooshik-live-{stamp}");
+        let marker = format!("mooshik live gemini marker {stamp}");
+        let mut config = Config::from_toml_and_env("", std::env::vars()).unwrap();
+        config.session.id = session;
+        config.session.agent = "mooshik-live".to_owned();
+        provision(&config).await.unwrap_or_else(|error| {
+            panic!("provision: {}", redact_secrets(&error.to_string()));
+        });
+        let memory = open(&config).await.unwrap_or_else(|error| {
+            panic!("open: {}", redact_secrets(&error.to_string()));
+        });
+        assert_eq!(memory.embedding_contract().kind, "gemini");
+        assert_eq!(
+            memory.embedding_contract().model.as_deref(),
+            Some("gemini-embedding-001")
+        );
+        assert_eq!(memory.embedding_contract().dim, 1536);
+        memory
+            .derive(
+                &[(marker.as_str(), ConceptType::Observation)],
+                &ParentOf::none(),
+            )
+            .await
+            .unwrap_or_else(|error| {
+                panic!("derive: {}", redact_secrets(&error.to_string()));
+            });
+        memory.close().await.unwrap_or_else(|error| {
+            panic!("close: {}", redact_secrets(&error.to_string()));
+        });
+        let reopened = open(&config).await.unwrap_or_else(|error| {
+            panic!("reopen: {}", redact_secrets(&error.to_string()));
+        });
+        let recalled = reopened
+            .recall(RecallQuery {
+                query: marker.clone(),
+                top_k: 5,
+                max_tokens: 200,
+                traversal_depth: 0,
+            })
+            .await
+            .unwrap_or_else(|error| {
+                panic!("recall: {}", redact_secrets(&error.to_string()));
+            });
+        assert!(
+            !recalled.hits.is_empty(),
+            "durable postgres+gemini write must survive reopen"
+        );
+        reopened.close().await.unwrap_or_else(|error| {
+            panic!("final close: {}", redact_secrets(&error.to_string()));
+        });
+    }
 }

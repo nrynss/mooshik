@@ -138,7 +138,8 @@ flush interval, scoring weights.
 Postgres + Vertex Gemini from M2, dim 1536, model `gemini-embedding-001`, promotion policy
 **Solo**. Fixture + in-RAM store remain compiled as test doubles (`embed-fixture`,
 `store-memory`). Default `cargo test` does not call Vertex or Cloud SQL. Live Cloud SQL +
-Vertex stay operator-verified.
+Vertex were operator-run 2026-08-25 (`m2-live-gcp.md`): provision, derive, reopen-recall,
+and CLI `init` all passed after enabling `aiplatform.googleapis.com` on project `mooshik`.
 
 **M2b — publish a session endpoint.** Mooshik is a lease holder that is not a `serve`, so by
 default it is unreachable and Lambo's J2 proxy cannot forward to it. Derive the address with
