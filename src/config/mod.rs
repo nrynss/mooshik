@@ -7,15 +7,57 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use lambo::{EmbedderConfig, EmbedderKind, LamboFile, StoreConfig, StoreKind};
 use serde::{Deserialize, Serialize};
 
 use crate::{secure_path, text};
+
+mod overlay;
+mod show;
 
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 
 pub const HOME_ENV: &str = "MOOSHIK_HOME";
 pub const PROVIDER_ENV: &str = "MOOSHIK_VAULT_PROVIDER";
 pub const PASSPHRASE_ENV: &str = "MOOSHIK_VAULT_PASSPHRASE";
+pub const SESSION_ENV: &str = "MOOSHIK_SESSION";
+pub const AGENT_ENV: &str = "MOOSHIK_AGENT";
+pub const STORE_KIND_ENV: &str = "MOOSHIK_STORE_KIND";
+pub const POSTGRES_DSN_ENV: &str = "MOOSHIK_POSTGRES_DSN";
+pub const EMBEDDER_ENV: &str = "MOOSHIK_EMBEDDER";
+pub const EMBED_DIM_ENV: &str = "MOOSHIK_EMBED_DIM";
+pub const GEMINI_PROJECT_ENV: &str = "MOOSHIK_GEMINI_PROJECT";
+pub const GEMINI_LOCATION_ENV: &str = "MOOSHIK_GEMINI_LOCATION";
+pub const GEMINI_MODEL_ENV: &str = "MOOSHIK_GEMINI_MODEL";
+pub const GEMINI_CREDENTIALS_ENV: &str = "MOOSHIK_GEMINI_CREDENTIALS";
+pub const FLUSH_INTERVAL_ENV: &str = "MOOSHIK_FLUSH_INTERVAL_MS";
+
+const DEFAULT_SESSION: &str = "mooshik";
+const DEFAULT_AGENT: &str = "mooshik";
+const DEFAULT_EMBED_DIM: usize = 1536;
+const DEFAULT_GEMINI_LOCATION: &str = "us-central1";
+const DEFAULT_GEMINI_MODEL: &str = "gemini-embedding-001";
+const DEFAULT_FLUSH_INTERVAL_MS: u64 = 1000;
+
+const DEFAULT_TOML: &str = r#"[vault]
+provider = "keyring"
+
+[session]
+id = "mooshik"
+agent = "mooshik"
+
+[store]
+kind = "postgres"
+
+[embedder]
+kind = "gemini"
+dim = 1536
+gemini_location = "us-central1"
+gemini_model = "gemini-embedding-001"
+
+[daemon]
+flush_interval_ms = 1000
+"#;
 
 #[derive(Debug)]
 pub enum ConfigError {
@@ -23,6 +65,11 @@ pub enum ConfigError {
     HomeUnavailable,
     InvalidToml,
     InvalidValue,
+    InvalidStoreKind,
+    InvalidEmbedder,
+    InvalidNumber,
+    ZeroFlush,
+    DsnConflict,
 }
 
 impl std::fmt::Display for ConfigError {
@@ -32,6 +79,11 @@ impl std::fmt::Display for ConfigError {
             Self::HomeUnavailable => "config.home_unavailable",
             Self::InvalidToml => "config.invalid_toml",
             Self::InvalidValue => "config.invalid_value",
+            Self::InvalidStoreKind => "config.invalid_store_kind",
+            Self::InvalidEmbedder => "config.invalid_embedder",
+            Self::InvalidNumber => "config.invalid_number",
+            Self::ZeroFlush => "config.zero_flush",
+            Self::DsnConflict => "config.dsn_conflict",
         };
         f.write_str(text::get(key))
     }
@@ -62,11 +114,70 @@ impl Default for VaultConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionConfig {
+    #[serde(default = "default_session_id")]
+    pub id: String,
+    #[serde(default = "default_agent_id")]
+    pub agent: String,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            id: default_session_id(),
+            agent: default_agent_id(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DaemonConfig {
+    #[serde(default = "default_flush_interval_ms")]
+    pub flush_interval_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gc_interval: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonization_eval_interval_secs: Option<u64>,
+}
+
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            flush_interval_ms: default_flush_interval_ms(),
+            gc_interval: None,
+            canonization_eval_interval_secs: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub vault: VaultConfig,
+    #[serde(default)]
+    pub session: SessionConfig,
+    #[serde(default = "default_store")]
+    pub store: StoreConfig,
+    #[serde(default = "default_embedder")]
+    pub embedder: EmbedderConfig,
+    #[serde(default)]
+    pub daemon: DaemonConfig,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            vault: VaultConfig::default(),
+            session: SessionConfig::default(),
+            store: default_store(),
+            embedder: default_embedder(),
+            daemon: DaemonConfig::default(),
+        }
+    }
 }
 
 impl Config {
@@ -96,28 +207,19 @@ impl Config {
         Self::from_toml_and_env(&source, env::vars())
     }
 
-    pub fn from_toml_and_env<I>(source: &str, environment: I) -> Result<Self, ConfigError>
-    where
-        I: IntoIterator<Item = (String, String)>,
-    {
-        let mut config = if source.trim().is_empty() {
-            Self::default()
-        } else {
-            toml::from_str(source).map_err(|_| ConfigError::InvalidToml)?
-        };
-        let values: std::collections::HashMap<String, String> = environment.into_iter().collect();
-        if let Some(value) = non_empty(&values, PROVIDER_ENV) {
-            config.vault.provider = match value.to_ascii_lowercase().as_str() {
-                "keyring" => VaultProvider::Keyring,
-                "passphrase" => VaultProvider::Passphrase,
-                _ => return Err(ConfigError::InvalidValue),
-            };
-        }
-        Ok(config)
+    pub fn default_toml() -> &'static str {
+        DEFAULT_TOML
     }
 
-    pub fn default_toml() -> &'static str {
-        "[vault]\nprovider = \"keyring\"\n"
+    pub fn to_lambo_file(&self) -> LamboFile {
+        LamboFile {
+            store: self.store.clone(),
+            embedder: self.embedder.clone(),
+            daemon: lambo::DaemonConfig {
+                gc_interval: self.daemon.gc_interval,
+                canonization_eval_interval_secs: self.daemon.canonization_eval_interval_secs,
+            },
+        }
     }
 }
 
@@ -136,6 +238,37 @@ pub fn resolve_home(
         .map(|path| path.join(".mooshik"))
 }
 
+fn default_session_id() -> String {
+    DEFAULT_SESSION.to_owned()
+}
+
+fn default_agent_id() -> String {
+    DEFAULT_AGENT.to_owned()
+}
+
+fn default_flush_interval_ms() -> u64 {
+    DEFAULT_FLUSH_INTERVAL_MS
+}
+
+fn default_store() -> StoreConfig {
+    StoreConfig {
+        kind: StoreKind::Postgres,
+        dsn: None,
+        path: None,
+        vector_dim: None,
+    }
+}
+
+fn default_embedder() -> EmbedderConfig {
+    EmbedderConfig {
+        kind: EmbedderKind::Gemini,
+        dim: DEFAULT_EMBED_DIM,
+        gemini_location: Some(DEFAULT_GEMINI_LOCATION.to_owned()),
+        gemini_model: Some(DEFAULT_GEMINI_MODEL.to_owned()),
+        ..EmbedderConfig::default()
+    }
+}
+
 fn non_empty(values: &std::collections::HashMap<String, String>, key: &str) -> Option<String> {
     values.get(key).filter(|value| !value.is_empty()).cloned()
 }
@@ -144,42 +277,20 @@ fn non_empty(values: &std::collections::HashMap<String, String>, key: &str) -> O
 mod tests {
     use super::*;
 
-    fn env(provider: &str) -> Vec<(String, String)> {
-        vec![(PROVIDER_ENV.to_owned(), provider.to_owned())]
-    }
-
-    #[test]
-    fn non_empty_environment_value_wins() {
-        let config =
-            Config::from_toml_and_env("[vault]\nprovider = 'passphrase'", env("keyring")).unwrap();
-        assert_eq!(config.vault.provider, VaultProvider::Keyring);
-    }
-
-    #[test]
-    fn empty_environment_value_preserves_file() {
-        let config =
-            Config::from_toml_and_env("[vault]\nprovider = 'passphrase'", env("")).unwrap();
-        assert_eq!(config.vault.provider, VaultProvider::Passphrase);
-    }
-
-    #[test]
-    fn unknown_and_malformed_values_are_rejected() {
-        assert!(matches!(
-            Config::from_toml_and_env("[other]\nx = 1", []),
-            Err(ConfigError::InvalidToml)
-        ));
-        assert!(matches!(
-            Config::from_toml_and_env("[vault]\nprovider = 'other'", []),
-            Err(ConfigError::InvalidToml)
-        ));
-    }
-
     #[test]
     fn missing_home_is_an_error_instead_of_current_directory() {
         assert!(matches!(
             resolve_home([]),
             Err(ConfigError::HomeUnavailable)
         ));
+    }
+
+    #[test]
+    fn default_toml_round_trips_to_product_defaults() {
+        let parsed = Config::from_toml_and_env(Config::default_toml(), []).unwrap();
+        assert_eq!(parsed, Config::default());
+        assert!(Config::default_toml().contains("kind = \"postgres\""));
+        assert!(!Config::default_toml().contains("dsn"));
     }
 
     #[cfg(unix)]

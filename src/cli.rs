@@ -28,6 +28,11 @@ pub fn command() -> Command {
         .after_help(text::get("app.after_help"))
         .subcommand(Command::new("init").about(text::get("config.init_help")))
         .subcommand(
+            Command::new("serve")
+                .about(text::get("memory.serve_help"))
+                .after_help(text::get("memory.serve_after_help")),
+        )
+        .subcommand(
             Command::new("config")
                 .about(text::get("config.show_help"))
                 .subcommand_required(true)
@@ -70,6 +75,7 @@ fn dispatch(matches: &clap::ArgMatches) -> anyhow::Result<()> {
     let layout = HomeLayout::new(home);
     match matches.subcommand() {
         Some(("init", _)) => initialize(&layout),
+        Some(("serve", _)) => serve(&layout),
         Some(("config", sub)) if sub.subcommand_name() == Some("show") => show_config(&layout),
         Some(("secret", sub)) => dispatch_secret(&layout, sub),
         _ => Ok(()),
@@ -79,9 +85,7 @@ fn dispatch(matches: &clap::ArgMatches) -> anyhow::Result<()> {
 fn show_config(layout: &HomeLayout) -> anyhow::Result<()> {
     let root = layout.open_existing_root().map_err(anyhow::Error::new)?;
     let config = Config::load_at(&root).map_err(anyhow::Error::new)?;
-    let output =
-        toml::to_string_pretty(&config).map_err(|_| anyhow!(text::get("config.show_failed")))?;
-    print!("{output}");
+    print!("{}", config.redacted_toml());
     Ok(())
 }
 
@@ -121,8 +125,27 @@ fn initialize(layout: &HomeLayout) -> anyhow::Result<()> {
     let config = Config::load_at(&root).map_err(anyhow::Error::new)?;
     let provider = provider_for(&config)?;
     Vault::open_at(&layout.vault, root, provider).map_err(anyhow::Error::new)?;
+    block_on(crate::memory::provision(&config))?;
     println!("{}", text::get("home.init_done"));
     Ok(())
+}
+
+fn serve(layout: &HomeLayout) -> anyhow::Result<()> {
+    let root = layout.open_existing_root().map_err(anyhow::Error::new)?;
+    let config = Config::load_at(&root).map_err(anyhow::Error::new)?;
+    block_on(crate::memory::serve(&config))
+}
+
+fn block_on<F>(fut: F) -> anyhow::Result<()>
+where
+    F: std::future::Future<Output = Result<(), crate::memory::MemoryError>>,
+{
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| anyhow!(text::get("memory.runtime_failed")))?
+        .block_on(fut)
+        .map_err(anyhow::Error::new)
 }
 
 fn provider_for(config: &Config) -> anyhow::Result<Arc<dyn KeyProvider>> {
@@ -201,6 +224,33 @@ mod tests {
             .to_string()
             .contains("cowork partner"));
         assert!(!cmd.get_after_help().unwrap().to_string().is_empty());
+    }
+
+    #[test]
+    fn serve_and_init_help_come_from_text() {
+        let mut cmd = command();
+        let init = cmd
+            .find_subcommand("init")
+            .unwrap()
+            .get_about()
+            .unwrap()
+            .to_string();
+        assert_eq!(init, text::get("config.init_help"));
+        let serve = cmd
+            .find_subcommand("serve")
+            .unwrap()
+            .get_about()
+            .unwrap()
+            .to_string();
+        assert_eq!(serve, text::get("memory.serve_help"));
+        let serve_after = cmd
+            .find_subcommand_mut("serve")
+            .unwrap()
+            .render_help()
+            .to_string();
+        assert!(serve_after.contains("stdio"));
+        assert!(serve_after.contains("MOOSHIK_POSTGRES_DSN"));
+        assert!(serve_after.contains(text::get("memory.serve_help")));
     }
 
     #[test]

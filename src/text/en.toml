@@ -14,12 +14,17 @@ about = "An ambient, local-first AI cowork partner and workspace orchestrator"
 after_help = "Mooshik runs alongside you as a peer: it holds your workspace's memory, researches the web, and delegates code changes to coding agents.\nDocs: docs/SPEC.md · Build plan: dev-diary/PLAN.md"
 
 [config]
-init_help = "Create the Mooshik home directory and its private files"
+init_help = "Create the Mooshik home directory, its private files, and the memory store schema"
 show_help = "Print the resolved configuration"
 read_failed = "Could not read the Mooshik configuration. Check the file and its permissions."
 home_unavailable = "Could not determine your home directory. Set MOOSHIK_HOME and try again."
 invalid_toml = "The Mooshik configuration is not valid TOML. Fix it and try again."
 invalid_value = "The Mooshik configuration contains an unsupported value. Use keyring or passphrase."
+invalid_store_kind = "The store kind is not supported. Use postgres, or memory for tests."
+invalid_embedder = "The embedder kind is not supported. Use gemini, or fixture for tests."
+invalid_number = "A numeric configuration value could not be parsed. Check embed dim and flush interval."
+zero_flush = "The memory flush interval must be greater than zero."
+dsn_conflict = "MOOSHIK_POSTGRES_DSN and LAMBO_POSTGRES_DSN (or DATABASE_URL) name different databases. Unset one of them or make them agree."
 show_failed = "Could not load the Mooshik configuration. Fix the file and try again."
 
 [home]
@@ -52,3 +57,10 @@ unsafe_path = "The encrypted vault path contains a symbolic link or unsafe compo
 lock_failed = "The encrypted vault could not be locked safely. Check its permissions and try again."
 missing_value = "Secret values must be non-empty. Provide MOOSHIK_SECRET_VALUE or stdin."
 input_too_large = "That secret input or encrypted vault is larger than the supported limit. Reduce it and try again."
+
+[memory]
+serve_help = "Serve Lambo memory over MCP and publish a session endpoint"
+serve_after_help = "Serves Lambo's MCP tool surface on stdio by default and publishes a local session endpoint so a losing `lambo serve` can proxy into this process. Postgres needs MOOSHIK_POSTGRES_DSN (or LAMBO_POSTGRES_DSN / DATABASE_URL). Gemini credentials follow Lambo's ADC chain."
+missing_dsn = "No Postgres DSN is configured. Set MOOSHIK_POSTGRES_DSN and try again."
+backend_failed = "Could not use the workspace memory. Check the store, embedder, and credentials."
+runtime_failed = "Could not start the async runtime for workspace memory."

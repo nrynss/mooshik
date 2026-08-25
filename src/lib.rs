@@ -26,6 +26,7 @@
 pub mod cli;
 pub mod config;
 pub mod home;
+pub mod memory;
 mod secure_path;
 pub mod text;
 pub mod vault;
