@@ -17,6 +17,11 @@ toml = "0.9"
 fs2 = "0.4"
 libc = "0.2"
 zeroize = { version = "1", features = ["serde"] }
+# Pin `rev` of lambo-for-mooshik, never `branch`: GitHub's default is main,
+# which does not carry the hosted adapters. Bump the SHA after a Lambo fix.
+# default-features = false so embed-bge (llama.cpp) does not come along.
+# embed-fixture is the test double; the product path is Vertex + Cloud SQL.
+lambo = { git = "https://github.com/nrynss/lambo", rev = "94cbf52bb5c0bbe6d6d37630ce5794f746a3be67", default-features = false, features = ["store-postgres", "embed-gemini", "embed-fixture"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", default-features = false, features = ["linux-native-sync-persistent", "crypto-rust"] }
