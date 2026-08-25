@@ -8,7 +8,7 @@
 use std::{
     ffi::{OsStr, OsString},
     fs::File,
-    io,
+    io::{self, Read, Write},
     path::{Component, Path},
 };
 
@@ -265,6 +265,30 @@ where
     F: FnOnce(&OsStr) -> io::Result<()>,
     G: FnOnce(&OsStr) -> io::Result<()>,
 {
+    create_or_open_directory_at_with_preserve_hook(
+        parent,
+        name,
+        mode,
+        after_mkdir,
+        before_install,
+        |_| Ok(()),
+    )
+}
+
+#[cfg(unix)]
+fn create_or_open_directory_at_with_preserve_hook<F, G, H>(
+    parent: libc::c_int,
+    name: &OsStr,
+    mode: u32,
+    after_mkdir: F,
+    before_install: G,
+    on_preserve: H,
+) -> io::Result<(File, bool)>
+where
+    F: FnOnce(&OsStr) -> io::Result<()>,
+    G: FnOnce(&OsStr) -> io::Result<()>,
+    H: FnOnce(&OsStr) -> io::Result<()>,
+{
     match open_directory_at(parent, name) {
         Ok(directory) => return Ok((directory, false)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -273,46 +297,52 @@ where
     creation_parent_is_private(parent)?;
     let temporary = temporary_directory_name()?;
     mkdir_at(parent, &temporary, mode)?;
+    let hook = std::cell::Cell::new(Some(on_preserve));
+    let preserve = |leaf: &OsStr, identity: Option<(libc::dev_t, libc::ino_t)>| {
+        preserve_staging_directory(parent, leaf, identity, |leaf| match hook.take() {
+            Some(hook) => hook(leaf),
+            None => Ok(()),
+        });
+    };
     let identity = match directory_entry_identity(parent, &temporary) {
         Ok(identity) => identity,
         Err(error) => {
-            preserve_staging_directory(parent, &temporary, None);
+            preserve(&temporary, None);
             return Err(error);
         }
     };
     if let Err(error) = after_mkdir(&temporary) {
-        preserve_staging_directory(parent, &temporary, Some(identity));
+        preserve(&temporary, Some(identity));
         return Err(error);
     }
     let directory = match open_directory_at(parent, &temporary) {
         Ok(directory) => directory,
         Err(error) => {
-            preserve_staging_directory(parent, &temporary, Some(identity));
+            preserve(&temporary, Some(identity));
             return Err(error);
         }
     };
     match descriptor_matches_identity(&directory, identity) {
         Ok(true) => {}
         Ok(false) => {
-            // The pathname may now belong to an attacker. Cleanup below is
-            // descriptor-checked and therefore leaves a changed pathname alone.
-            preserve_staging_directory(parent, &temporary, Some(identity));
+            // The pathname may now belong to someone else. Do not unlink it.
+            preserve(&temporary, Some(identity));
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "staging directory changed during creation",
             ));
         }
         Err(error) => {
-            preserve_staging_directory(parent, &temporary, Some(identity));
+            preserve(&temporary, Some(identity));
             return Err(error);
         }
     }
     if let Err(error) = chmod_fd(&directory, mode) {
-        preserve_staging_directory(parent, &temporary, Some(identity));
+        preserve(&temporary, Some(identity));
         return Err(error);
     }
     if let Err(error) = before_install(&temporary) {
-        preserve_staging_directory(parent, &temporary, Some(identity));
+        preserve(&temporary, Some(identity));
         return Err(error);
     }
     match install_directory_noreplace(parent, &temporary, name) {
@@ -338,7 +368,7 @@ where
             }
         }
         Err(error) => {
-            preserve_staging_directory(parent, &temporary, Some(identity));
+            preserve(&temporary, Some(identity));
             Err(error)
         }
     }
@@ -714,20 +744,32 @@ fn unlink_at_fd_with_flags(
     }
 }
 
-/// Preserve a failed staging directory instead of removing it by pathname.
+/// Leave a failed staging pathname alone.
 ///
-/// There is no portable descriptor-bound directory removal primitive. Even an
-/// inode comparison immediately before `unlinkat` leaves a check/use window in
-/// which a same-uid process could substitute an unrelated empty directory. A
-/// failed creation is therefore fail-closed: its private, random-named staging
-/// directory remains for later operator cleanup rather than risking deletion
-/// of a replacement pathname.
+/// There is no portable descriptor-bound rmdir. An identity check followed by
+/// `unlinkat` is a same-UID race: the checked directory can be renamed away
+/// and an empty replacement installed at `leaf` before the unlink (P3-R8-1).
+/// Failed creations therefore fail closed and leave the random staging name
+/// for later operator cleanup.
 #[cfg(unix)]
-fn preserve_staging_directory(
-    _parent: libc::c_int,
-    _leaf: &OsStr,
-    _identity: Option<(libc::dev_t, libc::ino_t)>,
-) {
+fn preserve_staging_directory<H>(
+    parent: libc::c_int,
+    leaf: &OsStr,
+    identity: Option<(libc::dev_t, libc::ino_t)>,
+    after_identity: H,
+) where
+    H: FnOnce(&OsStr) -> io::Result<()>,
+{
+    if let Some(identity) = identity {
+        match open_directory_at(parent, leaf) {
+            Ok(directory) => match descriptor_matches_identity(&directory, identity) {
+                Ok(true) => {}
+                Ok(false) | Err(_) => return,
+            },
+            Err(_) => return,
+        }
+    }
+    let _ = after_identity(leaf);
 }
 
 #[cfg(not(unix))]
@@ -747,182 +789,4 @@ pub(crate) fn unlink_at(_: &File, _: &OsStr) -> io::Result<()> {
 }
 
 #[cfg(all(test, unix))]
-mod tests {
-    use super::*;
-    use std::fs;
-    use std::os::fd::AsRawFd;
-    use std::os::unix::fs::OpenOptionsExt;
-    use std::path::PathBuf;
-
-    fn test_root() -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "mooshik-secure-path-{}-{}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ))
-    }
-
-    #[test]
-    fn creation_replacement_between_stage_mkdir_and_open_fails_closed() {
-        let parent_path = test_root();
-        let root = parent_path.join("created-home");
-        let _ = fs::remove_dir_all(&parent_path);
-        fs::create_dir(&parent_path).unwrap();
-        let mut options = fs::OpenOptions::new();
-        options.read(true);
-        options.custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW);
-        let parent = options.open(&parent_path).unwrap();
-        let name = root.file_name().unwrap();
-        let result = create_or_open_directory_at_with_hooks(
-            parent.as_raw_fd(),
-            name,
-            0o700,
-            |_| {
-                // This is the adversarial scheduling point: an ordinary
-                // replacement arrives before the staging directory is opened
-                // and installed. The no-replace install must reject it.
-                fs::create_dir(&root).map_err(io::Error::other)
-            },
-            |_| Ok(()),
-        );
-        assert!(matches!(
-            result,
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists
-        ));
-        assert!(root.is_dir());
-        assert!(fs::read_dir(&root).unwrap().next().is_none());
-        assert!(fs::read_dir(&parent_path)
-            .unwrap()
-            .filter_map(Result::ok)
-            .any(|entry| entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".mooshik-stage-")));
-        drop(parent);
-        let _ = fs::remove_dir_all(&parent_path);
-    }
-
-    #[test]
-    fn staging_replacement_after_open_before_install_fails_closed() {
-        let parent_path = test_root();
-        let root = parent_path.join("created-home");
-        let moved = parent_path.join("moved-stage");
-        let _ = fs::remove_dir_all(&parent_path);
-        fs::create_dir(&parent_path).unwrap();
-        let mut options = fs::OpenOptions::new();
-        options.read(true);
-        options.custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW);
-        let parent = options.open(&parent_path).unwrap();
-        let name = root.file_name().unwrap();
-        let result = create_or_open_directory_at_with_hooks(
-            parent.as_raw_fd(),
-            name,
-            0o700,
-            |_| Ok(()),
-            |temporary| {
-                // This is exactly the vulnerable window: the checked/opened
-                // source is moved away and an ordinary replacement gets the
-                // source pathname before renameat2.
-                let temporary_path = parent_path.join(temporary);
-                fs::rename(&temporary_path, &moved).map_err(io::Error::other)?;
-                fs::create_dir(&temporary_path).map_err(io::Error::other)
-            },
-        );
-        assert!(matches!(
-            result,
-            Err(error) if error.kind() == io::ErrorKind::PermissionDenied
-        ));
-        assert!(root.is_dir());
-        assert!(moved.is_dir());
-        assert!(fs::read_dir(&root).unwrap().next().is_none());
-        assert!(fs::read_dir(&moved).unwrap().next().is_none());
-        drop(parent);
-        let _ = fs::remove_dir_all(&parent_path);
-    }
-
-    #[test]
-    fn staging_directory_is_preserved_after_injected_failure() {
-        let parent_path = test_root();
-        let root = parent_path.join("created-home");
-        let _ = fs::remove_dir_all(&parent_path);
-        fs::create_dir(&parent_path).unwrap();
-        let mut options = fs::OpenOptions::new();
-        options.read(true);
-        options.custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW);
-        let parent = options.open(&parent_path).unwrap();
-        let name = root.file_name().unwrap();
-        let result = create_or_open_directory_at_with_hooks(
-            parent.as_raw_fd(),
-            name,
-            0o700,
-            |_| Err(io::Error::other("injected staging failure")),
-            |_| Ok(()),
-        );
-        assert!(result.is_err());
-        assert!(!root.exists());
-        assert!(fs::read_dir(&parent_path)
-            .unwrap()
-            .filter_map(Result::ok)
-            .any(|entry| entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".mooshik-stage-")));
-        drop(parent);
-        let _ = fs::remove_dir_all(&parent_path);
-    }
-
-    #[test]
-    fn staging_directory_replacement_between_snapshot_and_open_fails_closed() {
-        let parent_path = test_root();
-        let root = parent_path.join("created-home");
-        let moved = parent_path.join("moved-stage");
-        let _ = fs::remove_dir_all(&parent_path);
-        fs::create_dir(&parent_path).unwrap();
-        let mut options = fs::OpenOptions::new();
-        options.read(true);
-        options.custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW);
-        let parent = options.open(&parent_path).unwrap();
-        let name = root.file_name().unwrap();
-        let result = create_or_open_directory_at_with_hooks(
-            parent.as_raw_fd(),
-            name,
-            0o700,
-            |temporary| {
-                let temporary_path = parent_path.join(temporary);
-                fs::rename(&temporary_path, &moved).map_err(io::Error::other)?;
-                fs::create_dir(&temporary_path).map_err(io::Error::other)
-            },
-            |_| Ok(()),
-        );
-        assert!(matches!(
-            result,
-            Err(error) if error.kind() == io::ErrorKind::PermissionDenied
-        ));
-        assert!(!root.exists());
-        assert!(moved.is_dir());
-        drop(parent);
-        let _ = fs::remove_dir_all(&parent_path);
-    }
-
-    #[test]
-    fn creation_protocol_reports_success_only_for_our_mkdir() {
-        let parent_path = test_root();
-        let root = parent_path.join("existing-home");
-        let _ = fs::remove_dir_all(&parent_path);
-        fs::create_dir(&parent_path).unwrap();
-        fs::create_dir(&root).unwrap();
-        let mut options = fs::OpenOptions::new();
-        options.read(true);
-        options.custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW);
-        let parent = options.open(&parent_path).unwrap();
-        let name = root.file_name().unwrap();
-        let (directory, created) =
-            create_or_open_directory_at(parent.as_raw_fd(), name, 0o700).unwrap();
-        assert!(!created);
-        drop(directory);
-        drop(parent);
-        let _ = fs::remove_dir_all(&parent_path);
-    }
-}
-
-use std::io::{Read, Write};
+mod tests;

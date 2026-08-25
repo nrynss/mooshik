@@ -15,13 +15,17 @@ The day plan reads as if Mooshik is day 5 — one day, after Lambo is finished. 
 artefact of writing Lambo's tasks first, and taken literally it puts every Mooshik task on the
 critical path behind every Lambo task.
 
-**Mooshik does not need finished Lambo adapters to be built.** Lambo today already ships an
-in-process `Memory`, a SQLite store, and a deterministic `FixtureEmbedder` behind
-`embed-fixture`. M0 through M6 can be built and tested against that, and the Gemini embedder and
-Postgres store swap in underneath as configuration once they land. Only the bootstrap ingest and
-the measurement genuinely need them.
+**Mooshik does not need finished Lambo adapters to be built.** That was true when this
+paragraph was written: Lambo already shipped in-process `Memory`, SQLite, and
+`FixtureEmbedder`. M0–M2 could have started against that. They did not wait.
 
-So: start M0–M2 in parallel with Lambo's A and B, not after.
+**What actually happened:** Lambo A (Gemini) and B (Postgres) landed on
+`lambo-for-mooshik`. Mooshik consumed them by git `rev` (never `branch`) at
+`f90a662`, with `default-features = false` and product features
+`store-postgres` + `embed-gemini`. `store-memory` and `embed-fixture` are test
+doubles only. Switching Gemini later is a re-embed, so Gemini is the stamped
+contract from M2. Only the bootstrap ingest and the measurement still need a
+live Vertex + Cloud SQL operator run.
 
 ---
 
@@ -38,6 +42,25 @@ M2 ─→ M8 ─→ M9 ───────────────────
 The CLI itself is not deferred to M7 — it grows with each milestone. M7 is the sweep.
 M11 is last on purpose and is allowed to fail; see M11.
 ```
+
+### Status (2026-08-25, `main` @ `ee483d3`)
+
+| ID | Status |
+| --- | --- |
+| **M0** | Built 2026-08-21, `fca2f13`. |
+| **M1** | Built 2026-08-24, `79fcc2e`. P3-R8-1 (staging cleanup race) closed: fail-closed preserve, pin in `secure_path` tests. |
+| **M2 + M2b** | Built 2026-08-25, `5ed3e68` / `33a5bcb`. Review round 2 **APPROVE**, zero residue (`m2-round2.md`). CI green. |
+| **M3** | Not started. |
+| **M4** | Not started. |
+| **M5** | Not started. |
+| **M6** | Vault file + `secret` CLI built 2026-08-24, `79fcc2e` (with M1). Injection into tools and egress redaction are **not** started — they need M4. |
+| **M7** | Not started. CLI so far: `init`, `config show`, `secret set/get/list`, `serve`. |
+| **M8** | Not started. Unblocked: M2b published the endpoint; Lambo A and B have landed. |
+| **M9** | Not started. Prefer this over M10 if the clock forces a cut. |
+| **M10** | Not started. Cut-able. |
+| **M11** | Not started. Allowed to fail. |
+
+Lambo pin: `nrynss/lambo` git `rev = f90a662` (`lambo-for-mooshik`). E1/E2 (path dep, then rev pin) were done as the rev pin directly; bump the SHA after a Lambo fix.
 
 ---
 
@@ -68,7 +91,8 @@ Implementation notes worth keeping:
   string literals, so runtime-loaded text forces the choice. Subcommands
   register there as they land.
 * CI actions are pinned to **commit SHAs**, never tags (checkout v7.0.1,
-  dtolnay/rust-toolchain master). Bumping one is a deliberate act.
+  dtolnay/rust-toolchain master). Bumping one is a deliberate act. Linux CI
+  installs `libdbus-1-dev` for the vault keyring (`5945671`).
 * Per the warning above, no milestone directories (`companion/`, `vault/`, …)
   were scaffolded — the module table in `src/lib.rs` documents the intended
   layout instead, and each directory arrives with its milestone.
@@ -80,8 +104,7 @@ Implementation notes worth keeping:
 ```
 ~/.mooshik/
 ├── config.toml
-├── mooshik.db
-├── vault
+├── vault          # regular file, 0600
 └── logs/
 ```
 
@@ -89,7 +112,20 @@ Load, merge and validate `config.toml`; env overlay following Lambo's convention
 wins over file, empty leaves the base intact). Create the directory on first run with the right
 modes — `vault` is 0600 and that is not a detail to add later.
 
+`mooshik.db` was in the original layout sketch as the local SQLite file. The product store
+is Postgres; M2 review P3-M2-1 closed by **not** planting an empty dummy file. `HomeLayout.database`
+is still a path, unused.
+
 **Depends on:** M0.
+
+**Status: built 2026-08-24, commit `79fcc2e` (with M6).** `mooshik init` / `config show`; env
+overlay; private first-run layout. Flush interval was supposed to be picked here and landed
+with M2 as 1000 ms (Lambo's default), exposed as `[daemon] flush_interval_ms`.
+
+**P3-R8-1 closed:** failed staging directories are left in place. There is no
+portable descriptor-bound rmdir, so pathname `unlinkat` after an identity check
+is a same-UID race. Pin:
+`staging_cleanup_does_not_remove_a_replacement_after_identity_check`.
 
 ---
 
@@ -98,9 +134,11 @@ modes — `vault` is 0600 and that is not a detail to add later.
 Wire `lambo::Memory` through `MemoryBuilder`: session, agent, store, embedder, embedding contract,
 flush interval, scoring weights.
 
-Build against **SQLite plus `FixtureEmbedder`** first. That combination needs no GPU, no network
-and no cloud account, so M3–M6 can be developed and tested offline. Gemini and Postgres become a
-config change, not a rewrite — which is the whole point of the `GraphStore` seam.
+**Overridden 2026-08-25:** do not start on SQLite + `FixtureEmbedder`. Product backends are
+Postgres + Vertex Gemini from M2, dim 1536, model `gemini-embedding-001`, promotion policy
+**Solo**. Fixture + in-RAM store remain compiled as test doubles (`embed-fixture`,
+`store-memory`). Default `cargo test` does not call Vertex or Cloud SQL. Live Cloud SQL +
+Vertex stay operator-verified.
 
 **M2b — publish a session endpoint.** Mooshik is a lease holder that is not a `serve`, so by
 default it is unreachable and Lambo's J2 proxy cannot forward to it. Derive the address with
@@ -136,6 +174,16 @@ it means F1 should be written so the scan can be swapped without touching its ca
 
 **Depends on:** M1.
 
+**Status: built 2026-08-25.** Implement `5ed3e68`, remediate `33a5bcb`, review record `ee483d3`.
+Adversarial round 2 **APPROVE**, zero residue (`m2-round2.md`). 66 tests. CI green.
+
+`mooshik init` provisions store schema only (DSN required, no Gemini/ADC). `mooshik serve` is
+the J2 holder: Lambo's MCP surface, stdio, endpoint published after the lease via
+`lambo::mcp::serve`. In-process `memory::open` does **not** advertise an endpoint it did not
+bind. Dual-DSN authorities are compared by Lambo `store_dsn_identity` (password overlay and
+omitted `:5432` are one database). Partial `[store]` / `[embedder]` tables keep product
+defaults, not Lambo's Memory/1024.
+
 ---
 
 ## M3 — Companion adapter
@@ -148,6 +196,8 @@ partial-stream cancellation, a tool call arriving mid-stream, context-window pre
 that returns malformed tool JSON.
 
 **Depends on:** M0.
+
+**Status: not started.** Next on the critical path.
 
 ---
 
@@ -185,6 +235,8 @@ survived review. In `~/work/lambo/src/mcp/`:
 
 **Depends on:** M2, M3.
 
+**Status: not started.** Unblocked once M3 lands; M2 is done.
+
 ---
 
 ## M5 — Permissions
@@ -203,6 +255,8 @@ ingests documents written by other people, this is a real injection path, not a 
 
 **Depends on:** M4.
 
+**Status: not started.** Decision 6 (default grant set) still open; only bites at recording time.
+
 ---
 
 ## M6 — The vault
@@ -216,12 +270,18 @@ script that echoes `$TOKEN`. Every tool result is scanned against vault values b
 the model or the graph. Everything else about the vault prevents secrets from entering; this is
 the one place a secret has already left and must be caught.
 
-**Open decision:** keyring or passphrase. OS keyring is friendlier and machine-bound; an Argon2id
-passphrase is portable and survives a misbehaving keyring. This decides whether an ambient,
-always-on Mooshik can start unattended — which, for a companion whose whole premise is being
-always on, is a product decision rather than a security one.
+**Decided: OS keyring default, Argon2id passphrase fallback.** Linux
+`linux-native-sync-persistent` + `crypto-rust`; macOS `apple-native`. Unattended start is
+possible. CI installs `libdbus-1-dev` because that Linux feature links libdbus.
 
 **Depends on:** M1.
+
+**Status: vault file + CLI built 2026-08-24, commit `79fcc2e` (with M1).** `secret set` /
+`get` / `list`; v2 header is AAD; keyring default and passphrase fallback.
+
+**Not started (needs M4, later M10):** inject values into tools at use time; scan every tool
+result against vault values before it reaches the model or the graph. That redaction is still
+what earns the design.
 
 ---
 
@@ -258,6 +318,9 @@ This decision does more work than it looks like it does — see below.
 reader who has never seen the project can get from `mooshik --help` to a recall without asking
 anyone.
 
+**Status: not started.** Present CLI, grown with the landed milestones: `init`, `config show`,
+`secret set/get/list`, `serve`. `chat`, `recall`, `stats`, `permissions` arrive with M3–M5.
+
 ---
 
 ## What a persistent chat loop forces
@@ -282,7 +345,9 @@ holding `lambo::Memory` in process is exactly that writer. Left alone it wins th
 no address, and the bootstrap's `serve` loses to a holder it cannot reach — refused, same as
 before, except now the failure looks like a bug in J2 rather than a known constraint.
 
-So M2 gains a task: **Mooshik binds a session endpoint and publishes it like a holder does.**
+So M2 gained a task: **Mooshik binds a session endpoint and publishes it like a holder does.**
+**Landed:** `mooshik serve` calls `lambo::mcp::serve`, which derives `SessionEndpoint::for_store`
+and publishes at acquire. `memory::open` (in-process, not a holder) does not publish.
 
 * Derive the path with `SessionEndpoint::resolve` rather than inventing one. It is keyed on the
   session id **and the store's canonicalized identity**, and that discriminator is load-bearing —
@@ -307,7 +372,8 @@ lived in the crashed process's in-RAM log and died with it."* A long-running cha
 accumulates unflushed mutations between flush intervals, so a crash silently loses the most recent
 memory — the part the user just created and is most likely to notice missing.
 
-The flush interval is a product setting, not a performance knob. Pick it deliberately in M1.
+The flush interval is a product setting, not a performance knob. Picked with M2: default
+1000 ms (`[daemon] flush_interval_ms`); zero fails closed.
 
 **J3 adds the other half.** Writes are acknowledged before the embedder runs — a warm
 `lambo_derive` is 27ms of which 22–25ms is embedding — and the ack carries a **receipt id**.
@@ -347,7 +413,9 @@ secret scanner over every candidate document with a hit dropping the document ra
 redacting it, and **no `git diff` content** — commit messages and metadata only, because diffs are
 where secrets hide.
 
-**Depends on:** M2, and Lambo's A and B.
+**Depends on:** M2, and Lambo's A and B. **Those dependencies have landed.** M8 itself has not.
+
+**Status: not started.** Open decision 5 (repo location) still blocks the first commit.
 
 ---
 
@@ -374,6 +442,9 @@ G's finding that a flat `RECENT_SCORE` floor can erase a correct cosine ranking 
 quality is G's to calibrate, not something to tune from inside Mooshik.
 
 **Depends on:** M8.
+
+**Status: not started.** Sampling harness should exist before the corpus; do not squeeze this
+for M10.
 
 ---
 
@@ -420,6 +491,8 @@ day even with rmcp, and it competes with M8 and M9. If the clock forces a choice
 better thing to cut than M9 — M9 is the finding, this is plumbing that will still be here in
 September.
 
+**Status: not started.**
+
 ---
 
 ## M11 — The TUI
@@ -442,6 +515,8 @@ can fail.
 **Depends on:** everything shipped. **Done when:** the demo runs in the TUI — or the demo runs in
 the CLI and this is cut, which is a decision rather than a failure.
 
+**Status: not started.** Allowed to fail.
+
 ---
 
 ## Decisions needed, in the order they bite
@@ -450,15 +525,16 @@ the CLI and this is cut, which is a decision rather than a failure.
 | --- | --- | --- | --- |
 | ~~1~~ | ~~One session or many~~ | — | **Decided: one unified session.** See M2. |
 | ~~2~~ | ~~`run_scratch_script` in scope~~ | — | **Decided: in scope.** See M4. |
-| 3 | Vault key: keyring or passphrase | M6 | Decides whether Mooshik can start unattended |
+| ~~3~~ | ~~Vault key: keyring or passphrase~~ | — | **Decided: keyring default, passphrase fallback.** Unattended start is possible. See M6. |
 | ~~4~~ | ~~Chat loop or one-shot CLI~~ | — | **Decided: a chat with context.** See M7. |
 | 5 | Ingester repo location | M8 | Cheap now, awkward once CI and docs exist |
 | 6 | Default grant set for the demo | M5 | Only bites at recording time, but bites hard |
 | ~~7~~ | ~~Where the surface effort goes~~ | — | **Decided: CLI throughout, a repair sweep at M7, TUI last.** See M7 and M11. |
 | ~~8~~ | ~~Companion loop: framework or hand-rolled~~ | — | **Decided: hand-rolled.** See below. |
 
-Five settled. The two remaining are genuinely late-binding: the vault key source when M6 starts,
-the ingester's home when M8 does. Decision 6 only bites at recording time.
+Six settled. Two remain: the ingester's home when M8 starts, and the demo grant set at recording
+time. Product backends (Postgres + Gemini, not SQLite + fixture) were decided when M2 started
+and are not a numbered row here.
 
 **On decision 8**, since it will be proposed again: the companion targets exactly one wire format,
 OpenAI-compatible `/v1`, which every candidate endpoint already speaks. A framework's value is an
