@@ -149,7 +149,10 @@ fn load_chat_config(layout: &HomeLayout) -> anyhow::Result<Config> {
 
 fn chat(layout: &HomeLayout) -> anyhow::Result<()> {
     let config = load_chat_config(layout)?;
-    crate::companion::run_chat(&config).map_err(anyhow::Error::new)
+    // Open the tool surface (lambo tools + scratch runner) and inject it; a
+    // missing backend degrades to a No-op executor so chat always runs.
+    let executor = crate::tools::executor_for_chat(&config);
+    crate::companion::run_chat(&config, executor).map_err(anyhow::Error::new)
 }
 
 fn block_on<F>(fut: F) -> anyhow::Result<()>
