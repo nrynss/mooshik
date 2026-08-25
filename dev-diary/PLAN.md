@@ -53,7 +53,7 @@ M11 is last on purpose and is allowed to fail; see M11.
 | **M3** | Built 2026-08-25, `9652f39` / `8e168f6`. Review round 2 **APPROVE**, zero residue (`m3-round2.md`). |
 | **M4** | Built 2026-08-25, `73e13e1` → `5e3d113`; live-verified 2026-08-26 (`17fbe71`, `35ae812`: Gemini 3.x thought-signature echo, memory-runtime ownership). Review round 2 **APPROVE**, zero residue (`m4-round2.md`). |
 | **M5** | Built 2026-08-26, `75cda1a` → `88abf81`. Review round 2 **APPROVE**, zero residue (`m5-round2.md`). Default grants: Decision 6 settled — lambo memory tools allowed, scratch prompt, rest deny. |
-| **M6** | Vault file + `secret` CLI built 2026-08-24, `79fcc2e` (with M1). Injection into tools and egress redaction are **not** started — they need M4. |
+| **M6** | Built 2026-08-26, `071c10d` → `4613aea`. Review round 2 **APPROVE**, zero residue (`m6-round2.md`). Scratch env injection + egress redaction at the tool boundary. |
 | **M7** | Not started. CLI so far: `init`, `config show`, `secret set/get/list`, `serve`, `chat`. |
 | **M8** | Not started. Unblocked: M2b published the endpoint; Lambo A and B have landed. |
 | **M9** | Not started. Prefer this over M10 if the clock forces a cut. |
@@ -308,9 +308,19 @@ possible. CI installs `libdbus-1-dev` because that Linux feature links libdbus.
 **Status: vault file + CLI built 2026-08-24, commit `79fcc2e` (with M1).** `secret set` /
 `get` / `list`; v2 header is AAD; keyring default and passphrase fallback.
 
-**Not started (needs M4, later M10):** inject values into tools at use time; scan every tool
-result against vault values before it reaches the model or the graph. That redaction is still
-what earns the design.
+**Built 2026-08-26.** Implement `071c10d` → `013c3cc`, remediate `4613aea`, review records
+`m6-round1.md` / `m6-round2.md`. Adversarial round 2 **APPROVE**, zero residue.
+
+Injection: `[tools.scratch.env]` maps env-var names to secret names (fail-closed parse); values
+resolve through `vault.get` per run, after confirm and before spawn, and exist as plaintext only
+inside the `Command::env` call — a missing secret aborts the script before it starts.
+Egress: `RedactingTools` sits in the chat composition under the M5 gate and scans every tool
+result against all vault values — literal **and** JSON-escaped forms (round 1 found escaped
+secrets crossing unredacted) — post-execute, pre-history, so neither the transcript nor the graph
+ever holds a value. An unopenable vault never blocks chat; a non-empty env table without a vault
+fails the script start closed. Known deliberate limits documented at the boundary: output-cap
+truncation can split a token, and args are deliberately unscanned (scripts receive `$TOKEN`
+references, never values).
 
 ---
 
