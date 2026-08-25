@@ -24,6 +24,11 @@ jobs:
       - name: Format
         run: cargo fmt --check
 
+      # linux-native-sync-persistent pulls dbus-secret-service, which links
+      # against libdbus. ubuntu-latest does not ship the headers.
+      - name: Install dbus headers
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
       - name: Build
         run: cargo build --locked
 

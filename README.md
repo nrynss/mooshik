@@ -16,6 +16,11 @@ Early — Phase 1 under construction. Milestones M0–M11 in `dev-diary/PLAN.md`
 ## Build
 
 Requires Rust 1.97.1 (pinned in `rust-toolchain.toml`; rustup installs it).
+On Linux, the OS keyring backend needs D-Bus headers:
+
+```sh
+sudo apt install libdbus-1-dev pkg-config   # Debian/Ubuntu
+```
 
 ```sh
 cargo build          # debug binary at target/debug/mooshik
