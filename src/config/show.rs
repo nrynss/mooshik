@@ -11,6 +11,8 @@ struct ShowConfig<'a> {
     embedder: ShowEmbedder<'a>,
     daemon: &'a super::DaemonConfig,
     companion: ShowCompanion<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    permissions: Option<&'a super::PermissionsConfig>,
 }
 
 #[derive(Serialize)]
@@ -109,6 +111,7 @@ impl Config {
             embedder,
             daemon: &self.daemon,
             companion,
+            permissions: (!self.permissions.entries.is_empty()).then_some(&self.permissions),
         })
         .expect("resolved config must serialize")
     }
@@ -117,6 +120,24 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_show_includes_configured_permission_scopes() {
+        let config =
+            Config::from_toml_and_env("[permissions]\nmemory = ['recall']\nweb = 'deny'\n", [])
+                .unwrap();
+        let shown = config.redacted_toml();
+        assert!(shown.contains("[permissions]"), "{shown}");
+        assert!(shown.contains("memory"), "{shown}");
+        assert!(shown.contains("recall"), "{shown}");
+        assert!(shown.contains("web"), "{shown}");
+    }
+
+    #[test]
+    fn config_show_omits_an_unconfigured_permissions_table() {
+        let shown = Config::default().redacted_toml();
+        assert!(!shown.contains("[permissions]"), "{shown}");
+    }
 
     #[test]
     fn config_show_redacts_a_configured_dsn() {

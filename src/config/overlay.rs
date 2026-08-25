@@ -29,6 +29,9 @@ impl Config {
         } else {
             toml::from_str(source).map_err(|_| ConfigError::InvalidToml)?
         };
+        // The [permissions] table fails closed: anything uninterpretable fails
+        // the load instead of silently widening what the companion may do.
+        config.permissions.validate()?;
         let values: HashMap<String, String> = environment.into_iter().collect();
         overlay_vault(&mut config, &values)?;
         overlay_session(&mut config, &values);

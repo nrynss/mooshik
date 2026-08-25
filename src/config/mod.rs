@@ -14,11 +14,15 @@ use crate::{secure_path, text};
 
 mod companion;
 mod overlay;
+mod permissions;
 mod show;
 
 pub use companion::{
     ApiKey, CompanionConfig, COMPANION_API_KEY_ENV, COMPANION_BASE_URL_ENV,
     COMPANION_CONTEXT_WINDOW_ENV, COMPANION_MODEL_ENV, COMPANION_TEMPERATURE_ENV,
+};
+pub use permissions::{
+    GrantDecision, GrantMode, GrantSource, Grants, PermissionsConfig, RawGrant, ScopedGrant,
 };
 
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
@@ -69,6 +73,14 @@ base_url = "http://127.0.0.1:8080/v1"
 model = "local-model"
 context_window = 32768
 temperature = 0.2
+
+[permissions]
+# Autonomy is granted, not configured (docs/SPEC.md). Families: memory, scratch.
+# A family takes "allow", "prompt", or "deny", or a list of granted tool names;
+# per-tool entries override the family. Everything not granted here is denied.
+# memory  = ["recall", "derive"]
+# scratch = "prompt"
+# web     = "deny"
 "#;
 
 #[derive(Debug)]
@@ -83,6 +95,7 @@ pub enum ConfigError {
     ZeroFlush,
     ZeroContextWindow,
     DsnConflict,
+    InvalidPermissions,
 }
 
 impl std::fmt::Display for ConfigError {
@@ -98,6 +111,7 @@ impl std::fmt::Display for ConfigError {
             Self::ZeroFlush => "config.zero_flush",
             Self::ZeroContextWindow => "config.zero_context_window",
             Self::DsnConflict => "config.dsn_conflict",
+            Self::InvalidPermissions => "config.invalid_permissions",
         };
         f.write_str(text::get(key))
     }
@@ -261,6 +275,8 @@ pub struct Config {
     pub daemon: DaemonConfig,
     #[serde(default)]
     pub companion: CompanionConfig,
+    #[serde(default)]
+    pub permissions: PermissionsConfig,
 }
 
 impl Config {

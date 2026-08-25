@@ -26,6 +26,7 @@ invalid_number = "A numeric configuration value could not be parsed. Check embed
 zero_flush = "The memory flush interval must be greater than zero."
 zero_context_window = "The companion context window must be greater than zero."
 dsn_conflict = "MOOSHIK_POSTGRES_DSN and LAMBO_POSTGRES_DSN (or DATABASE_URL) name different databases. Unset one of them or make them agree."
+invalid_permissions = "The [permissions] configuration contains an unsupported value. Use \"allow\", \"prompt\", \"deny\", or a list of granted tool names."
 show_failed = "Could not load the Mooshik configuration. Fix the file and try again."
 
 [home]
@@ -68,7 +69,7 @@ runtime_failed = "Could not start the async runtime for workspace memory."
 
 [companion]
 chat_help = "Chat with the companion model"
-chat_after_help = "Requires an initialized home (`mooshik init`). Talks to the OpenAI-compatible endpoint in [companion]. Exposes the lambo tools and scratch runner when workspace memory is available; without a backend, chat runs with no tools. Empty lines are ignored. EOF exits. Ctrl-C cancels an in-flight reply; a second interrupt or EOF exits."
+chat_after_help = "Requires an initialized home (`mooshik init`). Talks to the OpenAI-compatible endpoint in [companion]. Exposes exactly the tools granted by [permissions] when workspace memory is available; without a backend, chat runs with no tools. Empty lines are ignored. EOF exits. Ctrl-C cancels an in-flight reply; a second interrupt or EOF exits."
 system_prompt = "You are Mooshik, a cowork partner. You do not remember earlier windows; the workspace graph does. Prefer tools when they are available. Be concise."
 unreachable = "Could not reach the companion model. Check companion.base_url and that the server is running."
 timeout = "The companion model did not respond in time. Check that the server is running and try again."
@@ -107,3 +108,14 @@ scratch_spawn_failed = "Could not start the script interpreter"
 scratch_sandbox_failed = "Could not create the sandbox working directory"
 scratch_write_failed = "Could not write the script into the sandbox"
 scratch_io_failed = "Could not read the script's output"
+[permissions]
+help = "Print the resolved tool permission grants"
+denied = "Not permitted: this tool was not granted by the [permissions] configuration."
+prompt = "Allow '{tool}' to run? [y/N] "
+resolved_header = "Tool permissions (resolved):"
+unmatched_header = "Granted scopes with no matching tool yet; they enforce as deny until one exists:"
+source_default = "default"
+source_config = "config"
+mode_allow = "allow"
+mode_prompt = "prompt"
+mode_deny = "deny"
