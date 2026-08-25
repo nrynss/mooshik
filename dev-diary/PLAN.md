@@ -43,18 +43,18 @@ The CLI itself is not deferred to M7 — it grows with each milestone. M7 is the
 M11 is last on purpose and is allowed to fail; see M11.
 ```
 
-### Status (2026-08-25, `main` @ `ee483d3`)
+### Status (2026-08-25)
 
 | ID | Status |
 | --- | --- |
 | **M0** | Built 2026-08-21, `fca2f13`. |
 | **M1** | Built 2026-08-24, `79fcc2e`. P3-R8-1 (staging cleanup race) closed: fail-closed preserve, pin in `secure_path` tests. |
-| **M2 + M2b** | Built 2026-08-25, `5ed3e68` / `33a5bcb`. Review round 2 **APPROVE**, zero residue (`m2-round2.md`). CI green. |
-| **M3** | Not started. |
+| **M2 + M2b** | Built 2026-08-25, `5ed3e68` / `33a5bcb`. Review round 2 **APPROVE**, zero residue (`m2-round2.md`). CI green. Live Cloud SQL + Vertex pin `bf362b3`. |
+| **M3** | Implemented in this worktree; review pending. |
 | **M4** | Not started. |
 | **M5** | Not started. |
 | **M6** | Vault file + `secret` CLI built 2026-08-24, `79fcc2e` (with M1). Injection into tools and egress redaction are **not** started — they need M4. |
-| **M7** | Not started. CLI so far: `init`, `config show`, `secret set/get/list`, `serve`. |
+| **M7** | Not started. CLI so far: `init`, `config show`, `secret set/get/list`, `serve`, `chat`. |
 | **M8** | Not started. Unblocked: M2b published the endpoint; Lambo A and B have landed. |
 | **M9** | Not started. Prefer this over M10 if the clock forces a cut. |
 | **M10** | Not started. Cut-able. |
@@ -198,7 +198,12 @@ that returns malformed tool JSON.
 
 **Depends on:** M0.
 
-**Status: not started.** Next on the critical path.
+**Status: implemented in this worktree; review pending.** Hand-rolled OpenAI-compatible
+`/v1` streaming client (reqwest 0.12, SSE parser, no provider SDK), `[companion]` config with
+product field defaults on partial tables, `mooshik chat` REPL, tool-call protocol with a
+`ToolExecutor` seam (production registers no tools), context packing that drops old turns and
+calls a `RecallInjector` seam (default no-op). Default `cargo test` uses an in-process HTTP/SSE
+mock and does not call a live model. Record: `dev-diary/adversarial-review/m3-implementation.md`.
 
 ---
 
@@ -320,7 +325,7 @@ reader who has never seen the project can get from `mooshik --help` to a recall 
 anyone.
 
 **Status: not started.** Present CLI, grown with the landed milestones: `init`, `config show`,
-`secret set/get/list`, `serve`. `chat`, `recall`, `stats`, `permissions` arrive with M3–M5.
+`secret set/get/list`, `serve`, `chat`. `recall`, `stats`, `permissions` arrive with M4–M5.
 
 ---
 

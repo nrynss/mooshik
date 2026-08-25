@@ -12,8 +12,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::{secure_path, text};
 
+mod companion;
 mod overlay;
 mod show;
+
+pub use companion::{
+    ApiKey, CompanionConfig, COMPANION_API_KEY_ENV, COMPANION_BASE_URL_ENV,
+    COMPANION_CONTEXT_WINDOW_ENV, COMPANION_MODEL_ENV, COMPANION_TEMPERATURE_ENV,
+};
 
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 
@@ -57,6 +63,12 @@ gemini_model = "gemini-embedding-001"
 
 [daemon]
 flush_interval_ms = 1000
+
+[companion]
+base_url = "http://127.0.0.1:8080/v1"
+model = "local-model"
+context_window = 32768
+temperature = 0.2
 "#;
 
 #[derive(Debug)]
@@ -69,6 +81,7 @@ pub enum ConfigError {
     InvalidEmbedder,
     InvalidNumber,
     ZeroFlush,
+    ZeroContextWindow,
     DsnConflict,
 }
 
@@ -83,6 +96,7 @@ impl std::fmt::Display for ConfigError {
             Self::InvalidEmbedder => "config.invalid_embedder",
             Self::InvalidNumber => "config.invalid_number",
             Self::ZeroFlush => "config.zero_flush",
+            Self::ZeroContextWindow => "config.zero_context_window",
             Self::DsnConflict => "config.dsn_conflict",
         };
         f.write_str(text::get(key))
@@ -245,6 +259,8 @@ pub struct Config {
     pub embedder: EmbedderSection,
     #[serde(default)]
     pub daemon: DaemonConfig,
+    #[serde(default)]
+    pub companion: CompanionConfig,
 }
 
 impl Config {
@@ -359,6 +375,13 @@ mod tests {
         assert_eq!(parsed, Config::default());
         assert!(Config::default_toml().contains("kind = \"postgres\""));
         assert!(!Config::default_toml().contains("dsn"));
+        assert!(Config::default_toml().contains("[companion]"));
+        assert!(!Config::default_toml().contains("api_key"));
+        assert_eq!(parsed.companion.base_url, "http://127.0.0.1:8080/v1");
+        assert_eq!(parsed.companion.model, "local-model");
+        assert_eq!(parsed.companion.context_window, 32768);
+        assert_eq!(parsed.companion.temperature, 0.2);
+        assert_eq!(parsed.companion.api_key, None);
     }
 
     #[cfg(unix)]

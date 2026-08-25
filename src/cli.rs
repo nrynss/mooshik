@@ -33,6 +33,11 @@ pub fn command() -> Command {
                 .after_help(text::get("memory.serve_after_help")),
         )
         .subcommand(
+            Command::new("chat")
+                .about(text::get("companion.chat_help"))
+                .after_help(text::get("companion.chat_after_help")),
+        )
+        .subcommand(
             Command::new("config")
                 .about(text::get("config.show_help"))
                 .subcommand_required(true)
@@ -76,6 +81,7 @@ fn dispatch(matches: &clap::ArgMatches) -> anyhow::Result<()> {
     match matches.subcommand() {
         Some(("init", _)) => initialize(&layout),
         Some(("serve", _)) => serve(&layout),
+        Some(("chat", _)) => chat(&layout),
         Some(("config", sub)) if sub.subcommand_name() == Some("show") => show_config(&layout),
         Some(("secret", sub)) => dispatch_secret(&layout, sub),
         _ => Ok(()),
@@ -134,6 +140,12 @@ fn serve(layout: &HomeLayout) -> anyhow::Result<()> {
     let root = layout.open_existing_root().map_err(anyhow::Error::new)?;
     let config = Config::load_at(&root).map_err(anyhow::Error::new)?;
     block_on(crate::memory::serve(&config))
+}
+
+fn chat(layout: &HomeLayout) -> anyhow::Result<()> {
+    let root = layout.open_existing_root().map_err(anyhow::Error::new)?;
+    let config = Config::load_at(&root).map_err(anyhow::Error::new)?;
+    crate::companion::run_chat(&config).map_err(anyhow::Error::new)
 }
 
 fn block_on<F>(fut: F) -> anyhow::Result<()>
@@ -224,6 +236,26 @@ mod tests {
             .to_string()
             .contains("cowork partner"));
         assert!(!cmd.get_after_help().unwrap().to_string().is_empty());
+    }
+
+    #[test]
+    fn chat_help_comes_from_text() {
+        let mut cmd = command();
+        let chat = cmd
+            .find_subcommand("chat")
+            .unwrap()
+            .get_about()
+            .unwrap()
+            .to_string();
+        assert_eq!(chat, text::get("companion.chat_help"));
+        let help = cmd
+            .find_subcommand_mut("chat")
+            .unwrap()
+            .render_help()
+            .to_string();
+        assert!(help.contains(text::get("companion.chat_help")));
+        assert!(help.contains("mooshik init"));
+        assert!(help.contains("[companion]"));
     }
 
     #[test]

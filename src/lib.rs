@@ -24,6 +24,7 @@
 //! `mod.rs` thin (re-exports, shared types).
 
 pub mod cli;
+pub mod companion;
 pub mod config;
 pub mod home;
 pub mod memory;

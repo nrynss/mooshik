@@ -3,9 +3,11 @@ use std::collections::HashMap;
 use lambo::{store::FALLBACK_DSN_ENV, EmbedderKind, StoreKind};
 
 use super::{
-    non_empty, Config, ConfigError, VaultProvider, AGENT_ENV, EMBEDDER_ENV, EMBED_DIM_ENV,
-    FLUSH_INTERVAL_ENV, GEMINI_CREDENTIALS_ENV, GEMINI_LOCATION_ENV, GEMINI_MODEL_ENV,
-    GEMINI_PROJECT_ENV, POSTGRES_DSN_ENV, PROVIDER_ENV, SESSION_ENV, STORE_KIND_ENV,
+    non_empty, ApiKey, Config, ConfigError, VaultProvider, AGENT_ENV, COMPANION_API_KEY_ENV,
+    COMPANION_BASE_URL_ENV, COMPANION_CONTEXT_WINDOW_ENV, COMPANION_MODEL_ENV,
+    COMPANION_TEMPERATURE_ENV, EMBEDDER_ENV, EMBED_DIM_ENV, FLUSH_INTERVAL_ENV,
+    GEMINI_CREDENTIALS_ENV, GEMINI_LOCATION_ENV, GEMINI_MODEL_ENV, GEMINI_PROJECT_ENV,
+    POSTGRES_DSN_ENV, PROVIDER_ENV, SESSION_ENV, STORE_KIND_ENV,
 };
 
 const LAMBO_STORE_ENV: &str = "LAMBO_STORE";
@@ -34,8 +36,12 @@ impl Config {
         overlay_embedder(&mut config, &values)?;
         overlay_dsn(&mut config, &values)?;
         overlay_flush(&mut config, &values)?;
+        overlay_companion(&mut config, &values)?;
         if config.daemon.flush_interval_ms == 0 {
             return Err(ConfigError::ZeroFlush);
+        }
+        if config.companion.context_window == 0 {
+            return Err(ConfigError::ZeroContextWindow);
         }
         Ok(config)
     }
@@ -173,6 +179,32 @@ fn overlay_flush(config: &mut Config, values: &HashMap<String, String>) -> Resul
     Ok(())
 }
 
+fn overlay_companion(
+    config: &mut Config,
+    values: &HashMap<String, String>,
+) -> Result<(), ConfigError> {
+    if let Some(value) = non_empty(values, COMPANION_BASE_URL_ENV) {
+        config.companion.base_url = value;
+    }
+    if let Some(value) = non_empty(values, COMPANION_MODEL_ENV) {
+        config.companion.model = value;
+    }
+    if let Some(value) = non_empty(values, COMPANION_API_KEY_ENV) {
+        config.companion.api_key = Some(ApiKey::new(value));
+    }
+    if let Some(value) = non_empty(values, COMPANION_CONTEXT_WINDOW_ENV) {
+        config.companion.context_window = parse_u32(&value)?;
+    }
+    if let Some(value) = non_empty(values, COMPANION_TEMPERATURE_ENV) {
+        let temperature = parse_f64(&value)?;
+        if !temperature.is_finite() {
+            return Err(ConfigError::InvalidNumber);
+        }
+        config.companion.temperature = temperature;
+    }
+    Ok(())
+}
+
 fn parse_store_kind(value: &str) -> Result<StoreKind, ConfigError> {
     value.parse().map_err(|_| ConfigError::InvalidStoreKind)
 }
@@ -186,6 +218,14 @@ fn parse_usize(value: &str) -> Result<usize, ConfigError> {
 }
 
 fn parse_u64(value: &str) -> Result<u64, ConfigError> {
+    value.parse().map_err(|_| ConfigError::InvalidNumber)
+}
+
+fn parse_u32(value: &str) -> Result<u32, ConfigError> {
+    value.parse().map_err(|_| ConfigError::InvalidNumber)
+}
+
+fn parse_f64(value: &str) -> Result<f64, ConfigError> {
     value.parse().map_err(|_| ConfigError::InvalidNumber)
 }
 
@@ -311,6 +351,10 @@ mod tests {
         ));
         assert!(matches!(
             Config::from_toml_and_env("[store]\nkind = 'postgres'\nunknown = 1", []),
+            Err(ConfigError::InvalidToml)
+        ));
+        assert!(matches!(
+            Config::from_toml_and_env("[companion]\nunknown = 1", []),
             Err(ConfigError::InvalidToml)
         ));
         assert!(matches!(

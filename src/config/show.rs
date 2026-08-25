@@ -10,6 +10,17 @@ struct ShowConfig<'a> {
     store: ShowStore,
     embedder: ShowEmbedder<'a>,
     daemon: &'a super::DaemonConfig,
+    companion: ShowCompanion<'a>,
+}
+
+#[derive(Serialize)]
+struct ShowCompanion<'a> {
+    base_url: &'a str,
+    model: &'a str,
+    context_window: u32,
+    temperature: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_key: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -77,12 +88,27 @@ impl Config {
                 .map(|path| path.display().to_string())
                 .filter(|value| !value.is_empty()),
         };
+        let companion = ShowCompanion {
+            base_url: &self.companion.base_url,
+            model: &self.companion.model,
+            context_window: self.companion.context_window,
+            temperature: self.companion.temperature,
+            api_key: self
+                .companion
+                .api_key
+                .as_ref()
+                .map(|key| key.expose())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|_| "***REDACTED***"),
+        };
         toml::to_string_pretty(&ShowConfig {
             vault: &self.vault,
             session: &self.session,
             store,
             embedder,
             daemon: &self.daemon,
+            companion,
         })
         .expect("resolved config must serialize")
     }
@@ -113,5 +139,18 @@ mod tests {
         assert!(shown.contains("postgres"), "{shown}");
         assert!(shown.contains("gemini"), "{shown}");
         assert!(shown.contains("1536"), "{shown}");
+        assert!(shown.contains("[companion]"), "{shown}");
+        assert!(!shown.contains("api_key"), "{shown}");
+    }
+
+    #[test]
+    fn config_show_redacts_api_key_and_never_contains_the_secret() {
+        let secret = "s3cret-companion-key";
+        let config =
+            Config::from_toml_and_env(&format!("[companion]\napi_key = '{secret}'\n"), []).unwrap();
+        let shown = config.redacted_toml();
+        assert!(shown.contains("***REDACTED***"), "{shown}");
+        assert!(!shown.contains(secret), "{shown}");
+        assert!(shown.contains("api_key"), "{shown}");
     }
 }
