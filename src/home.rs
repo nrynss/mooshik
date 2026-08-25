@@ -194,7 +194,6 @@ fn ensure_layout(root: &fs::File) -> Result<(), HomeError> {
         Config::default_toml().as_bytes(),
     )
     .map_err(map_io)?;
-    secure_path::ensure_private_file_at(root, OsStr::new("mooshik.db"), &[]).map_err(map_io)?;
     Ok(())
 }
 
@@ -235,7 +234,7 @@ mod tests {
         let layout = HomeLayout::new(&root);
         let root_handle = layout.init().unwrap();
         assert!(layout.config.is_file());
-        assert!(layout.database.is_file());
+        assert!(!layout.database.exists());
         assert!(layout.logs.is_dir());
         let provider = Arc::new(PassphraseProvider::new("lifecycle-passphrase").unwrap());
         let vault = Vault::open_at(&layout.vault, root_handle, provider.clone()).unwrap();

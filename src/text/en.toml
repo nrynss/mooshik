@@ -14,7 +14,7 @@ about = "An ambient, local-first AI cowork partner and workspace orchestrator"
 after_help = "Mooshik runs alongside you as a peer: it holds your workspace's memory, researches the web, and delegates code changes to coding agents.\nDocs: docs/SPEC.md · Build plan: dev-diary/PLAN.md"
 
 [config]
-init_help = "Create the Mooshik home directory, its private files, and the memory store schema"
+init_help = "Create the Mooshik home directory, its private files, and the memory store schema. Schema provision needs MOOSHIK_POSTGRES_DSN (or LAMBO_POSTGRES_DSN / DATABASE_URL)."
 show_help = "Print the resolved configuration"
 read_failed = "Could not read the Mooshik configuration. Check the file and its permissions."
 home_unavailable = "Could not determine your home directory. Set MOOSHIK_HOME and try again."

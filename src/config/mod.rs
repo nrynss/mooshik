@@ -155,29 +155,96 @@ impl Default for DaemonConfig {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct StoreSection {
+    #[serde(default = "default_store_kind")]
+    pub kind: StoreKind,
+    #[serde(default)]
+    pub dsn: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub vector_dim: Option<usize>,
+}
+
+impl Default for StoreSection {
+    fn default() -> Self {
+        Self {
+            kind: default_store_kind(),
+            dsn: None,
+            path: None,
+            vector_dim: None,
+        }
+    }
+}
+
+impl StoreSection {
+    pub fn to_lambo(&self) -> StoreConfig {
+        StoreConfig {
+            kind: self.kind,
+            dsn: self.dsn.clone(),
+            path: self.path.clone(),
+            vector_dim: self.vector_dim,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmbedderSection {
+    #[serde(default = "default_embedder_kind")]
+    pub kind: EmbedderKind,
+    #[serde(default = "default_embed_dim")]
+    pub dim: usize,
+    #[serde(default)]
+    pub gemini_project: Option<String>,
+    #[serde(default = "default_gemini_location")]
+    pub gemini_location: Option<String>,
+    #[serde(default = "default_gemini_model")]
+    pub gemini_model: Option<String>,
+    #[serde(default)]
+    pub gemini_credentials: Option<PathBuf>,
+}
+
+impl Default for EmbedderSection {
+    fn default() -> Self {
+        Self {
+            kind: default_embedder_kind(),
+            dim: default_embed_dim(),
+            gemini_project: None,
+            gemini_location: default_gemini_location(),
+            gemini_model: default_gemini_model(),
+            gemini_credentials: None,
+        }
+    }
+}
+
+impl EmbedderSection {
+    pub fn to_lambo(&self) -> EmbedderConfig {
+        EmbedderConfig {
+            kind: self.kind,
+            dim: self.dim,
+            gemini_project: self.gemini_project.clone(),
+            gemini_location: self.gemini_location.clone(),
+            gemini_model: self.gemini_model.clone(),
+            gemini_credentials: self.gemini_credentials.clone(),
+            ..EmbedderConfig::default()
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub vault: VaultConfig,
     #[serde(default)]
     pub session: SessionConfig,
-    #[serde(default = "default_store")]
-    pub store: StoreConfig,
-    #[serde(default = "default_embedder")]
-    pub embedder: EmbedderConfig,
+    #[serde(default)]
+    pub store: StoreSection,
+    #[serde(default)]
+    pub embedder: EmbedderSection,
     #[serde(default)]
     pub daemon: DaemonConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            vault: VaultConfig::default(),
-            session: SessionConfig::default(),
-            store: default_store(),
-            embedder: default_embedder(),
-            daemon: DaemonConfig::default(),
-        }
-    }
 }
 
 impl Config {
@@ -213,8 +280,8 @@ impl Config {
 
     pub fn to_lambo_file(&self) -> LamboFile {
         LamboFile {
-            store: self.store.clone(),
-            embedder: self.embedder.clone(),
+            store: self.store.to_lambo(),
+            embedder: self.embedder.to_lambo(),
             daemon: lambo::DaemonConfig {
                 gc_interval: self.daemon.gc_interval,
                 canonization_eval_interval_secs: self.daemon.canonization_eval_interval_secs,
@@ -250,23 +317,24 @@ fn default_flush_interval_ms() -> u64 {
     DEFAULT_FLUSH_INTERVAL_MS
 }
 
-fn default_store() -> StoreConfig {
-    StoreConfig {
-        kind: StoreKind::Postgres,
-        dsn: None,
-        path: None,
-        vector_dim: None,
-    }
+fn default_store_kind() -> StoreKind {
+    StoreKind::Postgres
 }
 
-fn default_embedder() -> EmbedderConfig {
-    EmbedderConfig {
-        kind: EmbedderKind::Gemini,
-        dim: DEFAULT_EMBED_DIM,
-        gemini_location: Some(DEFAULT_GEMINI_LOCATION.to_owned()),
-        gemini_model: Some(DEFAULT_GEMINI_MODEL.to_owned()),
-        ..EmbedderConfig::default()
-    }
+fn default_embedder_kind() -> EmbedderKind {
+    EmbedderKind::Gemini
+}
+
+fn default_embed_dim() -> usize {
+    DEFAULT_EMBED_DIM
+}
+
+fn default_gemini_location() -> Option<String> {
+    Some(DEFAULT_GEMINI_LOCATION.to_owned())
+}
+
+fn default_gemini_model() -> Option<String> {
+    Some(DEFAULT_GEMINI_MODEL.to_owned())
 }
 
 fn non_empty(values: &std::collections::HashMap<String, String>, key: &str) -> Option<String> {

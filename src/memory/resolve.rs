@@ -6,6 +6,25 @@ use super::MemoryError;
 use crate::config::Config;
 
 pub fn resolve_product(config: &Config) -> Result<ResolvedBackends, MemoryError> {
+    require_postgres_dsn(config)?;
+    let mut backends = lambo::resolve_backends(config.to_lambo_file())?;
+    backends.config.promotion_policy = PromotionPolicy::Solo;
+    backends.config.backend_flush_interval = Duration::from_millis(config.daemon.flush_interval_ms);
+    backends.config.validate()?;
+    Ok(backends)
+}
+
+/// Store-only construction for `init` / provision. Does not build an embedder.
+pub fn resolve_store(config: &Config) -> Result<Box<dyn lambo::GraphStore>, MemoryError> {
+    require_postgres_dsn(config)?;
+    lambo::store::build_store_with_vector_dim(
+        config.store.to_lambo(),
+        Some(config.embedder.dim).filter(|dim| *dim > 0),
+    )
+    .map_err(|error| lambo::LamboError::Config(error.to_string()).into())
+}
+
+fn require_postgres_dsn(config: &Config) -> Result<(), MemoryError> {
     if config.store.kind == StoreKind::Postgres
         && config
             .store
@@ -17,11 +36,7 @@ pub fn resolve_product(config: &Config) -> Result<ResolvedBackends, MemoryError>
     {
         return Err(MemoryError::MissingDsn);
     }
-    let mut backends = lambo::resolve_backends(config.to_lambo_file())?;
-    backends.config.promotion_policy = PromotionPolicy::Solo;
-    backends.config.backend_flush_interval = Duration::from_millis(config.daemon.flush_interval_ms);
-    backends.config.validate()?;
-    Ok(backends)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -122,6 +137,26 @@ mod tests {
         let message = MemoryError::MissingDsn.to_string();
         assert!(message.contains(POSTGRES_DSN_ENV), "{message}");
         assert!(!message.contains("postgres://"), "{message}");
+    }
+
+    #[test]
+    fn open_path_still_constructs_the_embedder() {
+        let mut config = fixture_config();
+        config.embedder.kind = EmbedderKind::Gemini;
+        config.embedder.dim = 1024;
+        config.embedder.gemini_credentials = None;
+        let error = match resolve_product(&config) {
+            Err(error) => error,
+            Ok(_) => panic!("open/serve resolve must still construct Gemini"),
+        };
+        use std::error::Error;
+        let message = error.source().map(ToString::to_string).unwrap_or_default();
+        assert!(
+            message.contains("768")
+                || message.contains("credentials")
+                || message.contains("Gemini"),
+            "{message}"
+        );
     }
 
     #[test]

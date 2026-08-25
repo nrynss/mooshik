@@ -7,8 +7,8 @@ use crate::text;
 mod ops;
 mod resolve;
 
-pub use ops::{open, provision, serve};
-pub use resolve::resolve_product;
+pub use ops::{open, provision, serve, serve_plan, ServePlan};
+pub use resolve::{resolve_product, resolve_store};
 
 #[derive(Debug)]
 pub enum MemoryError {

@@ -141,7 +141,7 @@ fn overlay_dsn(config: &mut Config, values: &HashMap<String, String>) -> Result<
     let lambo =
         non_empty(values, LAMBO_POSTGRES_DSN_ENV).or_else(|| non_empty(values, FALLBACK_DSN_ENV));
     if let (Some(left), Some(right)) = (mooshik.as_deref(), lambo.as_deref()) {
-        if left.trim() != right.trim() {
+        if !same_database(left, right) {
             return Err(ConfigError::DsnConflict);
         }
     }
@@ -152,7 +152,7 @@ fn overlay_dsn(config: &mut Config, values: &HashMap<String, String>) -> Result<
         .map(str::trim)
         .filter(|value| !value.is_empty());
     if let (Some(file), Some(lambo), None) = (file, lambo.as_deref(), mooshik.as_deref()) {
-        if file != lambo.trim() {
+        if !same_database(file, lambo) {
             return Err(ConfigError::DsnConflict);
         }
     }
@@ -160,6 +160,10 @@ fn overlay_dsn(config: &mut Config, values: &HashMap<String, String>) -> Result<
         config.store.dsn = Some(value);
     }
     Ok(())
+}
+
+fn same_database(left: &str, right: &str) -> bool {
+    lambo::store_dsn_identity(left) == lambo::store_dsn_identity(right)
 }
 
 fn overlay_flush(config: &mut Config, values: &HashMap<String, String>) -> Result<(), ConfigError> {
@@ -381,6 +385,89 @@ mod tests {
         assert_eq!(
             config.store.dsn.as_deref(),
             Some("postgres://lambo@localhost/db")
+        );
+    }
+
+    #[test]
+    fn password_overlay_of_one_database_is_accepted() {
+        let config = Config::from_toml_and_env(
+            "[store]\ndsn = 'postgres://app@host/db'\n",
+            env(&[(LAMBO_POSTGRES_DSN_ENV, "postgres://app:s3cret@host/db")]),
+        )
+        .unwrap();
+        assert_eq!(config.store.kind, StoreKind::Postgres);
+        assert_eq!(
+            config.store.dsn.as_deref(),
+            Some("postgres://app:s3cret@host/db")
+        );
+        let shown = config.redacted_toml();
+        assert!(shown.contains("***REDACTED***"), "{shown}");
+        assert!(!shown.contains("s3cret"), "{shown}");
+    }
+
+    #[test]
+    fn omitted_postgres_port_is_the_same_database() {
+        let config = Config::from_toml_and_env(
+            "[store]\ndsn = 'postgres://u@host/db'\n",
+            env(&[(LAMBO_POSTGRES_DSN_ENV, "postgres://u@host:5432/db")]),
+        )
+        .unwrap();
+        assert_eq!(
+            config.store.dsn.as_deref(),
+            Some("postgres://u@host:5432/db")
+        );
+    }
+
+    #[test]
+    fn different_hosts_are_a_dsn_conflict_without_echoing_secrets() {
+        let error = Config::from_toml_and_env(
+            "[store]\ndsn = 'postgres://app:s3cret@host-a/db'\n",
+            env(&[(LAMBO_POSTGRES_DSN_ENV, "postgres://app:hunter2@host-b/db")]),
+        )
+        .unwrap_err();
+        assert!(matches!(error, ConfigError::DsnConflict));
+        let message = error.to_string();
+        assert!(!message.contains("s3cret"), "{message}");
+        assert!(!message.contains("hunter2"), "{message}");
+        assert!(!message.contains("postgres://"), "{message}");
+    }
+
+    #[test]
+    fn empty_store_table_is_postgres() {
+        let config = Config::from_toml_and_env("[store]\n", []).unwrap();
+        assert_eq!(config.store.kind, StoreKind::Postgres);
+        assert_eq!(config.store.dsn, None);
+    }
+
+    #[test]
+    fn store_table_with_only_a_dsn_is_postgres() {
+        let config = Config::from_toml_and_env(
+            "[store]\ndsn = 'postgres://prod:s3cret@localhost/prod'\n",
+            [],
+        )
+        .unwrap();
+        assert_eq!(config.store.kind, StoreKind::Postgres);
+        assert_eq!(
+            config.store.dsn.as_deref(),
+            Some("postgres://prod:s3cret@localhost/prod")
+        );
+        let shown = config.redacted_toml();
+        assert!(!shown.contains("s3cret"), "{shown}");
+        assert!(shown.contains("***REDACTED***"), "{shown}");
+    }
+
+    #[test]
+    fn gemini_table_without_dim_uses_product_default() {
+        let config = Config::from_toml_and_env("[embedder]\nkind = 'gemini'\n", []).unwrap();
+        assert_eq!(config.embedder.kind, EmbedderKind::Gemini);
+        assert_eq!(config.embedder.dim, 1536);
+        assert_eq!(
+            config.embedder.gemini_model.as_deref(),
+            Some("gemini-embedding-001")
+        );
+        assert_eq!(
+            config.embedder.gemini_location.as_deref(),
+            Some("us-central1")
         );
     }
 }

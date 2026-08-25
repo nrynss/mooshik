@@ -236,6 +236,7 @@ mod tests {
             .unwrap()
             .to_string();
         assert_eq!(init, text::get("config.init_help"));
+        assert!(init.contains("MOOSHIK_POSTGRES_DSN"));
         let serve = cmd
             .find_subcommand("serve")
             .unwrap()

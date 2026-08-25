@@ -1,6 +1,9 @@
 use lambo::{mcp::ServeOptions, Memory};
 
-use super::{resolve::resolve_product, MemoryError};
+use super::{
+    resolve::{resolve_product, resolve_store},
+    MemoryError,
+};
 use crate::config::Config;
 
 /// Open an in-process [`Memory`] for the configured session.
@@ -21,23 +24,44 @@ pub async fn open(config: &Config) -> Result<Memory, MemoryError> {
         .await?)
 }
 
-/// Idempotent store DDL. Memory stores succeed without a DSN; Postgres needs one.
+/// Idempotent store DDL. Does not construct an embedder.
 pub async fn provision(config: &Config) -> Result<(), MemoryError> {
-    let backends = resolve_product(config)?;
-    lambo::GraphStore::init_schema(backends.store.as_ref())
+    let store = resolve_store(config)?;
+    lambo::GraphStore::init_schema(store.as_ref())
         .await
         .map_err(lambo::LamboError::Store)?;
     Ok(())
 }
 
+/// What `serve` will ask Lambo to run. Extracted so tests can pin session,
+/// transport, and endpoint publication without blocking on MCP stdio.
+#[derive(Debug)]
+pub struct ServePlan {
+    pub session: String,
+    pub agent: String,
+    pub transport: lambo::mcp::Transport,
+    pub endpoint: Option<String>,
+}
+
+pub fn serve_plan(config: &Config) -> ServePlan {
+    let opts = ServeOptions::new(config.session.id.clone(), config.session.agent.clone());
+    let endpoint = lambo::mcp::SessionEndpoint::for_store(&opts.session, &config.store.to_lambo())
+        .map(|endpoint| endpoint.published());
+    ServePlan {
+        session: opts.session,
+        agent: opts.agent,
+        transport: opts.transport,
+        endpoint,
+    }
+}
+
 /// Long-running holder: provision schema, then serve Lambo's MCP surface.
 pub async fn serve(config: &Config) -> Result<(), MemoryError> {
     lambo::mcp::init_tracing();
+    let plan = serve_plan(config);
+    provision(config).await?;
     let backends = resolve_product(config)?;
-    lambo::GraphStore::init_schema(backends.store.as_ref())
-        .await
-        .map_err(lambo::LamboError::Store)?;
-    let opts = ServeOptions::new(config.session.id.clone(), config.session.agent.clone());
+    let opts = ServeOptions::new(plan.session, plan.agent);
     lambo::mcp::serve(opts, backends).await?;
     Ok(())
 }
@@ -45,7 +69,9 @@ pub async fn serve(config: &Config) -> Result<(), MemoryError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lambo::{EmbedderKind, PromotionPolicy, StoreKind};
+    use lambo::{
+        graph::derive::ParentOf, ConceptType, EmbedderKind, PromotionPolicy, RecallQuery, StoreKind,
+    };
 
     fn fixture_config() -> Config {
         let mut config = Config::default();
@@ -65,6 +91,7 @@ mod tests {
         #[cfg(unix)]
         {
             _home.init().unwrap();
+            assert!(!_home.database.exists());
         }
         let config = fixture_config();
         provision(&config).await.unwrap();
@@ -83,9 +110,82 @@ mod tests {
         let config = fixture_config();
         provision(&config).await.unwrap();
         let first = open(&config).await.unwrap();
+        first
+            .derive(
+                &[("mooshik-m2-round1-marker", ConceptType::Entity)],
+                &ParentOf::none(),
+            )
+            .await
+            .unwrap();
+        assert!(!first.graph().read().is_empty());
         first.close().await.unwrap();
         let second = open(&config).await.unwrap();
-        assert_eq!(second.embedding_contract().kind, "fixture");
+        assert!(second.graph().read().is_empty());
+        let recalled = second
+            .recall(RecallQuery {
+                query: "mooshik-m2-round1-marker".into(),
+                top_k: 5,
+                max_tokens: 200,
+                traversal_depth: 0,
+            })
+            .await
+            .unwrap();
+        assert!(
+            recalled.hits.is_empty(),
+            "a new MemoryStore must not see the first handle's write"
+        );
         second.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn provision_does_not_construct_an_embedder() {
+        let mut config = Config::default();
+        config.store.kind = StoreKind::Memory;
+        config.embedder.kind = EmbedderKind::Gemini;
+        config.embedder.dim = 1024;
+        config.embedder.gemini_credentials = None;
+        provision(&config).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn provision_postgres_without_dsn_fails() {
+        assert!(matches!(
+            provision(&Config::default()).await,
+            Err(MemoryError::MissingDsn)
+        ));
+    }
+
+    #[test]
+    fn serve_plan_is_stdio_without_an_endpoint_on_memory() {
+        let plan = serve_plan(&fixture_config());
+        assert_eq!(plan.session, "mooshik");
+        assert_eq!(plan.agent, "mooshik");
+        assert!(matches!(plan.transport, lambo::mcp::Transport::Stdio));
+        assert!(plan.endpoint.is_none());
+    }
+
+    #[test]
+    fn serve_plan_publishes_an_endpoint_for_postgres() {
+        let mut config = Config::default();
+        config.store.dsn = Some("postgres://app@localhost/mooshik".to_owned());
+        let plan = serve_plan(&config);
+        assert!(plan.endpoint.is_some(), "a shareable store must publish");
+        assert!(matches!(plan.transport, lambo::mcp::Transport::Stdio));
+    }
+
+    #[test]
+    fn open_does_not_call_endpoint_on_the_builder() {
+        let src = include_str!("ops.rs");
+        let open = src
+            .split("pub async fn open")
+            .nth(1)
+            .unwrap()
+            .split("pub async fn provision")
+            .next()
+            .unwrap();
+        assert!(
+            !open.contains("endpoint("),
+            "open must not publish a session endpoint"
+        );
     }
 }
