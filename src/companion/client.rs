@@ -206,6 +206,9 @@ fn merge_tool_deltas(partial: &mut Vec<PartialToolCall>, calls: Vec<super::types
         if let Some(id) = call.id {
             slot.id = id;
         }
+        if let Some(extra) = call.extra_content {
+            slot.thought_signature = extra.google.and_then(|google| google.thought_signature);
+        }
         if let Some(function) = call.function {
             if let Some(name) = function.name {
                 slot.name.push_str(&name);

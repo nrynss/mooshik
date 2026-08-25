@@ -158,6 +158,40 @@ async fn content_then_tool_calls_assembled_from_split_chunks() {
     assert!(history_roles.contains(&Role::Tool));
 }
 
+/// Gemini 3.x reasoning models stream a thought_signature per tool call and
+/// reject the follow-up request if the echoed assistant tool_calls omit it.
+#[tokio::test]
+async fn thought_signature_on_tool_call_is_echoed_to_the_next_request() {
+    let first = Script::sse(vec![
+        Frame::data(
+            r#"{"choices":[{"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_g3","type":"function","extra_content":{"google":{"thought_signature":"sig-gemini-3"}},"function":{"name":"echo","arguments":"{\"text\":\"hi\"}"}}]}}]}"#,
+        ),
+        Frame::finish("tool_calls"),
+        Frame::done(),
+    ]);
+    let server = MockServer::spawn(vec![first, stop_script(&["done-now"])]).await;
+    let client = CompanionClient::from_config(&config(&server.base_url)).unwrap();
+    let mut chat = Session::new(client, 32768)
+        .with_system("s")
+        .with_executor(Echo);
+    let reply = chat
+        .turn("run", &Cancellation::new(), |_| {})
+        .await
+        .unwrap();
+    assert_eq!(reply, "done-now");
+
+    let followup = request_json(&server.requests()[1].body);
+    let messages = followup["messages"].as_array().unwrap();
+    let assistant = messages
+        .iter()
+        .find(|msg| msg["role"] == "assistant")
+        .expect("assistant with tool_calls");
+    let signature = assistant["tool_calls"][0]["extra_content"]["google"]["thought_signature"]
+        .as_str()
+        .expect("thought_signature echoed");
+    assert_eq!(signature, "sig-gemini-3");
+}
+
 #[tokio::test]
 async fn malformed_tool_arguments_yield_error_result_and_loop_continues() {
     let first = Script::sse(vec![

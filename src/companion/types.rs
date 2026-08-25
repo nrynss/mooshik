@@ -24,6 +24,11 @@ pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub arguments: String,
+    /// Gemini 3.x reasoning models stream a `thought_signature` per function
+    /// call and reject follow-up requests whose assistant tool_calls omit it
+    /// (`extra_content.google.thought_signature` on the wire). Captured from
+    /// the stream and echoed verbatim; `None` for endpoints that never send it.
+    pub thought_signature: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -77,6 +82,9 @@ impl Message {
             n += call.id.chars().count()
                 + call.name.chars().count()
                 + call.arguments.chars().count();
+            if let Some(signature) = &call.thought_signature {
+                n += signature.chars().count();
+            }
         }
         if let Some(id) = &self.tool_call_id {
             n += id.chars().count();
@@ -118,6 +126,19 @@ pub struct WireToolCall {
     #[serde(rename = "type")]
     pub kind: &'static str,
     pub function: WireFunction,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_content: Option<WireExtraContent>,
+}
+
+#[derive(Serialize)]
+pub struct WireExtraContent {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub google: Option<WireGoogleExtra>,
+}
+
+#[derive(Serialize)]
+pub struct WireGoogleExtra {
+    pub thought_signature: String,
 }
 
 #[derive(Serialize)]
@@ -156,6 +177,13 @@ impl From<&Message> for WireMessage {
                             name: call.name.clone(),
                             arguments: call.arguments.clone(),
                         },
+                        extra_content: call.thought_signature.as_deref().map(|signature| {
+                            WireExtraContent {
+                                google: Some(WireGoogleExtra {
+                                    thought_signature: signature.to_owned(),
+                                }),
+                            }
+                        }),
                     })
                     .collect(),
             )
@@ -191,12 +219,28 @@ pub struct ChunkDelta {
     pub content: Option<String>,
     pub tool_calls: Option<Vec<ToolCallDelta>>,
 }
-
 #[derive(Debug, Deserialize)]
 pub struct ToolCallDelta {
     pub index: usize,
     pub id: Option<String>,
     pub function: Option<FunctionDelta>,
+    /// Gemini 3.x reasoning models attach the thought signature here.
+    #[serde(default)]
+    pub extra_content: Option<ExtraContent>,
+}
+
+/// Vendor-specific extras riding on a tool-call delta. Deliberately tolerant
+/// of unknown vendors and unknown Google keys.
+#[derive(Debug, Deserialize)]
+pub struct ExtraContent {
+    #[serde(default)]
+    pub google: Option<GoogleExtra>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GoogleExtra {
+    #[serde(default)]
+    pub thought_signature: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -210,6 +254,7 @@ pub struct PartialToolCall {
     pub id: String,
     pub name: String,
     pub arguments: String,
+    pub thought_signature: Option<String>,
 }
 
 impl PartialToolCall {
@@ -222,6 +267,7 @@ impl PartialToolCall {
             },
             name: self.name,
             arguments: self.arguments,
+            thought_signature: self.thought_signature,
         }
     }
 }
