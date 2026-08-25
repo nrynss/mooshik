@@ -51,8 +51,8 @@ M11 is last on purpose and is allowed to fail; see M11.
 | **M1** | Built 2026-08-24, `79fcc2e`. P3-R8-1 (staging cleanup race) closed: fail-closed preserve, pin in `secure_path` tests. |
 | **M2 + M2b** | Built 2026-08-25, `5ed3e68` / `33a5bcb`. Review round 2 **APPROVE**, zero residue (`m2-round2.md`). CI green. Live Cloud SQL + Vertex pin `bf362b3`. |
 | **M3** | Built 2026-08-25, `9652f39` / `8e168f6`. Review round 2 **APPROVE**, zero residue (`m3-round2.md`). |
-| **M4** | Not started. |
-| **M5** | Not started. |
+| **M4** | Built 2026-08-25, `73e13e1` → `5e3d113`; live-verified 2026-08-26 (`17fbe71`, `35ae812`: Gemini 3.x thought-signature echo, memory-runtime ownership). Review round 2 **APPROVE**, zero residue (`m4-round2.md`). |
+| **M5** | Built 2026-08-26, `75cda1a` → `88abf81`. Review round 2 **APPROVE**, zero residue (`m5-round2.md`). Default grants: Decision 6 settled — lambo memory tools allowed, scratch prompt, rest deny. |
 | **M6** | Vault file + `secret` CLI built 2026-08-24, `79fcc2e` (with M1). Injection into tools and egress redaction are **not** started — they need M4. |
 | **M7** | Not started. CLI so far: `init`, `config show`, `secret set/get/list`, `serve`, `chat`. |
 | **M8** | Not started. Unblocked: M2b published the endpoint; Lambo A and B have landed. |
@@ -244,7 +244,17 @@ survived review. In `~/work/lambo/src/mcp/`:
 
 **Depends on:** M2, M3.
 
-**Status: not started.** Unblocked; M2 and M3 have landed.
+**Status: built 2026-08-25.** Implement `8dd9d9a`, remediate `5e3d113`, review record
+`m4-round2.md`. Adversarial round 2 **APPROVE**, zero residue.
+
+`lambo_recall`, `lambo_derive`, `lambo_stats`, and `run_scratch_script` behind the synchronous
+`companion::ToolExecutor` seam, backed by in-process `lambo::Memory`. Schemas lifted verbatim from
+Lambo's MCP server (`deny_unknown_fields` + caps), panic-contained tool wrapper, sandboxed scratch
+runner (process-group kill, hard timeout, output cap, confirm seam). `mooshik chat` opens memory in
+the CLI dispatch layer; the chat loop stays memory-free (M3 pin). Live-verified 2026-08-26 against
+Gemini 3.7 Flash on Vertex's OpenAI-compat endpoint: thought signatures are now captured per tool
+call and echoed (`17fbe71`), `MemoryTools` owns the runtime that opened Memory and closes it on
+drop so the flush daemon survives chat exit (`35ae812`) — cross-process derive→recall proven live.
 
 ---
 
@@ -264,7 +274,17 @@ ingests documents written by other people, this is a real injection path, not a 
 
 **Depends on:** M4.
 
-**Status: not started.** Decision 6 (default grant set) still open; only bites at recording time.
+**Status: built 2026-08-26.** Implement `75cda1a` → `bbb313e`, remediate `88abf81`, review records
+`m5-round1.md` / `m5-round2.md`. Adversarial round 2 **APPROVE**, zero residue. Decision 6 settled:
+lambo memory tools granted by default, scratch prompts, everything else denies.
+
+A single `GatedTools` decorator wraps whatever executor `executor_for_chat` builds — it filters
+`specs()` (ungranted tools are not advertised to the model) and gates `execute()` (contained
+denial string; prompt-mode asks exactly once; allow/deny never prompt). `[permissions]` parses
+fail-closed (empty allow-lists included); per-tool entries override family mode; quoted
+`"mcp.github.*"` prefix rules parse now and enforce as deny until such tools exist; resolution is
+exact > name > longest prefix > family > deny. The gate never reads `crate::memory` (source pin).
+`mooshik permissions` prints the resolved set with source attribution (`default` | `config`).
 
 ---
 
@@ -313,7 +333,6 @@ flag that moved. Nobody notices from inside a single milestone, and everybody no
 * **No vault value can appear in an error string**, including inside a wrapped source error. This
   is `SecretToken`'s job (see M4's lift table) and M7 is where it gets verified rather than assumed.
 * One voice and one casing across every command.
-* Exit codes distinguish user error from internal failure, so the demo script can branch on them.
 * Every example in `--help` actually runs as written.
 
 **Decided: a chat with context.** A persistent conversational loop, not one-shot subcommands.
@@ -328,7 +347,7 @@ reader who has never seen the project can get from `mooshik --help` to a recall 
 anyone.
 
 **Status: not started.** Present CLI, grown with the landed milestones: `init`, `config show`,
-`secret set/get/list`, `serve`, `chat`. `recall`, `stats`, `permissions` arrive with M4–M5.
+`secret set/get/list`, `serve`, `chat`, `permissions`. `recall` / `stats` arrive with M6–M7.
 
 ---
 
