@@ -13,14 +13,14 @@
 //! thread and `execute` blocks on a bounded wait per call (a turn boundary,
 //! mirroring the session's `tool_loop` cap). See [`worker`] for the design.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::Arc;
-use std::time::Duration;
 use lambo::{
     graph::derive::{DeriveOutcome, ParentOf},
     ConceptType, LamboError, Memory, RecallQuery,
 };
 use serde_json::{json, Value};
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::Arc;
+use std::time::Duration;
 
 use crate::companion::{NoopExecutor, ToolExecutor, ToolSpec};
 use crate::config::Config;
@@ -38,7 +38,6 @@ use schema::{
     SCRATCH_DEFAULT_TIMEOUT_SECS,
 };
 use worker::{ToolRunError, ToolRuntime};
-
 
 pub const TOOL_RECALL: &str = "lambo_recall";
 pub const TOOL_DERIVE: &str = "lambo_derive";
@@ -93,8 +92,7 @@ impl MemoryTools {
     /// rather than stall. This is the injection point the CLI calls; the chat
     /// loop itself stays free of any `crate::memory` reference (M3 pin).
     pub fn for_chat(config: &Config) -> Option<Arc<dyn ToolExecutor>> {
-        let opened =
-            catch_unwind(AssertUnwindSafe(|| open_memory(config))).unwrap_or(None);
+        let opened = catch_unwind(AssertUnwindSafe(|| open_memory(config))).unwrap_or(None);
         opened.map(|memory| {
             Arc::new(MemoryTools {
                 mem: memory,
@@ -327,7 +325,8 @@ impl MemoryTools {
         if !(self.scratch.confirm)(&params) {
             return text::get("tools.scratch_denied").to_owned();
         }
-        let timeout = Duration::from_secs(params.timeout_secs.unwrap_or(SCRATCH_DEFAULT_TIMEOUT_SECS));
+        let timeout =
+            Duration::from_secs(params.timeout_secs.unwrap_or(SCRATCH_DEFAULT_TIMEOUT_SECS));
         match scratch::run_script(
             &params.code,
             params.language,
@@ -348,7 +347,7 @@ impl MemoryTools {
     }
 
     fn lambo_err(&self, what: &str, error: LamboError) -> String {
-        eprintln!("{what}: memory error: {}", format!("{error}"));
+        eprintln!("{what}: memory error: {error}");
         format!("{what}: memory error (the detail was logged)")
     }
 
@@ -462,7 +461,6 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
         },
     }
 }
-
 
 #[cfg(test)]
 mod tests;

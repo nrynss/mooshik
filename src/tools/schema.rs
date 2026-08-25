@@ -34,7 +34,9 @@ pub const MAX_CONCEPTS_PER_DERIVE: usize = 64;
 /// field with a readable one-line tool error, mirroring lambo's `check_size`.
 pub fn check_size(field: &str, value: &str) -> Result<(), String> {
     if value.chars().count() > MAX_STRING_CHARS {
-        Err(format!("{field} must be at most {MAX_STRING_CHARS} characters"))
+        Err(format!(
+            "{field} must be at most {MAX_STRING_CHARS} characters"
+        ))
     } else {
         Ok(())
     }
@@ -227,8 +229,7 @@ impl ScratchLanguage {
 /// reference to its definition and keep the definitions map in place for any
 /// nested references to resolve against.
 pub fn tool_parameters<T: schemars::JsonSchema>() -> Value {
-    let schema: schemars::Schema =
-        schemars::SchemaGenerator::default().into_root_schema_for::<T>();
+    let schema: schemars::Schema = schemars::SchemaGenerator::default().into_root_schema_for::<T>();
     let mut value = serde_json::to_value(&schema).unwrap_or(Value::Object(Default::default()));
     inline_root_ref(&mut value);
     value

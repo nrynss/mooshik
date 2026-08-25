@@ -28,7 +28,10 @@ async fn specs_expose_the_four_in_scope_tools() {
     // The four in-scope tools, in a stable order (also exercised by the
     // Session tool loop, which iterates them for the prompt).
     let names: Vec<&str> = specs.iter().map(|spec| spec.name.as_str()).collect();
-    assert_eq!(names, vec![TOOL_RECALL, TOOL_DERIVE, TOOL_STATS, TOOL_SCRATCH]);
+    assert_eq!(
+        names,
+        vec![TOOL_RECALL, TOOL_DERIVE, TOOL_STATS, TOOL_SCRATCH]
+    );
     // Every tool's parameters open as a JSON object (root `$ref` inlined).
     for spec in &specs {
         assert_eq!(spec.parameters["type"], "object", "{}", spec.name);
@@ -81,17 +84,22 @@ async fn derive_with_parent_of_creates_both_concepts() {
 async fn stats_observes_derives() {
     let tools = MemoryTools::from_memory(fixture_memory().await);
     let before: Value =
-        serde_json::from_str(&tools.execute(TOOL_STATS, &json!({ "agent_id": "mooshik" }))).unwrap();
+        serde_json::from_str(&tools.execute(TOOL_STATS, &json!({ "agent_id": "mooshik" })))
+            .unwrap();
     tools.execute(
         TOOL_DERIVE,
         &json!({ "agent_id": "mooshik", "concepts": [{ "content": "stats marker", "concept_type": "observation" }] }),
     );
     let after: Value =
-        serde_json::from_str(&tools.execute(TOOL_STATS, &json!({ "agent_id": "mooshik" }))).unwrap();
+        serde_json::from_str(&tools.execute(TOOL_STATS, &json!({ "agent_id": "mooshik" })))
+            .unwrap();
     let before_n = before["concept_count"].as_u64().unwrap();
     let after_n = after["concept_count"].as_u64().unwrap();
     assert_eq!(after["session"], "mooshik");
-    assert!(after_n > before_n, "stats must observe derive: {before_n} -> {after_n}");
+    assert!(
+        after_n > before_n,
+        "stats must observe derive: {before_n} -> {after_n}"
+    );
 }
 
 // --- bad-parameter discipline: refused as an error string, never a panic ----
@@ -104,7 +112,10 @@ async fn unknown_field_is_refused_as_a_tool_error() {
         &json!({ "agent_id": "mooshik", "query": "x", "bogus": 1 }),
     );
     assert!(out.contains("unknown field"), "{out}");
-    assert!(!out.starts_with('{'), "must not be a successful result: {out}");
+    assert!(
+        !out.starts_with('{'),
+        "must not be a successful result: {out}"
+    );
 }
 
 #[tokio::test]
@@ -125,7 +136,10 @@ async fn wrong_type_knob_is_refused() {
         TOOL_RECALL,
         &json!({ "agent_id": "mooshik", "query": "x", "top_k": "many" }),
     );
-    assert!(out.starts_with(&crate::text::get("tools.bad_param")), "{out}");
+    assert!(
+        out.starts_with(crate::text::get("tools.bad_param")),
+        "{out}"
+    );
 }
 
 #[tokio::test]
@@ -135,7 +149,7 @@ async fn out_of_range_top_k_is_refused() {
         TOOL_RECALL,
         &json!({ "agent_id": "mooshik", "query": "x", "top_k": 500 }),
     );
-    assert!(out.contains(&crate::text::get("tools.range_error")), "{out}");
+    assert!(out.contains(crate::text::get("tools.range_error")), "{out}");
 }
 
 // --- run_scratch_script through the executor: permission seam + success ----
@@ -159,15 +173,16 @@ async fn scratch_runs_when_confirmed() {
         confirm: Box::new(|_| true),
         max_output_bytes: 4096,
     });
-    let out: Value = serde_json::from_str(
-        &tools.execute(
-            TOOL_SCRATCH,
-            &json!({ "language": "bash", "code": "echo hello from scratch" }),
-        ),
-    )
+    let out: Value = serde_json::from_str(&tools.execute(
+        TOOL_SCRATCH,
+        &json!({ "language": "bash", "code": "echo hello from scratch" }),
+    ))
     .unwrap();
     assert_eq!(out["exit_code"], 0);
-    assert!(out["stdout"].as_str().unwrap().contains("hello from scratch"));
+    assert!(out["stdout"]
+        .as_str()
+        .unwrap()
+        .contains("hello from scratch"));
     assert_eq!(out["timed_out"], false);
 }
 
@@ -183,6 +198,29 @@ async fn scratch_timeout_is_reported_by_the_executor() {
     ))
     .unwrap();
     assert_eq!(out["timed_out"], true);
+}
+
+// --- sync-path panic containment: a panic is an error string, not a crash ----
+
+#[tokio::test]
+async fn a_panicking_sync_tool_is_contained_as_an_error_string() {
+    // P2-M4-3 pin: `execute` wraps `dispatch` in a `catch_unwind`, so a tool
+    // that panics on the caller thread (here: a panicking `confirm` closure)
+    // yields a contained generic error string — never a panic out of execute,
+    // which would take down the chat loop as a dead process.
+    let tools = MemoryTools::from_memory(fixture_memory().await).with_scratch(ScratchConfig {
+        confirm: Box::new(|_| panic!("confirm exploded")),
+        max_output_bytes: 4096,
+    });
+    let out = tools.execute(
+        TOOL_SCRATCH,
+        &json!({ "language": "bash", "code": "echo hi" }),
+    );
+    assert_eq!(
+        out,
+        crate::text::get("tools.internal_error"),
+        "the sync-path panic must be contained to a generic error string"
+    );
 }
 
 // --- graceful degradation: chat still runs when memory cannot open ----------

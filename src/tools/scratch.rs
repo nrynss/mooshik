@@ -175,12 +175,13 @@ pub fn run_script(
     let (exit_code, timed_out) = wait_child(&mut child, timeout);
 
     let duration = start.elapsed();
-    let (out_bytes, out_trunc) = out_handle
-        .join()
-        .map_err(|_| text::get("tools.scratch_io_failed").to_owned())?;
-    let (err_bytes, err_trunc) = err_handle
-        .join()
-        .map_err(|_| text::get("tools.scratch_io_failed").to_owned())?;
+    let ((out_bytes, out_trunc), (err_bytes, err_trunc)) = join_readers(
+        out_handle,
+        err_handle,
+        &mut child,
+        timeout,
+        text::get("tools.scratch_io_failed"),
+    )?;
 
     Ok(ScratchOutcome {
         exit_code,
@@ -213,6 +214,79 @@ fn wait_child(child: &mut Child, timeout: Duration) -> (Option<i32>, bool) {
             let _ = child.kill();
             let _ = child.wait();
             return (None, true);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The pair of reader results delivered by the sandbox output-threads: for
+/// stdout then stderr, the captured bytes plus a truncated flag.
+type ReaderResults = ((Vec<u8>, bool), (Vec<u8>, bool));
+
+/// Bound the reader joins with the same wall-clock discipline as the timeout
+/// path. The direct child may exit cleanly while a backgrounded grandchild of
+/// its own still holds the stdout/stderr pipes, which would otherwise block
+/// the caller until that grandchild exits. Give the readers one `timeout`
+/// budget; if a reader is still blocked at expiry, kill the child's whole
+/// process group (the child ran under `setsid`) so the pipes drain, then give
+/// the readers one more budget before giving up — dropping the handles
+/// detaches the reader threads rather than wedging the caller.
+fn join_readers(
+    out_handle: std::thread::JoinHandle<(Vec<u8>, bool)>,
+    err_handle: std::thread::JoinHandle<(Vec<u8>, bool)>,
+    child: &mut Child,
+    timeout: Duration,
+    io_failed: &str,
+) -> Result<ReaderResults, String> {
+    let mut out_handle = Some(out_handle);
+    let mut err_handle = Some(err_handle);
+    let mut out = None;
+    let mut err = None;
+    let mut deadline = Instant::now() + timeout;
+    let mut killed = false;
+    loop {
+        if out.is_none() {
+            if let Some(handle) = out_handle.take() {
+                if handle.is_finished() {
+                    out = Some(handle.join().map_err(|_| io_failed.to_owned())?);
+                } else {
+                    out_handle = Some(handle);
+                }
+            }
+        }
+        if err.is_none() {
+            if let Some(handle) = err_handle.take() {
+                if handle.is_finished() {
+                    err = Some(handle.join().map_err(|_| io_failed.to_owned())?);
+                } else {
+                    err_handle = Some(handle);
+                }
+            }
+        }
+        if out.is_some() && err.is_some() {
+            return Ok((
+                out.take().expect("readers are guarded by is_some"),
+                err.take().expect("readers are guarded by is_some"),
+            ));
+        }
+        if Instant::now() >= deadline {
+            if killed {
+                // Still blocked after the group kill — a descendant escaped
+                // the group (e.g. a double-forked `setsid`). Give up rather
+                // than wedge the caller; dropping the handles detaches the
+                // reader threads, which finish when their pipes drain.
+                return Err(io_failed.to_owned());
+            }
+            // Same wall-clock discipline as the timeout path: kill the whole
+            // group so a pipe-holding grandchild drains the readers.
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+            }
+            #[cfg(not(unix))]
+            let _ = child.kill();
+            killed = true;
+            deadline = Instant::now() + timeout;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -276,7 +350,8 @@ impl Sandbox {
     fn write_script(&self, code: &str, language: ScratchLanguage) -> Result<PathBuf, String> {
         let name = format!("script.{}", language.extension());
         let path = self.dir.join(name);
-        let mut file = fs::File::create(&path).map_err(|error| fun("tools.scratch_write_failed", &error))?;
+        let mut file =
+            fs::File::create(&path).map_err(|error| fun("tools.scratch_write_failed", &error))?;
         file.write_all(code.as_bytes())
             .map_err(|error| fun("tools.scratch_write_failed", &error))?;
         Ok(path)
@@ -389,6 +464,29 @@ mod tests {
         .unwrap();
         assert!(out.timed_out, "must report the timeout-kill");
         assert!(start.elapsed().as_secs() < 10, "kill must be prompt");
+    }
+
+    #[test]
+    fn clean_exit_with_background_grandchild_bounds_the_reader_join() {
+        // P2-M4-1 pin: the script itself exits 0, but it backgrounds a
+        // grandchild that inherits the stdout/stderr pipes and keeps them open.
+        // The reader join must still be bounded (same wall-clock discipline as
+        // the timeout path) — the group is killed once the budget elapses, so
+        // the caller never wedges waiting for the grandchild to exit.
+        let start = Instant::now();
+        let out = run_script(
+            "sleep 100 &",
+            ScratchLanguage::Bash,
+            Duration::from_millis(300),
+            4096,
+        )
+        .unwrap();
+        assert_eq!(out.exit_code, Some(0), "the script itself exits cleanly");
+        assert!(!out.timed_out, "a clean exit is not a timeout-kill");
+        assert!(
+            start.elapsed().as_secs() < 10,
+            "the reader join must be bounded like the timeout path"
+        );
     }
 
     #[test]

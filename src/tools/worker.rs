@@ -138,10 +138,7 @@ mod tests {
     fn panicking_job_is_contained_and_the_worker_survives() {
         let worker = ToolRuntime::new();
         // A job that panics must come back as an error, not kill the process.
-        let panicked = worker.run(
-            |_rt| -> i32 { panic!("boom") },
-            Duration::from_secs(2),
-        );
+        let panicked = worker.run(|_rt| -> i32 { panic!("boom") }, Duration::from_secs(2));
         assert_eq!(panicked, Err(ToolRunError::Panicked));
         // The worker is still alive and usable afterwards.
         let ok = worker.run(|rt| rt.block_on(async { 41 + 1 }), Duration::from_secs(2));

@@ -30,8 +30,8 @@ pub mod home;
 pub mod memory;
 mod secure_path;
 pub mod text;
-pub mod vault;
 pub mod tools;
+pub mod vault;
 
 pub fn run() -> anyhow::Result<()> {
     cli::run()
