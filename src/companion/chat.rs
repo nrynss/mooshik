@@ -18,11 +18,17 @@ use super::CompanionError;
 /// opens Memory — the caller (`crate::cli::chat`) opens and injects it, keeping
 /// this module free of any direct reference to the memory module (M3 pin).
 pub fn run_chat(config: &Config, executor: Arc<dyn ToolExecutor>) -> Result<(), CompanionError> {
+    // The caller's `executor` handle outlives `block_on` here on purpose: the
+    // session's clone dies inside the async context, and the last reference
+    // drops only after the runtime is gone — so a memory-backed executor can
+    // run its graceful close (`Runtime::block_on` in `Drop`) legally.
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|_| CompanionError::Runtime)?
-        .block_on(run_chat_async(&config.companion, executor))
+        .block_on(run_chat_async(&config.companion, Arc::clone(&executor)))?;
+    drop(executor);
+    Ok(())
 }
 
 async fn run_chat_async(

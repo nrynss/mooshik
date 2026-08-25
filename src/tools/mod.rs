@@ -82,33 +82,52 @@ pub struct MemoryTools {
     mem: Arc<Memory>,
     worker: ToolRuntime,
     scratch: ScratchConfig,
+    /// The runtime that opened `mem`. Lambo spawns its flush daemon on the
+    /// runtime current at `Memory::builder().build()`; dropping that runtime
+    /// kills the daemon and nothing ever persists. Kept alive here so
+    /// [`Drop::drop`] drives a graceful close on the same runtime.
+    owner: Option<tokio::runtime::Runtime>,
+}
+
+impl Drop for MemoryTools {
+    /// Flush the write-behind log and release the session lease on the same
+    /// runtime that spawned the daemon. Without this a chat exiting on EOF or
+    /// Ctrl-C drops the `Arc<Memory>` silently and every unflushed derive is
+    /// lost with the process — the next process recalls nothing.
+    fn drop(&mut self) {
+        if let Some(owner) = self.owner.take() {
+            let mem = Arc::clone(&self.mem);
+            owner.block_on(async move {
+                if let Err(error) = mem.close().await {
+                    eprintln!("memory close: {error}");
+                }
+            });
+        }
+    }
 }
 
 impl MemoryTools {
-    /// Open the configured in-process `Memory` and wrap it as a tool executor.
-    ///
-    /// Returns `None` (after a bounded attempt) when the backend cannot be
-    /// opened — e.g. no Postgres DSN — so chat can degrade to a Noop executor
-    /// rather than stall. This is the injection point the CLI calls; the chat
-    /// loop itself stays free of any `crate::memory` reference (M3 pin).
     pub fn for_chat(config: &Config) -> Option<Arc<dyn ToolExecutor>> {
         let opened = catch_unwind(AssertUnwindSafe(|| open_memory(config))).unwrap_or(None);
-        opened.map(|memory| {
+        opened.map(|(owner, memory)| {
             Arc::new(MemoryTools {
-                mem: memory,
+                mem: Arc::new(memory),
                 worker: ToolRuntime::new(),
                 scratch: ScratchConfig::default(),
+                owner: Some(owner),
             }) as Arc<dyn ToolExecutor>
         })
     }
 
     /// Build an executor over an already-open `Memory` (used by tests with a
-    /// fixture memory, and by callers that own their own open).
+    /// fixture memory, and by callers that own their own open). The caller
+    /// keeps responsibility for closing that memory.
     pub fn from_memory(memory: Memory) -> Self {
         Self {
             mem: Arc::new(memory),
             worker: ToolRuntime::new(),
             scratch: ScratchConfig::default(),
+            owner: None,
         }
     }
 
@@ -391,7 +410,8 @@ pub fn executor_for_chat(config: &Config) -> Arc<dyn ToolExecutor> {
         }
     }
 }
-fn open_memory(config: &Config) -> Option<Arc<Memory>> {
+
+fn open_memory(config: &Config) -> Option<(tokio::runtime::Runtime, Memory)> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -401,7 +421,7 @@ fn open_memory(config: &Config) -> Option<Arc<Memory>> {
         tokio::time::timeout(OPEN_WAIT, crate::memory::open(&config)).await
     });
     match opened {
-        Ok(Ok(memory)) => Some(Arc::new(memory)),
+        Ok(Ok(memory)) => Some((runtime, memory)),
         _ => None,
     }
 }
