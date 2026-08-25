@@ -225,3 +225,38 @@ impl PartialToolCall {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wire_chunk_types_accept_unknown_openai_fields() {
+        let src = include_str!("types.rs");
+        let start = src.find("Wire types omit").expect("wire-types comment");
+        let end = src.find("pub struct PartialToolCall").expect("partial");
+        assert!(
+            !src[start..end].contains("#[serde(deny_unknown_fields)]"),
+            "OpenAI-compat wire types must accept extra fields"
+        );
+        let chunk: ChatChunk = serde_json::from_str(
+            r#"{
+                "id":"chatcmpl-1",
+                "object":"chat.completion.chunk",
+                "model":"local-model",
+                "choices":[{"delta":{"role":"assistant","content":"Hi"},"finish_reason":null}],
+                "usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            chunk.choices.unwrap()[0]
+                .delta
+                .as_ref()
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("Hi")
+        );
+    }
+}

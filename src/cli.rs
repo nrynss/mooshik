@@ -142,9 +142,13 @@ fn serve(layout: &HomeLayout) -> anyhow::Result<()> {
     block_on(crate::memory::serve(&config))
 }
 
-fn chat(layout: &HomeLayout) -> anyhow::Result<()> {
+fn load_chat_config(layout: &HomeLayout) -> anyhow::Result<Config> {
     let root = layout.open_existing_root().map_err(anyhow::Error::new)?;
-    let config = Config::load_at(&root).map_err(anyhow::Error::new)?;
+    Config::load_at(&root).map_err(anyhow::Error::new)
+}
+
+fn chat(layout: &HomeLayout) -> anyhow::Result<()> {
+    let config = load_chat_config(layout)?;
     crate::companion::run_chat(&config).map_err(anyhow::Error::new)
 }
 
@@ -236,6 +240,46 @@ mod tests {
             .to_string()
             .contains("cowork partner"));
         assert!(!cmd.get_after_help().unwrap().to_string().is_empty());
+    }
+
+    #[test]
+    fn chat_dispatch_does_not_open_memory() {
+        let src = include_str!("cli.rs");
+        let load = src
+            .split("fn load_chat_config")
+            .nth(1)
+            .unwrap()
+            .split("fn chat(")
+            .next()
+            .unwrap();
+        assert!(!load.contains("memory::"), "{load}");
+        assert!(!load.contains("provision"), "{load}");
+        let body = src
+            .split("fn chat(")
+            .nth(1)
+            .unwrap()
+            .split("fn block_on")
+            .next()
+            .unwrap();
+        assert!(!body.contains("memory::"), "{body}");
+        assert!(!body.contains("provision"), "{body}");
+        assert!(!body.contains("serve("), "{body}");
+        assert!(body.contains("run_chat"), "{body}");
+    }
+
+    #[test]
+    fn chat_prepare_succeeds_on_default_home_without_dsn() {
+        let root = std::env::temp_dir().join(format!("mooshik-chat-prep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let layout = HomeLayout::new(&root);
+        layout.init().unwrap();
+        let config = load_chat_config(&layout).unwrap();
+        assert_eq!(config.companion.model, "local-model");
+        let file = std::fs::read_to_string(&layout.config).unwrap();
+        assert!(!file.contains("dsn"), "{file}");
+        let isolated = Config::from_toml_and_env(&file, []).unwrap();
+        assert!(isolated.store.dsn.is_none());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

@@ -181,6 +181,22 @@ mod tests {
     }
 
     #[test]
+    fn garbage_companion_env_values_fail_closed() {
+        assert!(matches!(
+            Config::from_toml_and_env("", env(&[(COMPANION_CONTEXT_WINDOW_ENV, "nope")])),
+            Err(ConfigError::InvalidNumber)
+        ));
+        assert!(matches!(
+            Config::from_toml_and_env("", env(&[(COMPANION_TEMPERATURE_ENV, "inf")])),
+            Err(ConfigError::InvalidNumber)
+        ));
+        assert!(matches!(
+            Config::from_toml_and_env("", env(&[(COMPANION_TEMPERATURE_ENV, "nope")])),
+            Err(ConfigError::InvalidNumber)
+        ));
+    }
+
+    #[test]
     fn zero_context_window_fails_closed() {
         assert!(matches!(
             Config::from_toml_and_env("[companion]\ncontext_window = 0\n", []),

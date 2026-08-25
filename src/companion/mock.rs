@@ -38,6 +38,28 @@ impl Frame {
         Self::data(&serde_json::json!({"choices":[{"delta":{"content":text}}]}).to_string())
     }
 
+    /// Envelope a real OpenAI-compat endpoint sends; extra keys must not fail parse.
+    pub fn content_openai(text: &str) -> Self {
+        Self::data(
+            &serde_json::json!({
+                "id": "chatcmpl-x",
+                "object": "chat.completion.chunk",
+                "model": "local-model",
+                "choices": [{
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": text},
+                    "finish_reason": null
+                }],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2
+                }
+            })
+            .to_string(),
+        )
+    }
+
     pub fn content_delayed(delay: Duration, text: &str) -> Self {
         let mut frame = Self::content(text);
         frame.delay = delay;
@@ -84,6 +106,7 @@ impl Frame {
 pub struct Script {
     pub status: u16,
     pub frames: Vec<Frame>,
+    pub body: Option<String>,
 }
 
 impl Script {
@@ -91,6 +114,15 @@ impl Script {
         Self {
             status: 200,
             frames,
+            body: None,
+        }
+    }
+
+    pub fn error(status: u16, body: &str) -> Self {
+        Self {
+            status,
+            frames: Vec::new(),
+            body: Some(body.to_owned()),
         }
     }
 }
@@ -139,6 +171,18 @@ impl MockServer {
     pub fn aborted(&self) -> bool {
         self.aborted.load(Ordering::SeqCst)
     }
+
+    pub fn assert_all_streaming(&self) {
+        for req in self.requests() {
+            let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+            assert_eq!(
+                body.get("stream"),
+                Some(&serde_json::Value::Bool(true)),
+                "{}",
+                req.body
+            );
+        }
+    }
 }
 
 impl Drop for MockServer {
@@ -156,11 +200,30 @@ async fn handle_conn(
     let Ok(req) = read_http(&mut stream).await else {
         return;
     };
-    captured.lock().unwrap().push(req);
+    captured.lock().unwrap().push(req.clone());
+    if !is_stream_true(&req.body) {
+        let _ = stream
+            .write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 24\r\nConnection: close\r\n\r\n{\"error\":\"stream false\"}")
+            .await;
+        return;
+    }
     let script = queue.lock().unwrap().pop_front();
     let Some(script) = script else {
         return;
     };
+    if let Some(body) = script.body {
+        let head = format!(
+            "HTTP/1.1 {} ERR\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            script.status,
+            body.len()
+        );
+        if stream.write_all(head.as_bytes()).await.is_err()
+            || stream.write_all(body.as_bytes()).await.is_err()
+        {
+            aborted.store(true, Ordering::SeqCst);
+        }
+        return;
+    }
     let head = format!(
         "HTTP/1.1 {} OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
         script.status
@@ -235,4 +298,11 @@ async fn read_http(stream: &mut TcpStream) -> std::io::Result<Captured> {
         std::io::ErrorKind::UnexpectedEof,
         "eof",
     ))
+}
+
+fn is_stream_true(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| value.get("stream").and_then(serde_json::Value::as_bool))
+        == Some(true)
 }

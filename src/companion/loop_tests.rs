@@ -46,27 +46,41 @@ struct Recording {
 impl RecallInjector for Recording {
     fn inject(&self, dropped: &[Message], _current_user: &str) -> Option<Message> {
         self.dropped.lock().unwrap().push(dropped.to_vec());
-        None
+        Some(Message::system("RECALL_MARKER"))
     }
 }
 
-fn config(base_url: &str) -> CompanionConfig {
+pub(super) fn config(base_url: &str) -> CompanionConfig {
     CompanionConfig {
         base_url: base_url.to_owned(),
         ..CompanionConfig::default()
     }
 }
 
-fn session(server: &MockServer, window: u32) -> Session {
+pub(super) fn session(server: &MockServer, window: u32) -> Session {
     let client = CompanionClient::from_config(&config(&server.base_url)).unwrap();
     Session::new(client, window).with_system("s")
 }
 
 fn stop_script(parts: &[&str]) -> Script {
-    let mut frames: Vec<Frame> = parts.iter().map(|part| Frame::content(part)).collect();
+    let mut frames: Vec<Frame> = parts
+        .iter()
+        .enumerate()
+        .map(|(index, part)| {
+            if index == 0 {
+                Frame::content_openai(part)
+            } else {
+                Frame::content(part)
+            }
+        })
+        .collect();
     frames.push(Frame::finish("stop"));
     frames.push(Frame::done());
     Script::sse(frames)
+}
+
+fn request_json(body: &str) -> Value {
+    serde_json::from_str(body).unwrap()
 }
 
 #[tokio::test]
@@ -90,6 +104,7 @@ async fn streams_content_tokens_in_order() {
         requests[0].path
     );
     assert_eq!(requests[0].authorization, None);
+    server.assert_all_streaming();
 }
 
 #[tokio::test]
@@ -119,12 +134,24 @@ async fn content_then_tool_calls_assembled_from_split_chunks() {
     assert_eq!(reply, "done-now");
     let requests = server.requests();
     assert_eq!(requests.len(), 2);
-    let second: Value = serde_json::from_str(&requests[1].body).unwrap();
+    server.assert_all_streaming();
+    let first = request_json(&requests[0].body);
+    assert_eq!(first["tools"][0]["function"]["name"], "echo");
+    let second = request_json(&requests[1].body);
     let messages = second["messages"].as_array().unwrap();
-    let tool = messages
+    let tool_idx = messages
         .iter()
-        .find(|msg| msg["role"] == "tool")
+        .position(|msg| msg["role"] == "tool")
         .expect("tool result posted back");
+    let assistant = &messages[tool_idx - 1];
+    assert_eq!(assistant["role"], "assistant");
+    let calls = assistant["tool_calls"]
+        .as_array()
+        .expect("assistant tool_calls");
+    assert_eq!(calls[0]["id"], "call_1");
+    assert_eq!(calls[0]["function"]["name"], "echo");
+    assert_eq!(calls[0]["function"]["arguments"], "{\"text\":\"hi\"}");
+    let tool = &messages[tool_idx];
     assert_eq!(tool["content"], "hi");
     assert_eq!(tool["tool_call_id"], "call_1");
     let history_roles: Vec<_> = chat.history().iter().map(|m| m.role).collect();
@@ -163,6 +190,9 @@ async fn malformed_tool_arguments_yield_error_result_and_loop_continues() {
         text::get("companion.malformed_tool_args")
     );
     assert!(!chat.history().iter().any(|m| m.content == "not-json"));
+    server.assert_all_streaming();
+    let first = request_json(&requests[0].body);
+    assert_eq!(first["tools"][0]["function"]["name"], "echo");
 }
 
 #[tokio::test]
@@ -207,6 +237,7 @@ async fn cancel_mid_stream_does_not_commit_incomplete_assistant() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    server.assert_all_streaming();
 }
 
 #[tokio::test]
@@ -216,7 +247,9 @@ async fn context_pressure_drops_oldest_turns_and_invokes_injector() {
     let old_assistant = Message::assistant("old-reply", Vec::new());
     let current = Message::user("now-please");
     let system = Message::system("s");
-    let window = (message_tokens(&system) + message_tokens(&current) + 4) as u32;
+    let recall = Message::system("RECALL_MARKER");
+    let window =
+        (message_tokens(&system) + message_tokens(&current) + message_tokens(&recall) + 4) as u32;
     let server = MockServer::spawn(vec![stop_script(&["ok"])]).await;
     let dropped = Arc::new(Mutex::new(Vec::new()));
     let client = CompanionClient::from_config(&config(&server.base_url)).unwrap();
@@ -234,7 +267,9 @@ async fn context_pressure_drops_oldest_turns_and_invokes_injector() {
     assert!(!body.contains(marker), "{body}");
     assert!(!body.contains("old-reply"), "{body}");
     assert!(body.contains("now-please"), "{body}");
+    assert!(body.contains("RECALL_MARKER"), "{body}");
     assert!(!body.to_lowercase().contains("summary"), "{body}");
+    server.assert_all_streaming();
     let seen = dropped.lock().unwrap();
     assert_eq!(seen.len(), 1);
     assert!(seen[0].iter().any(|m| m.content.contains(marker)));
@@ -247,6 +282,8 @@ async fn empty_tool_list_omits_tools_field() {
     chat.turn("hi", &Cancellation::new(), |_| {}).await.unwrap();
     let body: Value = serde_json::from_str(&server.requests()[0].body).unwrap();
     assert!(body.get("tools").is_none(), "{body}");
+    assert_eq!(body["stream"], true);
+    server.assert_all_streaming();
 }
 
 #[tokio::test]
@@ -280,4 +317,5 @@ async fn api_key_never_appears_in_client_errors() {
         server.requests()[0].authorization.as_deref(),
         Some("Bearer s3cret-companion-key")
     );
+    server.assert_all_streaming();
 }

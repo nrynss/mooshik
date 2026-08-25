@@ -15,6 +15,8 @@ mod types;
 mod loop_tests;
 #[cfg(test)]
 mod mock;
+#[cfg(test)]
+mod pins;
 
 pub use cancel::Cancellation;
 pub use chat::run_chat;

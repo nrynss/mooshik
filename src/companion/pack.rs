@@ -184,7 +184,10 @@ mod tests {
             Message::assistant("beta-secret-turn", Vec::new()),
             Message::user("now"),
         ];
-        let window = (message_tokens(&history[0]) + message_tokens(&history[3])) as u32;
+        let summary = Message::system("summary: alpha-secret-turn beta-secret-turn");
+        let window = (message_tokens(&history[0])
+            + message_tokens(&history[3])
+            + message_tokens(&summary)) as u32;
         let packed = pack_messages(&history, window, &NoopRecall).unwrap();
         let joined = packed
             .messages
@@ -199,9 +202,42 @@ mod tests {
 
     #[test]
     fn current_user_turn_that_exceeds_window_fails() {
-        let huge = "x".repeat(400);
-        let history = vec![Message::system("s"), Message::user(huge)];
-        let err = pack_messages(&history, 4, &NoopRecall).unwrap_err();
+        let system = Message::system("s");
+        let huge = Message::user("x".repeat(400));
+        let history = vec![system.clone(), huge.clone()];
+        let window = message_tokens(&system) as u32;
+        assert!(message_tokens(&system) <= window as usize);
+        assert!(message_tokens(&system) + message_tokens(&huge) > window as usize);
+        let err = pack_messages(&history, window, &NoopRecall).unwrap_err();
         assert!(matches!(err, CompanionError::TurnTooLarge));
+    }
+
+    struct MarkerRecall;
+
+    impl RecallInjector for MarkerRecall {
+        fn inject(&self, dropped: &[Message], _current_user: &str) -> Option<Message> {
+            assert!(!dropped.is_empty());
+            Some(Message::system("RECALL_MARKER"))
+        }
+    }
+
+    #[test]
+    fn injector_some_is_packed_and_dropped_turns_stay_out() {
+        let history = vec![
+            Message::system("s"),
+            Message::user("UNIQUE_OLD_TURN_xyz"),
+            Message::assistant("old-reply", Vec::new()),
+            Message::user("now"),
+        ];
+        let recall = Message::system("RECALL_MARKER");
+        let window = (message_tokens(&history[0])
+            + message_tokens(&history[3])
+            + message_tokens(&recall)) as u32;
+        let packed = pack_messages(&history, window, &MarkerRecall).unwrap();
+        let contents: Vec<&str> = packed.messages.iter().map(|m| m.content.as_str()).collect();
+        assert!(contents.contains(&"RECALL_MARKER"));
+        assert!(contents.contains(&"now"));
+        assert!(!contents.iter().any(|c| c.contains("UNIQUE_OLD_TURN_xyz")));
+        assert!(!contents.iter().any(|c| c.contains("old-reply")));
     }
 }

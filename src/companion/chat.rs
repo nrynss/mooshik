@@ -81,3 +81,18 @@ fn lock(
 ) -> std::sync::MutexGuard<'_, Option<Cancellation>> {
     current.lock().unwrap_or_else(|error| error.into_inner())
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn run_chat_does_not_open_memory() {
+        let src = include_str!("chat.rs");
+        let production = src.split("#[cfg(test)]").next().unwrap();
+        assert!(!production.contains("memory::"), "{production}");
+        assert!(!production.contains("crate::memory"), "{production}");
+        assert!(
+            production.contains("CompanionClient::from_config"),
+            "{production}"
+        );
+    }
+}
