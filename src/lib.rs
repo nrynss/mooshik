@@ -31,6 +31,7 @@ pub mod memory;
 mod secure_path;
 pub mod text;
 pub mod vault;
+pub mod tools;
 
 pub fn run() -> anyhow::Result<()> {
     cli::run()

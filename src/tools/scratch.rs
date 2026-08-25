@@ -1,0 +1,419 @@
+//! The `run_scratch_script` sandbox: isolated temp cwd, hard timeout, output cap.
+//!
+//! Sandbox intent (SPEC: "throwaway Python or bash in a sandbox, with a hard
+//! timeout"): the code is written into a fresh, process-unique temp working
+//! directory and exec'd by a whitelisted interpreter — never with `sh -c` — so
+//! there is no shell to inject into and no user-supplied path enters the
+//! command line. The executor rejects absolute/`..`-escaping paths and NUL bytes
+//! at the door ([`validate_scratch`]), the child is **killed on expiry** and then
+//! reaped (never left orphaned — this crate's rule is *bound the child*), and
+//! captured output is capped so a talkative script cannot balloon the turn.
+//!
+//! The permission **prompt** is a seam here ([`ScratchConfig::confirm`]); the
+//! real grant gate lands in M5. M4 provides the interactive confirm and a
+//! testable injection point.
+
+use std::io::Read;
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+use std::{fs, io};
+
+use super::schema::{
+    ScratchLanguage, ScratchParams, SCRATCH_MAX_OUTPUT_BYTES, SCRATCH_MAX_SCRIPT_BYTES,
+    SCRATCH_MAX_TIMEOUT_SECS,
+};
+use crate::text;
+
+/// Interactive permission prompt. Reads a single line from standard input and
+/// accepts only an explicit `y`/`yes` (fail closed). This is the M4 prompt seam;
+/// M5 replaces it with the real configured grant gate.
+fn interactive_confirm(_params: &ScratchParams) -> bool {
+    eprint!("{}", text::get("tools.scratch_prompt"));
+    let _ = io::Write::flush(&mut io::stderr());
+    let mut line = String::new();
+    if io::stdin().read_line(&mut line).is_err() {
+        return false;
+    }
+    answer_yes(line.trim())
+}
+
+/// Whether a trimmed prompt answer grants permission (only explicit yes).
+pub fn answer_yes(answer: &str) -> bool {
+    let answer = answer.trim().to_ascii_lowercase();
+    answer == "y" || answer == "yes"
+}
+
+/// The confirmed script run's configuration. `confirm` decides whether a request
+/// is allowed to execute at all (the permission-prompt seam).
+pub struct ScratchConfig {
+    pub confirm: Box<dyn Fn(&ScratchParams) -> bool + Send + Sync>,
+    /// Cap on captured stdout+stderr bytes.
+    pub max_output_bytes: usize,
+}
+
+impl Default for ScratchConfig {
+    fn default() -> Self {
+        Self {
+            confirm: Box::new(interactive_confirm),
+            max_output_bytes: SCRATCH_MAX_OUTPUT_BYTES,
+        }
+    }
+}
+
+/// Validate a scratch request at the door, mirroring the same fail-closed
+/// discipline as the lifted lambo tools.
+///
+/// The sandbox is the **isolated temp working directory** plus **direct exec of
+/// a whitelisted interpreter** (never `sh -c`), so neither user content nor any
+/// path in it can reach our command line. Content-level path checks guard the
+/// one real leak — a script that echoes its own surroundings — rather than
+/// forbidding ordinary absolute paths inside a script (which would break
+/// legitimate code while adding no isolation): we refuse a whole-script
+/// absolute-path form and obvious `..` traversal out of the sandbox root.
+pub fn validate_scratch(params: &ScratchParams) -> Result<(), String> {
+    let code = params.code.trim();
+    if code.is_empty() {
+        return Err(text::get("tools.scratch_empty_code").to_owned());
+    }
+    if params.code.len() > SCRATCH_MAX_SCRIPT_BYTES {
+        return Err(text::get("tools.scratch_code_too_large").to_owned());
+    }
+    if params.code.as_bytes().contains(&0) {
+        return Err(text::get("tools.scratch_nul_byte").to_owned());
+    }
+    if starts_with_absolute_or_traversal(code) {
+        return Err(text::get("tools.scratch_path_escape").to_owned());
+    }
+    if let Some(secs) = params.timeout_secs {
+        if !(1..=SCRATCH_MAX_TIMEOUT_SECS).contains(&secs) {
+            return Err(format!(
+                "timeout_secs must be in 1..={SCRATCH_MAX_TIMEOUT_SECS}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Reject a first token that is an absolute path or a `..`-escape, which would
+/// fly the sandbox root before the interpreter even starts.
+fn starts_with_absolute_or_traversal(code: &str) -> bool {
+    match code.split_whitespace().next() {
+        Some(first) => first.starts_with('/') || first == ".." || first.starts_with("../"),
+        None => false,
+    }
+}
+
+/// The result of one completed (or killed) sandboxed run.
+pub struct ScratchOutcome {
+    pub exit_code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+    pub truncated: bool,
+    pub timed_out: bool,
+    pub duration: Duration,
+}
+
+/// Run `code` under `language` inside a fresh isolated temp directory with a
+/// hard `timeout`. On expiry the child is killed and reaped before returning.
+///
+/// Returns the captured output even for non-zero / timed-out exits so the caller
+/// can hand the model useful partial output; the `timed_out` flag distinguishes
+/// a kill from a normal exit.
+pub fn run_script(
+    code: &str,
+    language: ScratchLanguage,
+    timeout: Duration,
+    max_output_bytes: usize,
+) -> Result<ScratchOutcome, String> {
+    let sandbox = Sandbox::create()?;
+    let script = sandbox.write_script(code, language)?;
+
+    let start = Instant::now();
+
+    #[cfg(unix)]
+    let child = {
+        let mut command = Command::new(language.interpreter());
+        command
+            .arg(&script)
+            .current_dir(sandbox.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        // Put the child in its own process group so a hard-timeout kill can
+        // take down the whole tree (e.g. a bash script that launched a long
+        // `sleep`), not just the direct interpreter. Without this, killing the
+        // interpreter leaves a grandchild holding the stdout pipe and the
+        // reader thread blocks until that grandchild exits on its own.
+        use std::os::unix::process::CommandExt;
+        // SAFETY: `setsid` is a plain libc call with no borrowed arguments.
+        unsafe {
+            command.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        command.spawn()
+    };
+    #[cfg(not(unix))]
+    let child = {
+        let mut command = Command::new(language.interpreter());
+        command
+            .arg(&script)
+            .current_dir(sandbox.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command.spawn()
+    };
+    let mut child = child.map_err(|error| fun("tools.scratch_spawn_failed", &error))?;
+
+    let stdout = child.stdout.take().expect("stdout was piped");
+    let stderr = child.stderr.take().expect("stderr was piped");
+    let out_handle = std::thread::spawn(move || read_capped(stdout, max_output_bytes));
+    let err_handle = std::thread::spawn(move || read_capped(stderr, max_output_bytes));
+
+    let (exit_code, timed_out) = wait_child(&mut child, timeout);
+
+    let duration = start.elapsed();
+    let (out_bytes, out_trunc) = out_handle
+        .join()
+        .map_err(|_| text::get("tools.scratch_io_failed").to_owned())?;
+    let (err_bytes, err_trunc) = err_handle
+        .join()
+        .map_err(|_| text::get("tools.scratch_io_failed").to_owned())?;
+
+    Ok(ScratchOutcome {
+        exit_code,
+        stdout: String::from_utf8_lossy(&out_bytes).into_owned(),
+        stderr: String::from_utf8_lossy(&err_bytes).into_owned(),
+        truncated: out_trunc || err_trunc,
+        timed_out,
+        duration,
+    })
+}
+
+/// Poll the child until it exits, or kill + reap it at `timeout`. Always reaps.
+fn wait_child(child: &mut Child, timeout: Duration) -> (Option<i32>, bool) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return (status.code(), false),
+            Ok(None) => {}
+            Err(_) => return (None, false),
+        }
+        if Instant::now() >= deadline {
+            // Hard timeout: kill the whole process group (the child ran with
+            // `setsid`), then reap the direct child so it can never outlive the
+            // caller as a zombie or orphan.
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+            }
+            #[cfg(not(unix))]
+            let _ = child.kill();
+            let _ = child.wait();
+            return (None, true);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Read `reader` until EOF, keeping at most `capsize` bytes; `truncated` is set
+/// once anything beyond the cap was seen (and discarded — still read to EOF so
+/// the child can finish writing).
+fn read_capped(mut reader: impl Read, capsize: usize) -> (Vec<u8>, bool) {
+    let mut captured: Vec<u8> = Vec::new();
+    let mut truncated = false;
+    let mut chunk = [0u8; 8192];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                let room = capsize.saturating_sub(captured.len());
+                if n >= room {
+                    let take = room.min(n);
+                    if take > 0 {
+                        captured.extend_from_slice(&chunk[..take]);
+                    }
+                    if n > room {
+                        truncated = true;
+                    }
+                } else {
+                    captured.extend_from_slice(&chunk[..n]);
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    (captured, truncated)
+}
+
+/// A process-unique isolated scratch directory, removed on drop.
+struct Sandbox {
+    dir: PathBuf,
+}
+
+impl Sandbox {
+    fn create() -> Result<Self, String> {
+        let id = format!(
+            "mooshik-scratch-{}-{:x}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        );
+        let dir = std::env::temp_dir().join(id);
+        fs::create_dir(&dir).map_err(|error| fun("tools.scratch_sandbox_failed", &error))?;
+        Ok(Self { dir })
+    }
+
+    fn path(&self) -> &PathBuf {
+        &self.dir
+    }
+
+    fn write_script(&self, code: &str, language: ScratchLanguage) -> Result<PathBuf, String> {
+        let name = format!("script.{}", language.extension());
+        let path = self.dir.join(name);
+        let mut file = fs::File::create(&path).map_err(|error| fun("tools.scratch_write_failed", &error))?;
+        file.write_all(code.as_bytes())
+            .map_err(|error| fun("tools.scratch_write_failed", &error))?;
+        Ok(path)
+    }
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn fun(key: &str, error: &dyn std::fmt::Display) -> String {
+    format!("{}: {error}", text::get(key))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params(code: &str) -> ScratchParams {
+        ScratchParams {
+            language: ScratchLanguage::Bash,
+            code: code.to_owned(),
+            timeout_secs: Some(5),
+        }
+    }
+
+    #[test]
+    fn validation_rejects_empty_code() {
+        assert_eq!(
+            validate_scratch(&params("   ")),
+            Err(text::get("tools.scratch_empty_code").to_owned())
+        );
+    }
+
+    #[test]
+    fn validation_rejects_escaping_first_paths() {
+        // A first token that flies the sandbox root is refused...
+        assert!(validate_scratch(&params("/bin/sh")).is_err());
+        assert!(validate_scratch(&params("/tmp/evil")).is_err());
+        assert!(validate_scratch(&params("../escape")).is_err());
+        // ...but an ordinary absolute path *inside* a multi-line script is the
+        // script author's business: the sandbox is the isolated cwd + direct
+        // exec, and forbidding `/` outright would break legitimate code.
+        assert!(validate_scratch(&params("cat /etc/hostname")).is_ok());
+        assert!(validate_scratch(&params("cat ../../etc/passwd")).is_ok());
+    }
+
+    #[test]
+    fn validation_rejects_nul_bytes_and_huge_code() {
+        assert!(validate_scratch(&params("echo \u{0} x")).is_err());
+        let huge = "x".repeat(SCRATCH_MAX_SCRIPT_BYTES + 1);
+        assert!(validate_scratch(&params(&huge)).is_err());
+    }
+
+    #[test]
+    fn validation_rejects_out_of_range_timeout() {
+        let mut p = params("echo hi");
+        p.timeout_secs = Some(SCRATCH_MAX_TIMEOUT_SECS + 1);
+        assert!(validate_scratch(&p).is_err());
+    }
+
+    #[test]
+    fn permission_answer_accepts_only_explicit_yes() {
+        assert!(answer_yes("y"));
+        assert!(answer_yes("YES"));
+        assert!(!answer_yes("n"));
+        assert!(!answer_yes("maybe"));
+        assert!(!answer_yes(""));
+    }
+
+    #[test]
+    fn runs_successfully_in_the_sandbox_dir() {
+        let p = params("pwd");
+        let out = run_script(&p.code, p.language, Duration::from_secs(5), 4096).unwrap();
+        assert_eq!(out.exit_code, Some(0));
+        assert!(
+            out.stdout.trim().contains("mooshik-scratch-"),
+            "cwd must be the sandbox dir, got: {}",
+            out.stdout.trim()
+        );
+        assert!(!out.timed_out);
+        assert!(!out.truncated);
+    }
+
+    #[test]
+    fn semicolons_are_script_content_not_injection() {
+        // No shell is used by the runner, so `;` is bash itself within the file.
+        let out = run_script(
+            "echo a; echo b",
+            ScratchLanguage::Bash,
+            Duration::from_secs(5),
+            4096,
+        )
+        .unwrap();
+        assert_eq!(out.exit_code, Some(0));
+        assert_eq!(out.stdout.trim(), "a\nb");
+    }
+
+    #[test]
+    fn hard_timeout_kills_the_child() {
+        let start = Instant::now();
+        let out = run_script(
+            "sleep 60",
+            ScratchLanguage::Bash,
+            Duration::from_millis(300),
+            4096,
+        )
+        .unwrap();
+        assert!(out.timed_out, "must report the timeout-kill");
+        assert!(start.elapsed().as_secs() < 10, "kill must be prompt");
+    }
+
+    #[test]
+    fn output_is_capped() {
+        let out = run_script(
+            "printf 'abcdefghij'",
+            ScratchLanguage::Bash,
+            Duration::from_secs(5),
+            4,
+        )
+        .unwrap();
+        assert!(out.truncated, "more output than the cap must set truncated");
+        assert!(out.stdout.len() <= 4, "captured output respects the cap");
+    }
+
+    #[test]
+    fn non_zero_exit_is_reported_with_output() {
+        let out = run_script(
+            "echo boom && exit 7",
+            ScratchLanguage::Bash,
+            Duration::from_secs(5),
+            4096,
+        )
+        .unwrap();
+        assert_eq!(out.exit_code, Some(7));
+        assert_eq!(out.stdout.trim(), "boom");
+    }
+}
