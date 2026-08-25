@@ -232,3 +232,81 @@ fn for_chat_returns_none_when_memory_cannot_open() {
     let tools = MemoryTools::for_chat(&Config::default());
     assert!(tools.is_none());
 }
+
+// --- M5 composition pins: the ONE choke point is actually in place ----------
+
+#[test]
+fn executor_for_chat_wraps_its_inner_executor_in_the_gate() {
+    // P1-M5-1 pin, same technique as the M3 graph-independence seams: the
+    // production half of this module must end `executor_for_chat` by
+    // constructing `GatedTools::new(inner, ...)` and returning it as the
+    // chat executor. A refactor that returns `inner` ungated fails here.
+    let production = include_str!("mod.rs").split("#[cfg(test)]").next().unwrap();
+    let factory = production
+        .split("pub fn executor_for_chat")
+        .nth(1)
+        .expect("executor_for_chat must exist");
+    assert!(
+        factory.contains("GatedTools::new(inner"),
+        "executor_for_chat must wrap its inner executor (even the No-op \
+         fallback) in GatedTools; without the wrap no permission is enforced"
+    );
+    assert!(
+        factory.contains("Arc::new(GatedTools::new(inner"),
+        "the gated executor must be handed out as an Arc<dyn ToolExecutor>"
+    );
+}
+
+#[test]
+fn for_chat_holds_the_inner_scratch_seam_open_under_the_gate() {
+    // P3-M5-5 pin: `for_chat` must set `ScratchConfig::always_confirmed()`
+    // so a prompt-mode grant asks exactly once at the gate. Regressing to the
+    // default seam would double-prompt (gate + inner) and nothing noticed.
+    let production = include_str!("mod.rs").split("#[cfg(test)]").next().unwrap();
+    let for_chat = production
+        .split("pub fn for_chat")
+        .nth(1)
+        .expect("for_chat must exist")
+        .split("\npub fn ")
+        .next()
+        .unwrap();
+    assert!(
+        for_chat.contains("ScratchConfig::always_confirmed()"),
+        "for_chat must hold the inner scratch confirm seam open so the gate \
+         prompts exactly once"
+    );
+}
+
+#[test]
+fn executor_for_chat_gates_even_the_noop_fallback() {
+    // Behavioral half of P1-M5-1: with the product-default store (Postgres,
+    // no DSN) memory cannot open, so `executor_for_chat` falls back to the
+    // Noop executor — and even that surface must come back gated. A denied
+    // tool is refused by the gate before it ever reaches the inner executor;
+    // an ungated composition would answer with `companion.unknown_tool`
+    // instead of the permission refusal.
+    let config = Config::from_toml_and_env("[permissions]\nscratch = 'deny'\n", []).unwrap();
+    let executor = super::executor_for_chat(&config);
+    assert!(
+        executor.specs().is_empty(),
+        "the Noop fallback advertises nothing"
+    );
+    assert_eq!(
+        executor.execute(
+            TOOL_SCRATCH,
+            &json!({ "language": "bash", "code": "echo hi" }),
+        ),
+        crate::text::get("permissions.denied"),
+        "a denied call through the fallback must be refused by the gate"
+    );
+    // A granted name still passes the gate and reaches the inner executor
+    // (which answers unknown-tool, since there is no memory behind it).
+    assert_eq!(
+        executor.execute(
+            TOOL_RECALL,
+            &json!({ "agent_id": "mooshik", "query": "anything" }),
+        ),
+        crate::text::get("companion.unknown_tool"),
+        "granted calls must pass through the gate to the inner executor"
+    );
+}

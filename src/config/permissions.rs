@@ -170,6 +170,12 @@ impl PermissionsConfig {
                     if key.ends_with('*') || is_known_tool(key) {
                         return Err(ConfigError::InvalidPermissions);
                     }
+                    // An allow-list naming nothing — the empty list included —
+                    // defines nothing and must not silently convert the whole
+                    // family to deny-by-config.
+                    if list.is_empty() {
+                        return Err(ConfigError::InvalidPermissions);
+                    }
                     for entry in list {
                         let entry = entry.trim();
                         if entry.is_empty() {
@@ -352,9 +358,11 @@ impl Grants {
         )
     }
 
-    /// Deterministic rendering for `mooshik permissions`: each known family
-    /// with its members' effective mode and source, then any configured scopes
-    /// that match no current tool.
+    /// Deterministic rendering for `mooshik permissions`: each known tool with
+    /// its *effective* decision (per-tool entry → prefix rule → family →
+    /// default, exactly what the gate enforces), then any configured prefix
+    /// rule that already decides a known tool, then scopes that match no
+    /// current tool — labelled as enforcing deny until one exists.
     pub fn render(&self) -> String {
         let mut out = String::new();
         out.push_str(text::get("permissions.resolved_header"));
@@ -363,11 +371,7 @@ impl Grants {
             out.push_str(family);
             out.push('\n');
             for member in family_members(family).unwrap_or_default() {
-                let decision = self
-                    .family
-                    .get(*member)
-                    .copied()
-                    .unwrap_or(DENIED_BY_DEFAULT);
+                let decision = self.decision_for(member);
                 out.push_str(&format!(
                     "  {} {} ({})\n",
                     member,
@@ -376,10 +380,32 @@ impl Grants {
                 ));
             }
         }
-        if !self.scoped.is_empty() {
+        // A prefix rule over known tool names is live configuration, not a
+        // future scope: its effect is already in the member lines above.
+        let live: Vec<(&String, &ScopedGrant)> = self
+            .scoped
+            .iter()
+            .filter(|(pattern, _)| self.matches_known_tools(pattern))
+            .collect();
+        for (pattern, grant) in &live {
+            if let ScopedGrant::Mode(mode) = grant {
+                out.push_str(&format!(
+                    "  {} {} ({})\n",
+                    pattern,
+                    mode.label(),
+                    GrantSource::Config.label()
+                ));
+            }
+        }
+        let unmatched: Vec<(&String, &ScopedGrant)> = self
+            .scoped
+            .iter()
+            .filter(|(pattern, _)| !self.matches_known_tools(pattern))
+            .collect();
+        if !unmatched.is_empty() {
             out.push_str(text::get("permissions.unmatched_header"));
             out.push('\n');
-            for (pattern, grant) in &self.scoped {
+            for (pattern, grant) in unmatched {
                 match grant {
                     ScopedGrant::Mode(mode) => out.push_str(&format!(
                         "  {} {} ({})\n",
@@ -390,7 +416,7 @@ impl Grants {
                     ScopedGrant::Tools(names) => out.push_str(&format!(
                         "  {} {} [{}] ({})\n",
                         pattern,
-                        text::get("permissions.mode_allow"),
+                        text::get("permissions.inert_list"),
                         names.join(", "),
                         GrantSource::Config.label()
                     )),
@@ -398,6 +424,18 @@ impl Grants {
             }
         }
         out
+    }
+
+    /// Whether a scoped key already decides at least one known tool today.
+    /// Only `*`-suffixed prefix rules can: plain unknown-scope keys never
+    /// collide with a known name (those resolve through `exact`/`family`).
+    fn matches_known_tools(&self, pattern: &str) -> bool {
+        pattern.strip_suffix('*').is_some_and(|prefix| {
+            MEMORY_TOOLS
+                .iter()
+                .chain(SCRATCH_TOOLS.iter())
+                .any(|tool| tool.starts_with(prefix))
+        })
     }
 }
 
@@ -437,9 +475,22 @@ mod tests {
                 (SCRATCH.to_owned(), GrantMode::Prompt, GrantSource::Default),
             ]
         );
-        // Everything else is denied by default, from nowhere.
-        assert_eq!(grants.decision_for("web_fetch"), DENIED_BY_DEFAULT);
-        assert_eq!(grants.decision_for("fs_read"), DENIED_BY_DEFAULT);
+        // Everything else is denied by default, from nowhere. Literal, not
+        // `DENIED_BY_DEFAULT`: the pin must bite if the constant ever widens.
+        assert_eq!(
+            grants.decision_for("web_fetch"),
+            GrantDecision {
+                mode: GrantMode::Deny,
+                source: GrantSource::Default
+            }
+        );
+        assert_eq!(
+            grants.decision_for("fs_read"),
+            GrantDecision {
+                mode: GrantMode::Deny,
+                source: GrantSource::Default
+            }
+        );
     }
 
     #[test]
@@ -543,6 +594,11 @@ mod tests {
             "memory = ['']",
             "lambo_stats = ['x']",
             "'mcp.github.*' = ['create_issue']",
+            // Empty allow-lists name nothing and fail closed (P2-M5-2).
+            "memory = []",
+            "scratch = []",
+            "'mcp.github.*' = []",
+            "web = []",
         ] {
             assert!(matches!(
                 Config::from_toml_and_env(&format!("[permissions]\n{table}\n"), []),
@@ -587,6 +643,70 @@ mod tests {
             !quiet.contains(text::get("permissions.unmatched_header")),
             "{quiet}"
         );
+    }
+
+    #[test]
+    fn render_shows_the_effective_decision_for_per_tool_and_prefix_overrides() {
+        // P2-M5-1: exact per-tool entries land in `Grants.exact`; the render
+        // must show what the gate enforces, not just the family table.
+        let grants = grants_from("memory = 'deny'\nlambo_recall = 'allow'\n");
+        let rendered = grants.render();
+        assert!(
+            rendered.contains("  lambo_recall allow (config)\n"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("  lambo_derive deny (config)\n"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("  lambo_stats deny (config)\n"),
+            "{rendered}"
+        );
+
+        // A prefix rule that already decides a known tool is live
+        // configuration: it renders in the resolved section, not under the
+        // no-matching-tool header.
+        let live = grants_from("memory = 'deny'\n'lambo_d*' = 'prompt'\n");
+        let rendered = live.render();
+        let unmatched = rendered
+            .find(text::get("permissions.unmatched_header"))
+            .unwrap_or(usize::MAX);
+        let rule = rendered.find("  lambo_d* prompt (config)\n").unwrap();
+        assert!(
+            rule < unmatched,
+            "live prefix rule rendered as unmatched: {rendered}"
+        );
+        assert!(
+            rendered.contains("  lambo_derive prompt (config)\n"),
+            "{rendered}"
+        );
+
+        // An unknown-scope allow-list enforces deny until a tool matches; its
+        // label must say so instead of printing an unconditional allow.
+        let inert = grants_from("filesystem_read = ['~/work']\n");
+        let rendered = inert.render();
+        assert!(
+            rendered.contains(&format!(
+                "  filesystem_read {} [~/work] (config)\n",
+                text::get("permissions.inert_list")
+            )),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn prefix_equal_to_a_tool_name_loses_to_the_exact_entry_but_beats_the_family() {
+        // Documented resolution order pinned at the surprising edge: a prefix
+        // whose expansion equals a tool name is still just a prefix.
+        let exact_wins = grants_from("'lambo_recall*' = 'allow'\nlambo_recall = 'deny'");
+        assert_eq!(exact_wins.decision_for(RECALL).mode, GrantMode::Deny);
+
+        // Without an exact entry the prefix outranks the family mode — this is
+        // the documented order, pinned so a change here is a decision, not an
+        // accident (P3-M5-3).
+        let prefix_wins = grants_from("memory = 'deny'\n'lambo_recall*' = 'prompt'");
+        assert_eq!(prefix_wins.decision_for(RECALL).mode, GrantMode::Prompt);
     }
 
     #[test]

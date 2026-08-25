@@ -189,6 +189,30 @@ mod tests {
     }
 
     #[test]
+    fn a_panicking_confirm_is_contained_by_the_gate() {
+        // The `catch_unwind` around `authorized` must turn a hostile or
+        // buggy confirm callback into the generic internal-error string,
+        // never a dead loop, and the call must not dispatch.
+        let recorder = Arc::new(Recorder::new());
+        let gate = GatedTools::new(recorder.clone(), grants_from(""))
+            .with_confirm(Box::new(|_| panic!("confirm callback exploded")));
+        let out = gate.execute(
+            SCRATCH,
+            &serde_json::json!({ "language": "bash", "code": "echo hi" }),
+        );
+        assert_eq!(out, text::get("tools.internal_error"));
+        assert!(
+            recorder.calls().is_empty(),
+            "a panicked prompt must not dispatch"
+        );
+        // The gate survives: a subsequent denied call still answers contained.
+        assert_eq!(
+            gate.execute("never_granted", &serde_json::json!({})),
+            text::get("permissions.denied")
+        );
+    }
+
+    #[test]
     fn prompt_fires_only_in_prompt_mode() {
         // allow: no prompt.
         let prompts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
