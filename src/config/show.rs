@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use lambo::{EmbedderKind, StoreKind};
 use serde::Serialize;
 
@@ -11,8 +13,9 @@ struct ShowConfig<'a> {
     embedder: ShowEmbedder<'a>,
     daemon: &'a super::DaemonConfig,
     companion: ShowCompanion<'a>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     permissions: Option<&'a super::PermissionsConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<ShowTools<'a>>,
 }
 
 #[derive(Serialize)]
@@ -23,6 +26,17 @@ struct ShowCompanion<'a> {
     temperature: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     api_key: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+struct ShowTools<'a> {
+    scratch: ShowScratchTools<'a>,
+}
+
+#[derive(Serialize)]
+struct ShowScratchTools<'a> {
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    env: &'a BTreeMap<String, String>,
 }
 
 #[derive(Serialize)]
@@ -112,6 +126,12 @@ impl Config {
             daemon: &self.daemon,
             companion,
             permissions: (!self.permissions.entries.is_empty()).then_some(&self.permissions),
+            // Secret *names* only; the values live in the vault.
+            tools: (!self.tools.scratch.env.is_empty()).then_some(ShowTools {
+                scratch: ShowScratchTools {
+                    env: &self.tools.scratch.env,
+                },
+            }),
         })
         .expect("resolved config must serialize")
     }
@@ -173,5 +193,23 @@ mod tests {
         assert!(shown.contains("***REDACTED***"), "{shown}");
         assert!(!shown.contains(secret), "{shown}");
         assert!(shown.contains("api_key"), "{shown}");
+    }
+
+    #[test]
+    fn config_show_includes_configured_scratch_env_names() {
+        let config =
+            Config::from_toml_and_env("[tools.scratch.env]\nGITHUB_TOKEN = 'github-token'\n", [])
+                .unwrap();
+        let shown = config.redacted_toml();
+        assert!(shown.contains("[tools.scratch.env]"), "{shown}");
+        assert!(shown.contains("GITHUB_TOKEN"), "{shown}");
+        // Secret names are configuration, not secrets; they print as-is.
+        assert!(shown.contains("github-token"), "{shown}");
+    }
+
+    #[test]
+    fn config_show_omits_an_unconfigured_tools_section() {
+        let shown = Config::default().redacted_toml();
+        assert!(!shown.contains("[tools"), "{shown}");
     }
 }

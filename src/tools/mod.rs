@@ -25,13 +25,16 @@ use std::time::Duration;
 use crate::companion::{NoopExecutor, ToolExecutor, ToolSpec};
 use crate::config::Config;
 use crate::text;
+use crate::vault::SharedVault;
 
 mod permissions;
+pub mod redact;
 mod schema;
 mod scratch;
 mod worker;
 
 pub use permissions::{Confirm, GatedTools};
+pub use redact::RedactingTools;
 pub use scratch::ScratchConfig;
 
 use schema::{
@@ -84,6 +87,10 @@ pub struct MemoryTools {
     mem: Arc<Memory>,
     worker: ToolRuntime,
     scratch: ScratchConfig,
+    /// The shared vault handle (chat), if the vault opened. `None` means
+    /// chat runs unredacted-only-because-unopenable; scratch injection then
+    /// fails closed per run.
+    vault: Option<SharedVault>,
     /// The runtime that opened `mem`. Lambo spawns its flush daemon on the
     /// runtime current at `Memory::builder().build()`; dropping that runtime
     /// kills the daemon and nothing ever persists. Kept alive here so
@@ -109,7 +116,7 @@ impl Drop for MemoryTools {
 }
 
 impl MemoryTools {
-    pub fn for_chat(config: &Config) -> Option<Arc<dyn ToolExecutor>> {
+    pub fn for_chat(config: &Config, vault: Option<SharedVault>) -> Option<Arc<dyn ToolExecutor>> {
         let opened = catch_unwind(AssertUnwindSafe(|| open_memory(config))).unwrap_or(None);
         opened.map(|(owner, memory)| {
             Arc::new(MemoryTools {
@@ -118,8 +125,18 @@ impl MemoryTools {
                 // M5: the permission gate ([`GatedTools`]) owns prompting at
                 // the boundary; this inner seam is held open so a prompt-mode
                 // grant asks the user exactly once.
-                scratch: ScratchConfig::always_confirmed(),
+                scratch: ScratchConfig {
+                    secret_env: config
+                        .tools
+                        .scratch
+                        .env
+                        .iter()
+                        .map(|(var, name)| (var.clone(), name.clone()))
+                        .collect(),
+                    ..ScratchConfig::always_confirmed()
+                },
                 owner: Some(owner),
+                vault,
             }) as Arc<dyn ToolExecutor>
         })
     }
@@ -133,7 +150,16 @@ impl MemoryTools {
             worker: ToolRuntime::new(),
             scratch: ScratchConfig::default(),
             owner: None,
+            vault: None,
         }
+    }
+
+    /// Attach a shared vault handle (tests): enables per-run scratch secret
+    /// injection. Egress redaction is a decorator ([`RedactingTools`]), not a
+    /// `MemoryTools` concern.
+    pub fn with_vault(mut self, vault: Option<SharedVault>) -> Self {
+        self.vault = vault;
+        self
     }
 
     /// Override the scratch permission/cap configuration (tests).
@@ -349,6 +375,14 @@ impl MemoryTools {
         if !(self.scratch.confirm)(&params) {
             return text::get("tools.scratch_denied").to_owned();
         }
+        // Resolve the configured secret injections now — after confirm,
+        // before spawn. Any failure aborts before the script starts, so a
+        // script never runs half-injected and no value reaches an error.
+        let injected =
+            match scratch::resolve_injection(&self.scratch.secret_env, self.vault.as_ref()) {
+                Ok(env) => env,
+                Err(message) => return message,
+            };
         let timeout =
             Duration::from_secs(params.timeout_secs.unwrap_or(SCRATCH_DEFAULT_TIMEOUT_SECS));
         match scratch::run_script(
@@ -356,6 +390,7 @@ impl MemoryTools {
             params.language,
             timeout,
             self.scratch.max_output_bytes,
+            &injected,
         ) {
             Ok(outcome) => json!({
                 "exit_code": outcome.exit_code,
@@ -402,23 +437,38 @@ impl ToolExecutor for MemoryTools {
     }
 }
 
-/// The CLI-facing factory: open Memory for chat, wrap whatever came back —
-/// even the No-op fallback — in the M5 permission gate, and hand the gated
-/// surface to the chat loop. The gate is the one enforcement point: ungranted
-/// tools are not advertised and denied calls never reach the inner executor.
+/// The CLI-facing factory: open Memory for chat and compose the boundary —
+/// **permission gate → egress redaction → tools** — and hand it to the chat
+/// loop. Order is deliberate, one enforcement per concern:
+///
+/// 1. [`GatedTools`] decides *whether* the call may run at all (deny/prompt
+///    answers never execute anything and so never surface a result to scan);
+/// 2. the inner executor runs;
+/// 3. [`RedactingTools`] scans the final result string against every vault
+///    value post-execute, pre-history — before the model or the graph can see
+///    it. Every current and future tool crosses that single boundary.
+///
+/// `vault` is the shared handle opened by the chat entry point. When it is
+/// `None` (locked or missing home), chat still runs: a vault you cannot open
+/// cannot leak values either, and one stderr notice says so — the loop is
+/// never blocked on secret availability.
 ///
 /// Lives here, not in `cli`, so `cli::chat` stays free of any
 /// `crate::memory`/`provision` reference (M3 pins).
-pub fn executor_for_chat(config: &Config) -> Arc<dyn ToolExecutor> {
+pub fn executor_for_chat(config: &Config, vault: Option<SharedVault>) -> Arc<dyn ToolExecutor> {
+    if vault.is_none() {
+        eprintln!("{}", text::get("tools.vault_unavailable"));
+    }
     let grants = config.permissions.grants();
-    let inner: Arc<dyn ToolExecutor> = match MemoryTools::for_chat(config) {
+    let inner: Arc<dyn ToolExecutor> = match MemoryTools::for_chat(config, vault.clone()) {
         Some(tools) => tools,
         None => {
             eprintln!("{}", text::get("tools.chat_memory_unavailable"));
             Arc::new(NoopExecutor)
         }
     };
-    Arc::new(GatedTools::new(inner, grants))
+    let redacting = Arc::new(RedactingTools::new(inner, vault));
+    Arc::new(GatedTools::new(redacting, grants))
 }
 
 fn open_memory(config: &Config) -> Option<(tokio::runtime::Runtime, Memory)> {

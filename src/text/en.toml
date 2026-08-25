@@ -27,6 +27,7 @@ zero_flush = "The memory flush interval must be greater than zero."
 zero_context_window = "The companion context window must be greater than zero."
 dsn_conflict = "MOOSHIK_POSTGRES_DSN and LAMBO_POSTGRES_DSN (or DATABASE_URL) name different databases. Unset one of them or make them agree."
 invalid_permissions = "The [permissions] configuration contains an unsupported value. Use \"allow\", \"prompt\", \"deny\", or a list of granted tool names."
+invalid_scratch_env = "The [tools.scratch.env] configuration contains an unsupported entry. The key must be a valid environment variable name and the value a valid secret name: ASCII letters, digits, dots, underscores, or hyphens."
 show_failed = "Could not load the Mooshik configuration. Fix the file and try again."
 
 [home]
@@ -85,6 +86,10 @@ tool_loop = "The companion kept calling tools without finishing. Try again."
 
 [tools]
 chat_memory_unavailable = "Workspace memory is unavailable, so this chat starts with no tools. Check the store and embedder configuration."
+vault_unavailable = "The encrypted vault could not be opened, so tool results are not checked against secrets this session. Chat continues without redaction."
+scratch_env_unavailable = "The encrypted vault could not be opened, so the configured secret environment could not be resolved; the script was not started."
+scratch_secret_missing = "Secret '{name}' is not in the vault; the script was not started."
+scratch_secret_failed = "A configured secret could not be read from the vault; the script was not started."
 lambo_recall_desc = "Recall relevant memory for a query and return the Lambo context block (canonical markers, blast-radius warnings, conflict lines)."
 lambo_derive_desc = "Derive concepts from the current interaction into session memory. Timestamps are stamped server-side; do not send one."
 lambo_stats_desc = "Session health: flush lag, write-behind log depth, node/edge/concept counts, canonization progress and degraded state."

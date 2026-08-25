@@ -32,6 +32,10 @@ impl Config {
         // The [permissions] table fails closed: anything uninterpretable fails
         // the load instead of silently widening what the companion may do.
         config.permissions.validate()?;
+        // The [tools.scratch.env] table fails closed like [permissions]: an
+        // entry that could never resolve must fail the load, not silently
+        // start scripts without their secrets.
+        config.tools.validate()?;
         let values: HashMap<String, String> = environment.into_iter().collect();
         overlay_vault(&mut config, &values)?;
         overlay_session(&mut config, &values);
@@ -516,5 +520,46 @@ mod tests {
             config.embedder.gemini_location.as_deref(),
             Some("us-central1")
         );
+    }
+
+    #[test]
+    fn scratch_env_table_parses_into_the_tools_section() {
+        let config =
+            Config::from_toml_and_env("[tools.scratch.env]\nGITHUB_TOKEN = 'github-token'\n", [])
+                .unwrap();
+        assert_eq!(
+            config
+                .tools
+                .scratch
+                .env
+                .get("GITHUB_TOKEN")
+                .map(String::as_str),
+            Some("github-token")
+        );
+        // The table stores secret *names*; a default config has no tools section.
+        assert_eq!(Config::default().tools.scratch.env.len(), 0);
+    }
+
+    #[test]
+    fn bad_scratch_env_entries_fail_closed() {
+        // Not an environment-variable identifier.
+        assert!(matches!(
+            Config::from_toml_and_env("[tools.scratch.env]\n'1BAD' = 'ok-name'", []),
+            Err(ConfigError::InvalidScratchEnv)
+        ));
+        assert!(matches!(
+            Config::from_toml_and_env("[tools.scratch.env]\n'BAD NAME' = 'ok-name'", []),
+            Err(ConfigError::InvalidScratchEnv)
+        ));
+        // A secret name the vault could never accept.
+        assert!(matches!(
+            Config::from_toml_and_env("[tools.scratch.env]\nOK_VAR = 'bad name!'", []),
+            Err(ConfigError::InvalidScratchEnv)
+        ));
+        // Unknown keys in [tools] are still unknown.
+        assert!(matches!(
+            Config::from_toml_and_env("[tools]\nunknown = 1", []),
+            Err(ConfigError::InvalidToml)
+        ));
     }
 }

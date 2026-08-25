@@ -516,3 +516,71 @@ async fn the_permission_gate_sits_between_the_session_loop_and_the_tools() {
     assert_eq!(outcome["created"].as_array().unwrap().len(), 1);
     server.assert_all_streaming();
 }
+
+/// M6 transcript-hygiene pin: after a turn whose tool output contained a
+/// vault value, `chat.history()` — and the follow-up request the model sees
+/// — must carry `[REDACTED]`, never the value.
+#[tokio::test]
+async fn tool_results_are_redacted_before_history_or_the_model() {
+    use crate::tools::RedactingTools;
+    use crate::vault::{PassphraseProvider, Vault};
+
+    const VALUE: &str = "history-pin-live-value";
+    let dir = std::env::temp_dir().join(format!(
+        "mooshik-loop-vault-{}-{:x}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut vault = Vault::open(
+        dir.join("vault"),
+        Arc::new(PassphraseProvider::new("pw").unwrap()),
+    )
+    .unwrap();
+    vault.set("token", VALUE).unwrap();
+    let vault = vault.shared();
+
+    // Echo hands the secret straight back; the redactor must catch it at the
+    // boundary before `Session` pushes it into history or the next request.
+    let executor = RedactingTools::new(Arc::new(Echo), Some(vault));
+
+    let first = Script::sse(vec![
+        Frame::content("checking."),
+        Frame::tool_head(0, "call_r", "echo"),
+        Frame::tool_args(0, &format!(r#"{{"text":"{VALUE}"}}"#)),
+        Frame::finish("tool_calls"),
+        Frame::done(),
+    ]);
+    let server = MockServer::spawn(vec![first, stop_script(&["done"])]).await;
+    let client = CompanionClient::from_config(&config(&server.base_url)).unwrap();
+    let mut chat = Session::new(client, 32768)
+        .with_system("s")
+        .with_executor(executor);
+    chat.turn("run", &Cancellation::new(), |_| {})
+        .await
+        .unwrap();
+
+    // History pin: the stored tool message carries the marker only.
+    let tool_message = chat
+        .history()
+        .iter()
+        .find(|message| message.role == Role::Tool)
+        .expect("tool result in history");
+    assert_eq!(tool_message.content, "[REDACTED]");
+    for message in chat.history() {
+        assert!(!message.content.contains(VALUE), "{}", message.content);
+    }
+
+    // What the model sees: the follow-up request posts the marker too.
+    let followup = request_json(&server.requests()[1].body);
+    let tool = followup["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|msg| msg["role"] == "tool")
+        .expect("tool result posted back");
+    assert_eq!(tool["content"], "[REDACTED]");
+}

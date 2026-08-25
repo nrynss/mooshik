@@ -151,17 +151,37 @@ fn serve(layout: &HomeLayout) -> anyhow::Result<()> {
     block_on(crate::memory::serve(&config))
 }
 
+/// Test seam for the M3 pin below: chat loads configuration without ever
+/// touching the memory subsystem.
+#[cfg_attr(not(test), allow(dead_code))]
 fn load_chat_config(layout: &HomeLayout) -> anyhow::Result<Config> {
     let root = layout.open_existing_root().map_err(anyhow::Error::new)?;
     Config::load_at(&root).map_err(anyhow::Error::new)
 }
 
 fn chat(layout: &HomeLayout) -> anyhow::Result<()> {
-    let config = load_chat_config(layout)?;
-    // Open the tool surface (lambo tools + scratch runner) and inject it; a
-    // missing backend degrades to a No-op executor so chat always runs.
-    let executor = crate::tools::executor_for_chat(&config);
+    let root = layout.open_existing_root().map_err(anyhow::Error::new)?;
+    let config = Config::load_at(&root).map_err(anyhow::Error::new)?;
+    // Open the vault once for the whole session; failure is not fatal (the
+    // tool boundary prints one notice and continues unredacted).
+    let executor =
+        crate::tools::executor_for_chat(&config, open_vault_for_chat(layout, &config, &root));
     crate::companion::run_chat(&config, executor).map_err(anyhow::Error::new)
+}
+
+/// Open the shared vault handle for chat. `None` on any failure — provider
+/// selection, keyring/passphrase problems, a bad file — which
+/// `executor_for_chat` turns into one stderr notice plus unredacted-only-
+/// because-unopenable operation.
+fn open_vault_for_chat(
+    layout: &HomeLayout,
+    config: &Config,
+    root: &std::fs::File,
+) -> Option<crate::vault::SharedVault> {
+    let provider = provider_for(config).ok()?;
+    Vault::open_at(&layout.vault, root.try_clone().ok()?, provider)
+        .ok()
+        .map(crate::vault::Vault::shared)
 }
 
 fn block_on<F>(fut: F) -> anyhow::Result<()>
@@ -176,7 +196,7 @@ where
         .map_err(anyhow::Error::new)
 }
 
-fn provider_for(config: &Config) -> anyhow::Result<Arc<dyn KeyProvider>> {
+pub(crate) fn provider_for(config: &Config) -> anyhow::Result<Arc<dyn KeyProvider>> {
     match config.vault.provider {
         VaultProvider::Keyring => Ok(Arc::new(KeyringProvider::system())),
         VaultProvider::Passphrase => {

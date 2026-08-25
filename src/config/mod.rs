@@ -1,6 +1,7 @@
 //! Configuration loading and the environment overlay.
 
 use std::{
+    collections::BTreeMap,
     env,
     ffi::OsStr,
     fs,
@@ -81,6 +82,11 @@ temperature = 0.2
 # memory  = ["recall", "derive"]
 # scratch = "prompt"
 # web     = "deny"
+# Inject vault secrets into scratch scripts as process environment variables:
+# the key is the env-var name the script reads, the value is the secret NAME
+# in the vault (never the value). Resolved fresh at every run.
+[tools.scratch.env]
+# GITHUB_TOKEN = "github-token"
 "#;
 
 #[derive(Debug)]
@@ -96,6 +102,7 @@ pub enum ConfigError {
     ZeroContextWindow,
     DsnConflict,
     InvalidPermissions,
+    InvalidScratchEnv,
 }
 
 impl std::fmt::Display for ConfigError {
@@ -111,6 +118,7 @@ impl std::fmt::Display for ConfigError {
             Self::ZeroFlush => "config.zero_flush",
             Self::ZeroContextWindow => "config.zero_context_window",
             Self::DsnConflict => "config.dsn_conflict",
+            Self::InvalidScratchEnv => "config.invalid_scratch_env",
             Self::InvalidPermissions => "config.invalid_permissions",
         };
         f.write_str(text::get(key))
@@ -140,6 +148,46 @@ impl Default for VaultConfig {
             provider: VaultProvider::Keyring,
         }
     }
+}
+
+/// The `[tools]` section: only what a tool needs from configuration lives
+/// here; tool behavior stays in code.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolsSection {
+    #[serde(default)]
+    pub scratch: ScratchToolsSection,
+}
+
+impl ToolsSection {
+    /// Fail closed on an unusable `[tools.scratch.env]` entry, matching the
+    /// M5 posture for `[permissions]`: a table that cannot be honored must
+    /// fail the load rather than silently start scripts without their
+    /// secrets. Values are secret *names*, never values.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        for (env_var, secret_name) in &self.scratch.env {
+            let valid_env = matches!(
+                env_var.as_bytes().first(),
+                Some(b'A'..=b'Z' | b'a'..=b'z' | b'_')
+            ) && env_var
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+            if !valid_env || !crate::vault::is_valid_name(secret_name) {
+                return Err(ConfigError::InvalidScratchEnv);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The `[tools.scratch]` section.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScratchToolsSection {
+    /// Environment variable name -> vault secret *name*, resolved at each
+    /// script run through the vault; the value itself never appears here.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -277,6 +325,8 @@ pub struct Config {
     pub companion: CompanionConfig,
     #[serde(default)]
     pub permissions: PermissionsConfig,
+    #[serde(default)]
+    pub tools: ToolsSection,
 }
 
 impl Config {

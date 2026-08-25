@@ -186,6 +186,17 @@ impl SecretToken {
     pub fn expose(&self) -> &str {
         self.0.as_str()
     }
+
+    /// Length of the wrapped value in bytes, so egress redaction can order
+    /// passes longest-first over overlapping prefixes. Reveals no plaintext.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether the wrapped value is empty; redaction skips empty tokens.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 impl std::fmt::Debug for SecretToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -196,6 +207,13 @@ impl std::fmt::Display for SecretToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("[REDACTED]")
     }
+}
+
+/// Whether `name` is acceptable as a secret name. The same rules [`Vault::set`]
+/// and [`Vault::get`] enforce; exposed so configuration can fail closed on an
+/// impossible secret reference at load time instead of at first use.
+pub fn is_valid_name(name: &str) -> bool {
+    validate_name(name).is_ok()
 }
 
 pub struct Vault {
@@ -315,6 +333,11 @@ impl Vault {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Wrap this vault in a [`SharedVault`] handle for the tool boundary.
+    pub fn shared(self) -> SharedVault {
+        Arc::new(std::sync::Mutex::new(self))
     }
 
     fn persist(&self) -> Result<(), VaultError> {
@@ -471,6 +494,21 @@ fn hex_digit(value: u8) -> Result<u8, VaultError> {
         b'A'..=b'F' => Ok(value - b'A' + 10),
         _ => Err(VaultError::Keyring),
     }
+}
+
+/// A vault handle shared across the tool boundary: egress redaction resolves
+/// values per tool call, scratch injection resolves them per script run, and
+/// `set` stays reachable for rotation. Locks are held only for the duration of
+/// a `get`/`list`/`set`, never across output scanning or process spawns.
+pub type SharedVault = Arc<std::sync::Mutex<Vault>>;
+
+/// Lock a shared vault, recovering a poisoned guard rather than panicking:
+/// nothing in this crate holds the lock across a fallible operation, so a
+/// poisoned mutex must never take chat down with it.
+pub fn lock_shared(vault: &SharedVault) -> std::sync::MutexGuard<'_, Vault> {
+    vault
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 pub fn redact_output(output: &str, values: impl IntoIterator<Item = SecretToken>) -> String {

@@ -159,6 +159,7 @@ async fn scratch_is_denied_when_confirmation_is_refused() {
     let tools = MemoryTools::from_memory(fixture_memory().await).with_scratch(ScratchConfig {
         confirm: Box::new(|_| false),
         max_output_bytes: 4096,
+        secret_env: Vec::new(),
     });
     let out = tools.execute(
         TOOL_SCRATCH,
@@ -172,6 +173,7 @@ async fn scratch_runs_when_confirmed() {
     let tools = MemoryTools::from_memory(fixture_memory().await).with_scratch(ScratchConfig {
         confirm: Box::new(|_| true),
         max_output_bytes: 4096,
+        secret_env: Vec::new(),
     });
     let out: Value = serde_json::from_str(&tools.execute(
         TOOL_SCRATCH,
@@ -191,6 +193,7 @@ async fn scratch_timeout_is_reported_by_the_executor() {
     let tools = MemoryTools::from_memory(fixture_memory().await).with_scratch(ScratchConfig {
         confirm: Box::new(|_| true),
         max_output_bytes: 4096,
+        secret_env: Vec::new(),
     });
     let out: Value = serde_json::from_str(&tools.execute(
         TOOL_SCRATCH,
@@ -211,6 +214,7 @@ async fn a_panicking_sync_tool_is_contained_as_an_error_string() {
     let tools = MemoryTools::from_memory(fixture_memory().await).with_scratch(ScratchConfig {
         confirm: Box::new(|_| panic!("confirm exploded")),
         max_output_bytes: 4096,
+        secret_env: Vec::new(),
     });
     let out = tools.execute(
         TOOL_SCRATCH,
@@ -229,31 +233,54 @@ async fn a_panicking_sync_tool_is_contained_as_an_error_string() {
 fn for_chat_returns_none_when_memory_cannot_open() {
     // Product default is Postgres with no DSN -> `MissingDsn` fails the open
     // fast (no network), so `for_chat` degrades to `None` instead of stalling.
-    let tools = MemoryTools::for_chat(&Config::default());
+    let tools = MemoryTools::for_chat(&Config::default(), None);
     assert!(tools.is_none());
 }
 
 // --- M5 composition pins: the ONE choke point is actually in place ----------
 
 #[test]
-fn executor_for_chat_wraps_its_inner_executor_in_the_gate() {
-    // P1-M5-1 pin, same technique as the M3 graph-independence seams: the
-    // production half of this module must end `executor_for_chat` by
-    // constructing `GatedTools::new(inner, ...)` and returning it as the
-    // chat executor. A refactor that returns `inner` ungated fails here.
+fn executor_for_chat_composes_gate_then_redaction_then_tools() {
+    // P1-M5-1 + M6 pin, same technique as the M3 graph-independence seams:
+    // the production half of this module must compose the boundary in the
+    // documented order — permission gate decides whether the call runs at
+    // all, the inner executor runs, [`RedactingTools`] scans the final
+    // result post-execute pre-history — and hand the whole stack out as an
+    // Arc<dyn ToolExecutor>. A refactor that drops either wrap fails here.
     let production = include_str!("mod.rs").split("#[cfg(test)]").next().unwrap();
     let factory = production
         .split("pub fn executor_for_chat")
         .nth(1)
         .expect("executor_for_chat must exist");
     assert!(
-        factory.contains("GatedTools::new(inner"),
+        factory.contains("RedactingTools::new(inner"),
         "executor_for_chat must wrap its inner executor (even the No-op \
-         fallback) in GatedTools; without the wrap no permission is enforced"
+         fallback) in RedactingTools; without the wrap tool results reach \
+         the model unscanned"
     );
     assert!(
-        factory.contains("Arc::new(GatedTools::new(inner"),
+        factory.contains("GatedTools::new(redacting"),
+        "the gate must sit in FRONT of redaction: permission first, \
+         execute, redact"
+    );
+    assert!(
+        factory.contains("Arc::new(GatedTools::new(redacting"),
         "the gated executor must be handed out as an Arc<dyn ToolExecutor>"
+    );
+}
+
+#[test]
+fn executor_for_chat_notices_when_the_vault_is_unavailable() {
+    // M6 stance: a vault that cannot open never blocks chat; one stderr
+    // notice explains that results are unredacted-only-because-unopenable.
+    let production = include_str!("mod.rs").split("#[cfg(test)]").next().unwrap();
+    let factory = production
+        .split("pub fn executor_for_chat")
+        .nth(1)
+        .expect("executor_for_chat must exist");
+    assert!(
+        factory.contains(r#"text::get("tools.vault_unavailable")"#),
+        "a missing vault handle must produce the en.toml notice"
     );
 }
 
@@ -286,7 +313,7 @@ fn executor_for_chat_gates_even_the_noop_fallback() {
     // an ungated composition would answer with `companion.unknown_tool`
     // instead of the permission refusal.
     let config = Config::from_toml_and_env("[permissions]\nscratch = 'deny'\n", []).unwrap();
-    let executor = super::executor_for_chat(&config);
+    let executor = super::executor_for_chat(&config, None);
     assert!(
         executor.specs().is_empty(),
         "the Noop fallback advertises nothing"
@@ -308,5 +335,223 @@ fn executor_for_chat_gates_even_the_noop_fallback() {
         ),
         crate::text::get("companion.unknown_tool"),
         "granted calls must pass through the gate to the inner executor"
+    );
+}
+
+// --- M6: scratch secret injection + egress redaction ------------------------
+
+use crate::vault::{PassphraseProvider, Vault};
+use std::sync::Arc;
+
+/// Open a throwaway vault preloaded with secrets for boundary tests.
+fn fixture_vault(secrets: &[(&str, &str)]) -> crate::vault::SharedVault {
+    let dir = std::env::temp_dir().join(format!(
+        "mooshik-tools-vault-{}-{:x}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut vault = Vault::open(
+        dir.join("vault"),
+        Arc::new(PassphraseProvider::new("pw").unwrap()),
+    )
+    .unwrap();
+    for (name, value) in secrets {
+        vault.set(name, value).unwrap();
+    }
+    vault.shared()
+}
+
+fn confirmed_scratch(secret_env: Vec<(String, String)>) -> ScratchConfig {
+    ScratchConfig {
+        confirm: Box::new(|_| true),
+        max_output_bytes: 4096,
+        secret_env,
+    }
+}
+
+/// The full chat composition (gate → redactor → tools) over a fixture memory.
+fn composed_stack(
+    memory: Memory,
+    vault: crate::vault::SharedVault,
+    table: Vec<(String, String)>,
+) -> Arc<dyn ToolExecutor> {
+    let tools = MemoryTools::from_memory(memory)
+        .with_vault(Some(vault.clone()))
+        .with_scratch(confirmed_scratch(table));
+    let config = Config::from_toml_and_env("[permissions]\nscratch = 'allow'\n", []).unwrap();
+    Arc::new(GatedTools::new(
+        Arc::new(RedactingTools::new(Arc::new(tools), Some(vault))),
+        config.permissions.grants(),
+    ))
+}
+
+#[tokio::test]
+async fn scratch_echo_round_trips_injected_secret_to_redacted_output() {
+    const VALUE: &str = "mooshik-live-secret-value";
+    let vault = fixture_vault(&[("github-token", VALUE)]);
+    let table = vec![("MOOSHIK_TEST_TOKEN".to_owned(), "github-token".to_owned())];
+    let code = "printf '%s' \"$MOOSHIK_TEST_TOKEN\"";
+
+    // Inner truth: without redaction the injected value comes straight back.
+    let raw = MemoryTools::from_memory(fixture_memory().await)
+        .with_vault(Some(vault.clone()))
+        .with_scratch(confirmed_scratch(table.clone()));
+    let inner: Value = serde_json::from_str(
+        &raw.execute(TOOL_SCRATCH, &json!({ "language": "bash", "code": code })),
+    )
+    .unwrap();
+    assert_eq!(inner["stdout"], VALUE, "injection must reach the child env");
+
+    // The composed boundary redacts that same output before it crosses back.
+    let stack = composed_stack(fixture_memory().await, vault, table);
+    let out = stack.execute(TOOL_SCRATCH, &json!({ "language": "bash", "code": code }));
+    assert!(
+        !out.contains(VALUE),
+        "the secret must never cross back: {out}"
+    );
+    assert!(out.contains("[REDACTED]"), "{out}");
+}
+
+#[tokio::test]
+async fn every_configured_secret_is_redacted_from_tool_results() {
+    let vault = fixture_vault(&[("alpha", "alpha-live"), ("beta", "beta-live")]);
+    let table = vec![
+        ("A".to_owned(), "alpha".to_owned()),
+        ("B".to_owned(), "beta".to_owned()),
+    ];
+    let stack = composed_stack(fixture_memory().await, vault, table);
+    let out = stack.execute(
+        TOOL_SCRATCH,
+        &json!({ "language": "bash", "code": "printf '%s/%s' \"$A\" \"$B\"" }),
+    );
+    assert!(out.contains("[REDACTED]/[REDACTED]"), "{out}");
+    assert!(
+        !out.contains("alpha-live") && !out.contains("beta-live"),
+        "{out}"
+    );
+}
+
+#[tokio::test]
+async fn derive_after_redaction_stores_only_the_marker() {
+    // The M6 egress proof: a script echoing $TOKEN gets its result redacted
+    // at the boundary; deriving from that content stores only `[REDACTED]`
+    // text. The graph never sees the value.
+    const VALUE: &str = "graph-never-sees-this";
+    let vault = fixture_vault(&[("token", VALUE)]);
+    let table = vec![("TOKEN".to_owned(), "token".to_owned())];
+    let stack = composed_stack(fixture_memory().await, vault, table);
+
+    let out: Value = serde_json::from_str(&stack.execute(
+        TOOL_SCRATCH,
+        &json!({ "language": "bash", "code": "printf '%s' \"$TOKEN\"" }),
+    ))
+    .unwrap();
+    assert_eq!(out["stdout"], "[REDACTED]");
+
+    let content = format!("the script printed: {}", out["stdout"].as_str().unwrap());
+    stack.execute(
+        TOOL_DERIVE,
+        &json!({
+            "agent_id": "mooshik",
+            "concepts": [{ "content": content, "concept_type": "observation" }],
+        }),
+    );
+    let recalled = stack.execute(
+        TOOL_RECALL,
+        &json!({ "agent_id": "mooshik", "query": "the script printed" }),
+    );
+    assert!(recalled.contains("[REDACTED]"), "{recalled}");
+    assert!(
+        !recalled.contains(VALUE),
+        "the graph saw the value: {recalled}"
+    );
+}
+
+#[tokio::test]
+async fn injection_resolves_per_run_so_rotation_is_observed() {
+    let vault = fixture_vault(&[("rotating", "first-run-value")]);
+    let table = vec![("TOKEN".to_owned(), "rotating".to_owned())];
+    let tools = MemoryTools::from_memory(fixture_memory().await)
+        .with_vault(Some(vault.clone()))
+        .with_scratch(confirmed_scratch(table));
+    let code = "printf '%s' \"$TOKEN\"";
+
+    let first: Value = serde_json::from_str(
+        &tools.execute(TOOL_SCRATCH, &json!({ "language": "bash", "code": code })),
+    )
+    .unwrap();
+    assert_eq!(first["stdout"], "first-run-value");
+
+    // Rotate the secret between runs; the next run must see the new value.
+    crate::vault::lock_shared(&vault)
+        .set("rotating", "second-run-value")
+        .unwrap();
+    let second: Value = serde_json::from_str(
+        &tools.execute(TOOL_SCRATCH, &json!({ "language": "bash", "code": code })),
+    )
+    .unwrap();
+    assert_eq!(second["stdout"], "second-run-value");
+}
+
+#[tokio::test]
+async fn missing_secret_fails_the_script_before_it_starts() {
+    const PRESENT: &str = "present-value";
+    let vault = fixture_vault(&[("present", PRESENT)]);
+    let table = vec![
+        ("OK".to_owned(), "present".to_owned()),
+        ("GAP".to_owned(), "absent-secret".to_owned()),
+    ];
+    let tools = MemoryTools::from_memory(fixture_memory().await)
+        .with_vault(Some(vault))
+        .with_scratch(confirmed_scratch(table));
+
+    let out = tools.execute(
+        TOOL_SCRATCH,
+        &json!({ "language": "bash", "code": "printf 'ran %s' \"$OK\"" }),
+    );
+    assert_eq!(
+        out,
+        crate::text::get("tools.scratch_secret_missing").replace("{name}", "absent-secret"),
+        "the failure must be a contained error naming only the secret name"
+    );
+    assert!(!out.starts_with('{'), "no partial run result: {out}");
+    assert!(
+        !out.contains(PRESENT),
+        "all-or-nothing: nothing may run half-injected"
+    );
+}
+
+#[tokio::test]
+async fn scratch_env_without_a_vault_fails_closed() {
+    let tools = MemoryTools::from_memory(fixture_memory().await)
+        .with_vault(None)
+        .with_scratch(confirmed_scratch(vec![(
+            "TOKEN".to_owned(),
+            "whatever".to_owned(),
+        )]));
+    let out = tools.execute(
+        TOOL_SCRATCH,
+        &json!({ "language": "bash", "code": "echo hi" }),
+    );
+    assert_eq!(out, crate::text::get("tools.scratch_env_unavailable"));
+}
+
+#[test]
+fn chat_composes_and_answers_even_when_the_vault_cannot_open() {
+    // Behavioral half of the availability stance: `vault = None` still yields
+    // a gated, answering executor — the No-op fallback advertises nothing and
+    // granted calls pass the gate (here answered by the fallback itself).
+    let executor = super::executor_for_chat(&Config::default(), None);
+    assert!(executor.specs().is_empty());
+    assert_eq!(
+        executor.execute(
+            TOOL_RECALL,
+            &json!({ "agent_id": "mooshik", "query": "anything" }),
+        ),
+        crate::text::get("companion.unknown_tool"),
     );
 }

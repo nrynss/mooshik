@@ -14,9 +14,8 @@
 //! ([`super::GatedTools`]), which decides *whether* the tool may run and asks
 //! exactly once — this seam stays as the interactive ask behind it.
 
-use std::io::Read;
-use std::io::Write;
-use std::path::PathBuf;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 use std::{fs, io};
@@ -26,6 +25,51 @@ use super::schema::{
     SCRATCH_MAX_TIMEOUT_SECS,
 };
 use crate::text;
+use crate::vault::{SecretToken, SharedVault, VaultError};
+
+/// One resolved injection: the env-var name a script reads and the secret
+/// value as an opaque token. The token keeps the plaintext out of logs,
+/// errors, Debug output, and the transcript until the single [`Command::env`]
+/// hand-off inside [`run_script`].
+pub struct SecretEnv {
+    pub var: String,
+    pub token: SecretToken,
+}
+
+/// Resolve the configured `[tools.scratch.env]` table into fresh, per-run
+/// secret tokens ([`crate::vault::SharedVault`]). Resolution happens at
+/// execution time — after confirm, before spawn — so a rotated secret is
+/// picked up by the very next run. All-or-nothing: any unresolvable entry
+/// aborts before the script starts, so nothing ever runs half-injected. The
+/// error names at most the secret *name*; never a value.
+pub fn resolve_injection(
+    table: &[(String, String)],
+    vault: Option<&SharedVault>,
+) -> Result<Vec<SecretEnv>, String> {
+    if table.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(vault) = vault else {
+        return Err(text::get("tools.scratch_env_unavailable").to_owned());
+    };
+    let vault = crate::vault::lock_shared(vault);
+    let mut resolved = Vec::with_capacity(table.len());
+    for (env_var, secret_name) in table {
+        match vault.get(secret_name) {
+            Ok(token) => resolved.push(SecretEnv {
+                var: env_var.clone(),
+                token,
+            }),
+            Err(VaultError::NotFound) => {
+                return Err(
+                    text::get("tools.scratch_secret_missing").replace("{name}", secret_name)
+                );
+            }
+            Err(_) => return Err(text::get("tools.scratch_secret_failed").to_owned()),
+        }
+    }
+    Ok(resolved)
+}
 
 /// Interactive permission prompt. Reads a single line from standard input and
 /// accepts only an explicit `y`/`yes` (fail closed). This is the M4 prompt seam;
@@ -47,11 +91,15 @@ pub fn answer_yes(answer: &str) -> bool {
 }
 
 /// The confirmed script run's configuration. `confirm` decides whether a request
-/// is allowed to execute at all (the permission-prompt seam).
+/// is allowed to execute at all (the permission-prompt seam). `secret_env` maps
+/// process-env names to vault secret *names* ([`resolve_injection`] turns them
+/// into tokens at run time).
 pub struct ScratchConfig {
     pub confirm: Box<dyn Fn(&ScratchParams) -> bool + Send + Sync>,
     /// Cap on captured stdout+stderr bytes.
     pub max_output_bytes: usize,
+    /// Env-var name -> secret name, from `[tools.scratch.env]`.
+    pub secret_env: Vec<(String, String)>,
 }
 
 impl Default for ScratchConfig {
@@ -59,6 +107,7 @@ impl Default for ScratchConfig {
         Self {
             confirm: Box::new(interactive_confirm),
             max_output_bytes: SCRATCH_MAX_OUTPUT_BYTES,
+            secret_env: Vec::new(),
         }
     }
 }
@@ -71,6 +120,7 @@ impl ScratchConfig {
         Self {
             confirm: Box::new(|_| true),
             max_output_bytes: SCRATCH_MAX_OUTPUT_BYTES,
+            secret_env: Vec::new(),
         }
     }
 }
@@ -130,6 +180,8 @@ pub struct ScratchOutcome {
 
 /// Run `code` under `language` inside a fresh isolated temp directory with a
 /// hard `timeout`. On expiry the child is killed and reaped before returning.
+/// `env` carries the resolved secret injections; see [`interpreter_command`]
+/// for the one place their plaintext exists.
 ///
 /// Returns the captured output even for non-zero / timed-out exits so the caller
 /// can hand the model useful partial output; the `timed_out` flag distinguishes
@@ -139,20 +191,15 @@ pub fn run_script(
     language: ScratchLanguage,
     timeout: Duration,
     max_output_bytes: usize,
+    env: &[SecretEnv],
 ) -> Result<ScratchOutcome, String> {
     let sandbox = Sandbox::create()?;
     let script = sandbox.write_script(code, language)?;
-
     let start = Instant::now();
 
     #[cfg(unix)]
     let child = {
-        let mut command = Command::new(language.interpreter());
-        command
-            .arg(&script)
-            .current_dir(sandbox.path())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        let mut command = interpreter_command(language, &script, sandbox.path(), env);
         // Put the child in its own process group so a hard-timeout kill can
         // take down the whole tree (e.g. a bash script that launched a long
         // `sleep`), not just the direct interpreter. Without this, killing the
@@ -170,12 +217,7 @@ pub fn run_script(
     };
     #[cfg(not(unix))]
     let child = {
-        let mut command = Command::new(language.interpreter());
-        command
-            .arg(&script)
-            .current_dir(sandbox.path())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        let mut command = interpreter_command(language, &script, sandbox.path(), env);
         command.spawn()
     };
     let mut child = child.map_err(|error| fun("tools.scratch_spawn_failed", &error))?;
@@ -204,6 +246,30 @@ pub fn run_script(
         timed_out,
         duration,
     })
+}
+
+/// Build the sandbox interpreter command: direct exec of the whitelisted
+/// interpreter in the sandbox cwd, piped output, plus the resolved secret
+/// environment. This is the ONLY place a secret's plaintext exists outside
+/// the vault and the child process: [`SecretToken::expose`] feeds straight
+/// into [`Command::env`], which is consumed by `spawn` — never logged,
+/// rendered, or carried anywhere else.
+fn interpreter_command(
+    language: ScratchLanguage,
+    script: &Path,
+    cwd: &Path,
+    env: &[SecretEnv],
+) -> Command {
+    let mut command = Command::new(language.interpreter());
+    command
+        .arg(script)
+        .current_dir(cwd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for item in env {
+        command.env(&item.var, item.token.expose());
+    }
+    command
 }
 
 /// Poll the child until it exits, or kill + reap it at `timeout`. Always reaps.
@@ -440,7 +506,7 @@ mod tests {
     #[test]
     fn runs_successfully_in_the_sandbox_dir() {
         let p = params("pwd");
-        let out = run_script(&p.code, p.language, Duration::from_secs(5), 4096).unwrap();
+        let out = run_script(&p.code, p.language, Duration::from_secs(5), 4096, &[]).unwrap();
         assert_eq!(out.exit_code, Some(0));
         assert!(
             out.stdout.trim().contains("mooshik-scratch-"),
@@ -459,6 +525,7 @@ mod tests {
             ScratchLanguage::Bash,
             Duration::from_secs(5),
             4096,
+            &[],
         )
         .unwrap();
         assert_eq!(out.exit_code, Some(0));
@@ -473,6 +540,7 @@ mod tests {
             ScratchLanguage::Bash,
             Duration::from_millis(300),
             4096,
+            &[],
         )
         .unwrap();
         assert!(out.timed_out, "must report the timeout-kill");
@@ -492,6 +560,7 @@ mod tests {
             ScratchLanguage::Bash,
             Duration::from_millis(300),
             4096,
+            &[],
         )
         .unwrap();
         assert_eq!(out.exit_code, Some(0), "the script itself exits cleanly");
@@ -509,6 +578,7 @@ mod tests {
             ScratchLanguage::Bash,
             Duration::from_secs(5),
             4,
+            &[],
         )
         .unwrap();
         assert!(out.truncated, "more output than the cap must set truncated");
@@ -522,6 +592,7 @@ mod tests {
             ScratchLanguage::Bash,
             Duration::from_secs(5),
             4096,
+            &[],
         )
         .unwrap();
         assert_eq!(out.exit_code, Some(7));
