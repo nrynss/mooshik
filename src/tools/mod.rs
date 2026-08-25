@@ -26,10 +26,12 @@ use crate::companion::{NoopExecutor, ToolExecutor, ToolSpec};
 use crate::config::Config;
 use crate::text;
 
+mod permissions;
 mod schema;
 mod scratch;
 mod worker;
 
+pub use permissions::{Confirm, GatedTools};
 pub use scratch::ScratchConfig;
 
 use schema::{
@@ -113,7 +115,10 @@ impl MemoryTools {
             Arc::new(MemoryTools {
                 mem: Arc::new(memory),
                 worker: ToolRuntime::new(),
-                scratch: ScratchConfig::default(),
+                // M5: the permission gate ([`GatedTools`]) owns prompting at
+                // the boundary; this inner seam is held open so a prompt-mode
+                // grant asks the user exactly once.
+                scratch: ScratchConfig::always_confirmed(),
                 owner: Some(owner),
             }) as Arc<dyn ToolExecutor>
         })
@@ -131,7 +136,7 @@ impl MemoryTools {
         }
     }
 
-    /// Override the scratch permission/cap configuration (tests and the M5 gate).
+    /// Override the scratch permission/cap configuration (tests).
     pub fn with_scratch(mut self, scratch: ScratchConfig) -> Self {
         self.scratch = scratch;
         self
@@ -397,18 +402,23 @@ impl ToolExecutor for MemoryTools {
     }
 }
 
-/// The CLI-facing factory: open Memory for chat and hand back an executor that
-/// degrades to a No-op when memory is unavailable (chat must still run). Lives
-/// here, not in `cli`, so `cli::chat` stays free of any `crate::memory`/`provision`
-/// reference (M3 pins).
+/// The CLI-facing factory: open Memory for chat, wrap whatever came back —
+/// even the No-op fallback — in the M5 permission gate, and hand the gated
+/// surface to the chat loop. The gate is the one enforcement point: ungranted
+/// tools are not advertised and denied calls never reach the inner executor.
+///
+/// Lives here, not in `cli`, so `cli::chat` stays free of any
+/// `crate::memory`/`provision` reference (M3 pins).
 pub fn executor_for_chat(config: &Config) -> Arc<dyn ToolExecutor> {
-    match MemoryTools::for_chat(config) {
+    let grants = config.permissions.grants();
+    let inner: Arc<dyn ToolExecutor> = match MemoryTools::for_chat(config) {
         Some(tools) => tools,
         None => {
             eprintln!("{}", text::get("tools.chat_memory_unavailable"));
             Arc::new(NoopExecutor)
         }
-    }
+    };
+    Arc::new(GatedTools::new(inner, grants))
 }
 
 fn open_memory(config: &Config) -> Option<(tokio::runtime::Runtime, Memory)> {

@@ -416,3 +416,103 @@ async fn model_tool_call_reaches_the_memory_backed_executor() {
     assert_eq!(outcome["created"].as_array().unwrap().len(), 1);
     server.assert_all_streaming();
 }
+
+/// The M5 composition pin: the permission gate sits between the Session loop
+/// and the memory-backed executor — an ungranted tool is not advertised to the
+/// model, a call to it anyway comes back as the contained refusal without ever
+/// reaching the tool, and a granted call flows through to the real graph.
+#[tokio::test]
+async fn the_permission_gate_sits_between_the_session_loop_and_the_tools() {
+    let mut memory_config =
+        crate::config::Config::from_toml_and_env("[permissions]\nscratch = 'deny'\n", []).unwrap();
+    memory_config.store.kind = lambo::StoreKind::Memory;
+    memory_config.embedder.kind = lambo::EmbedderKind::Fixture;
+    memory_config.embedder.dim = 1024;
+    memory_config.session.id = "mooshik".to_owned();
+    crate::memory::provision(&memory_config).await.unwrap();
+    let memory = crate::memory::open(&memory_config).await.unwrap();
+
+    let denied_call = Script::sse(vec![
+        Frame::tool_head(0, "call_1", crate::tools::TOOL_SCRATCH),
+        Frame::tool_args(0, "{\"language\":\"bash\",\"code\":\"echo pwned\"}"),
+        Frame::finish("tool_calls"),
+        Frame::done(),
+    ]);
+    let derive_call = Script::sse(vec![
+        Frame::tool_head(0, "call_2", crate::tools::TOOL_DERIVE),
+        Frame::tool_args(
+            0,
+            "{\"agent_id\":\"mooshik\",\"concepts\":[{\"content\":\"mooshik m5 gated \
+             marker\",\"concept_type\":\"entity\"}]}",
+        ),
+        Frame::finish("tool_calls"),
+        Frame::done(),
+    ]);
+    let server = MockServer::spawn(vec![denied_call, derive_call, stop_script(&["stored"])]).await;
+    let client = CompanionClient::from_config(&config(&server.base_url)).unwrap();
+    let grants = memory_config.permissions.grants();
+    let inner = crate::tools::MemoryTools::from_memory(memory);
+    let mut chat = Session::new(client, 32768)
+        .with_system("s")
+        .with_executor(crate::tools::GatedTools::new(Arc::new(inner), grants));
+    let reply = chat
+        .turn("run something", &Cancellation::new(), |_| {})
+        .await
+        .unwrap();
+    assert_eq!(reply, "stored");
+
+    // The ungranted tool was never advertised...
+    let first_body = request_json(&server.requests()[0].body);
+    let advertised: Vec<&str> = first_body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        advertised,
+        vec![
+            crate::tools::TOOL_RECALL,
+            crate::tools::TOOL_DERIVE,
+            crate::tools::TOOL_STATS
+        ]
+    );
+    // ...and the model called it anyway. Two layers refuse it: the Session
+    // loop only dispatches advertised specs (so the refusal here is the
+    // unknown-tool string), and the gate's own execute-level check — pinned in
+    // tools::permissions — backs it up for any direct executor path. Either
+    // way the script never runs.
+    let second = request_json(&server.requests()[1].body);
+    let refusal = second["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|msg| msg["role"] == "tool")
+        .expect("denied call answered");
+    assert_eq!(
+        refusal["content"],
+        text::get("companion.unknown_tool"),
+        "{}",
+        server.requests()[1].body
+    );
+    assert_ne!(
+        refusal["content"],
+        text::get("tools.scratch_denied"),
+        "the scratch prompt seam must never be reached"
+    );
+    // The granted derive flowed through the same gate into the real executor.
+    let third = request_json(&server.requests()[2].body);
+    let outcome: Value = serde_json::from_str(
+        third["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rfind(|msg| msg["role"] == "tool")
+            .expect("derive result posted back")["content"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(outcome["created"].as_array().unwrap().len(), 1);
+    server.assert_all_streaming();
+}

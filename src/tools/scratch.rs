@@ -9,9 +9,10 @@
 //! reaped (never left orphaned — this crate's rule is *bound the child*), and
 //! captured output is capped so a talkative script cannot balloon the turn.
 //!
-//! The permission **prompt** is a seam here ([`ScratchConfig::confirm`]); the
-//! real grant gate lands in M5. M4 provides the interactive confirm and a
-//! testable injection point.
+//! The permission **prompt** is a seam here ([`ScratchConfig::confirm`]); since
+//! M5 the grant gate lives at the tool-call boundary
+//! ([`super::GatedTools`]), which decides *whether* the tool may run and asks
+//! exactly once — this seam stays as the interactive ask behind it.
 
 use std::io::Read;
 use std::io::Write;
@@ -57,6 +58,18 @@ impl Default for ScratchConfig {
     fn default() -> Self {
         Self {
             confirm: Box::new(interactive_confirm),
+            max_output_bytes: SCRATCH_MAX_OUTPUT_BYTES,
+        }
+    }
+}
+
+impl ScratchConfig {
+    /// A seam that never refuses. Chat composition uses this under the M5
+    /// gate: [`super::GatedTools`] prompts once for prompt-mode grants, so the
+    /// inner seam must not ask a second time.
+    pub fn always_confirmed() -> Self {
+        Self {
+            confirm: Box::new(|_| true),
             max_output_bytes: SCRATCH_MAX_OUTPUT_BYTES,
         }
     }
