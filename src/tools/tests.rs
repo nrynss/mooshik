@@ -251,21 +251,77 @@ fn executor_for_chat_composes_gate_then_redaction_then_tools() {
     let factory = production
         .split("pub fn executor_for_chat")
         .nth(1)
-        .expect("executor_for_chat must exist");
+        .expect("executor_for_chat must exist")
+        .split("\nfn ")
+        .next()
+        .unwrap();
     assert!(
-        factory.contains("RedactingTools::new(inner"),
-        "executor_for_chat must wrap its inner executor (even the No-op \
+        factory.contains("compose_chat_stack(inner"),
+        "executor_for_chat must build its stack through the shared \
+         compose_chat_stack seam"
+    );
+    let composition = production
+        .split("fn compose_chat_stack")
+        .nth(1)
+        .expect("compose_chat_stack must exist")
+        .split("\nfn open_memory")
+        .next()
+        .unwrap();
+    assert!(
+        composition.contains("RedactingTools::new(inner"),
+        "the composition must wrap its inner executor (even the No-op \
          fallback) in RedactingTools; without the wrap tool results reach \
          the model unscanned"
     );
     assert!(
-        factory.contains("GatedTools::new(redacting"),
+        composition.contains("GatedTools::new(redacting"),
         "the gate must sit in FRONT of redaction: permission first, \
          execute, redact"
     );
     assert!(
-        factory.contains("Arc::new(GatedTools::new(redacting"),
+        composition.contains("Arc::new(GatedTools::new(redacting"),
         "the gated executor must be handed out as an Arc<dyn ToolExecutor>"
+    );
+}
+
+/// A minimal inner executor that echoes one fixed string: enough surface to
+/// drive the real production composition behaviorally.
+struct Echo(String);
+
+impl ToolExecutor for Echo {
+    fn specs(&self) -> Vec<ToolSpec> {
+        Vec::new()
+    }
+    fn execute(&self, _: &str, _: &Value) -> String {
+        self.0.clone()
+    }
+}
+
+#[test]
+fn the_production_composition_redacts_secrets_behaviorally() {
+    // P2-M6-2: the factory's composition is bound by behavior, not only by
+    // source text. This drives the REAL composed stack through
+    // `compose_chat_stack` — gate -> redactor -> echo inner, over a fixture
+    // vault — so removing RedactingTools from the composition fails here,
+    // not just in the structural pin above.
+    const VALUE: &str = "factory-boundary-secret";
+    let vault = fixture_vault(&[("token", VALUE)]);
+    let grants = Config::from_toml_and_env("[permissions]\nscratch = 'allow'\n", [])
+        .unwrap()
+        .permissions
+        .grants();
+    let executor = super::compose_chat_stack(
+        Arc::new(Echo(format!("leak: {VALUE}"))),
+        Some(vault),
+        grants,
+    );
+    assert_eq!(
+        executor.execute(
+            TOOL_SCRATCH,
+            &json!({ "language": "bash", "code": "echo hi" })
+        ),
+        "leak: [REDACTED]",
+        "the production composition must redact before the model sees output"
     );
 }
 
@@ -281,6 +337,23 @@ fn executor_for_chat_notices_when_the_vault_is_unavailable() {
     assert!(
         factory.contains(r#"text::get("tools.vault_unavailable")"#),
         "a missing vault handle must produce the en.toml notice"
+    );
+}
+
+#[test]
+fn the_vault_unavailable_notice_names_the_silent_passphrase_degradation() {
+    // P3-M6-6: with provider = "passphrase" and MOOSHIK_VAULT_PASSPHRASE
+    // unset, chat silently degrades to this notice + unredacted mode. The
+    // wording must say so, so users do not mistake degraded mode for
+    // protection.
+    let notice = crate::text::get("tools.vault_unavailable");
+    assert!(
+        notice.contains("MOOSHIK_VAULT_PASSPHRASE"),
+        "the notice must name the env var whose absence causes this: {notice}"
+    );
+    assert!(
+        notice.contains("without redaction"),
+        "the notice must say redaction is off: {notice}"
     );
 }
 
@@ -414,6 +487,34 @@ async fn scratch_echo_round_trips_injected_secret_to_redacted_output() {
         "the secret must never cross back: {out}"
     );
     assert!(out.contains("[REDACTED]"), "{out}");
+}
+
+#[tokio::test]
+async fn json_escaped_multiline_secret_is_redacted_in_the_serialized_result() {
+    // P1-M6-1 regression pin, reproducing the reviewer's probe exactly: a
+    // script echoes a secret containing a double quote and a newline; the
+    // scratch result is serialized by serde_json, so only the ESCAPED form
+    // (`line1\"quote\nline2`) exists in the string the boundary scans.
+    // The value must not reach history/model in either encoding.
+    const VALUE: &str = "line1\"quote\nline2";
+    let vault = fixture_vault(&[("pem-key", VALUE)]);
+    let table = vec![("TOKEN".to_owned(), "pem-key".to_owned())];
+    let stack = composed_stack(fixture_memory().await, vault, table);
+    let out = stack.execute(
+        TOOL_SCRATCH,
+        &json!({ "language": "bash", "code": "printf '%s' \"$TOKEN\"" }),
+    );
+    assert!(!out.contains(VALUE), "literal form leaked: {out}");
+    for fragment in ["line1", "quote", "line2", "\\\"quote", "\\nline2"] {
+        assert!(
+            !out.contains(fragment),
+            "escaped fragment {fragment:?} survived the boundary: {out}"
+        );
+    }
+    assert!(
+        out.contains(r#""stdout":"[REDACTED]""#),
+        "the stdout member must be fully redacted: {out}"
+    );
 }
 
 #[tokio::test]

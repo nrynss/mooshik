@@ -144,6 +144,7 @@ pub enum VaultError {
     UnsafePath,
     LockFailed,
     MissingValue,
+    NulByte,
     InputTooLarge,
 }
 
@@ -162,6 +163,7 @@ impl std::fmt::Display for VaultError {
             Self::UnsafePath => "vault.unsafe_path",
             Self::LockFailed => "vault.lock_failed",
             Self::MissingValue => "vault.missing_value",
+            Self::NulByte => "vault.nul_byte",
             Self::InputTooLarge => "vault.input_too_large",
         };
         f.write_str(text::get(key))
@@ -308,6 +310,13 @@ impl Vault {
 
     pub fn set(&mut self, name: &str, value: &str) -> Result<(), VaultError> {
         validate_name(name)?;
+        if value.as_bytes().contains(&0) {
+            // Interior NUL cannot survive `Command::env` (spawn fails with
+            // `nul byte found in provided data`), so a stored NUL would
+            // silently break every injected scratch run. Reject at the door,
+            // like `validate_scratch` does for script code.
+            return Err(VaultError::NulByte);
+        }
         if value.len() > MAX_SECRET_VALUE_BYTES {
             return Err(VaultError::InputTooLarge);
         }
@@ -700,6 +709,23 @@ mod tests {
             vault.set("large", &value),
             Err(VaultError::InputTooLarge)
         ));
+        clean(&path);
+    }
+
+    #[test]
+    fn nul_byte_value_is_rejected_at_set() {
+        // P3-M6-4: an interior NUL cannot survive `Command::env`, so storing
+        // one would silently break every injected scratch run. Rejected at
+        // the door as a contained VaultError.
+        let path = path("nul-byte");
+        clean(&path);
+        let mut vault =
+            Vault::open(&path, Arc::new(PassphraseProvider::new("correct").unwrap())).unwrap();
+        assert!(matches!(
+            vault.set("nul", "before\u{0}after"),
+            Err(VaultError::NulByte)
+        ));
+        assert!(!vault.list().contains(&"nul".to_owned()));
         clean(&path);
     }
 }

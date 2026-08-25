@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::companion::{NoopExecutor, ToolExecutor, ToolSpec};
-use crate::config::Config;
+use crate::config::{Config, Grants};
 use crate::text;
 use crate::vault::SharedVault;
 
@@ -467,6 +467,20 @@ pub fn executor_for_chat(config: &Config, vault: Option<SharedVault>) -> Arc<dyn
             Arc::new(NoopExecutor)
         }
     };
+    compose_chat_stack(inner, vault, grants)
+}
+
+/// The chat boundary composition, shared verbatim by [`executor_for_chat`]
+/// and the behavioral composition pin in `tests`: egress redaction wraps the
+/// inner executor (even the No-op fallback), the permission gate wraps
+/// redaction. Extracted as a named seam so dropping [`RedactingTools`] — or
+/// reordering gate/redaction — is caught by driving this function, not only
+/// by reading its source.
+fn compose_chat_stack(
+    inner: Arc<dyn ToolExecutor>,
+    vault: Option<SharedVault>,
+    grants: Grants,
+) -> Arc<dyn ToolExecutor> {
     let redacting = Arc::new(RedactingTools::new(inner, vault));
     Arc::new(GatedTools::new(redacting, grants))
 }

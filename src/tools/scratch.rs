@@ -96,7 +96,11 @@ pub fn answer_yes(answer: &str) -> bool {
 /// into tokens at run time).
 pub struct ScratchConfig {
     pub confirm: Box<dyn Fn(&ScratchParams) -> bool + Send + Sync>,
-    /// Cap on captured stdout+stderr bytes.
+    /// Cap on captured stdout+stderr bytes. Deliberate limit: the cut is not
+    /// secret-aware, so a cap landing inside a secret occurrence leaves the
+    /// surviving prefix unmatchable and unredacted. Accepted because the
+    /// script author already holds the plaintext — this is the accidental-
+    /// echo defense, not a new grant.
     pub max_output_bytes: usize,
     /// Env-var name -> secret name, from `[tools.scratch.env]`.
     pub secret_env: Vec<(String, String)>,

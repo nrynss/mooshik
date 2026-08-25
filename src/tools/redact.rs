@@ -9,21 +9,28 @@
 //! transcript, or a later `lambo_derive` call unscanned — so a scratch script
 //! that echoes `$TOKEN` is caught at the boundary, exactly once, for every
 //! current and future tool.
-//! Availability stance: chat does not live or die by the vault. A `None`
-//! handle (locked vault, missing home) means *unredacted only because
-//! unopenable* — a vault you cannot open cannot leak values either — and the
-//! notice is printed once by the composition in [`super::executor_for_chat`].
-//! An opened-but-empty vault makes redaction a cheap pass-through.
 //!
-//! Ordering within values: names are resolved longest-first so overlapping
-//! prefixes redact as the whole longer secret rather than leaving a mangled
-//! remainder.
+//! **Escaped forms.** Scratch results are `serde_json`-serialized and recall
+//! results are `serde_json::to_string`'d, so a value containing `"`, `\`, or
+//! a control character (a PEM key's newlines) never appears literally in the
+//! scanned string. Each token is therefore expanded to *both* forms — its
+//! literal value and its JSON string-escaped form (exactly what
+//! `serde_json` emits for the value as a JSON string member, surrounding
+//! quotes stripped) — and the combined variant set is replaced longest-first,
+//! so whichever encoding crossed the boundary is caught.
+//!
+//! **Arguments are deliberately not scanned.** Only results cross this
+//! boundary; tool *arguments* flow outward before execution and are never
+//! scanned. That is deliberate: the model cannot legitimately hold a value
+//! (it only ever receives `[REDACTED]`), and scanning arguments would
+//! false-positive on names, paths, and queries while protecting nothing.
+//! Recorded here as a design decision, not an omission.
 
 use serde_json::Value;
 use std::sync::Arc;
 
 use super::{ToolExecutor, ToolSpec};
-use crate::vault::{lock_shared, redact_output, SecretToken, SharedVault};
+use crate::vault::{lock_shared, SecretToken, SharedVault};
 
 /// The `[REDACTED]` marker substituted for every secret occurrence.
 pub const REDACTED: &str = "[REDACTED]";
@@ -72,15 +79,48 @@ impl RedactingTools {
         tokens
     }
 
-    /// Scan one finished tool result. Empty tokens are skipped inside
-    /// [`redact_output`]; an empty token set returns the output untouched.
+    /// Scan one finished tool result. Each token contributes its literal
+    /// value *and* its JSON string-escaped form (scratch/recall results are
+    /// serialized, so a value containing quotes, backslashes, or control
+    /// characters crosses the boundary only in its escaped encoding). The
+    /// combined variant set is replaced longest-first; empty values are
+    /// skipped and an empty token set returns the output untouched.
     fn redact(&self, output: &str) -> String {
-        let tokens = self.tokens();
-        if tokens.is_empty() {
+        let mut variants: Vec<String> = Vec::new();
+        for token in self.tokens() {
+            let value = token.expose();
+            if value.is_empty() {
+                continue;
+            }
+            variants.push(value.to_owned());
+            let escaped = json_string_form(value);
+            if escaped != value {
+                variants.push(escaped);
+            }
+        }
+        if variants.is_empty() {
             return output.to_owned();
         }
-        redact_output(output, tokens)
+        // Longest-first over the union of forms: an overlapping prefix
+        // redacts as the whole longer variant rather than leaving a mangled
+        // partial replacement behind.
+        variants.sort_by_key(|variant| std::cmp::Reverse(variant.len()));
+        let mut safe = output.to_owned();
+        for variant in &variants {
+            safe = safe.replace(variant.as_str(), REDACTED);
+        }
+        safe
     }
+}
+
+/// The JSON string-escaped form of one secret value: exactly what
+/// `serde_json` emits when the value is serialized as a JSON string member
+/// (`\"`, `\\`, `\n`, `\t`, `\u00XX` for other control characters), with the
+/// surrounding quotes stripped. `serde_json::to_string` on a `&str` cannot
+/// fail and always wraps its output in quotes.
+fn json_string_form(value: &str) -> String {
+    let encoded = serde_json::to_string(value).expect("string serialization is infallible");
+    encoded[1..encoded.len() - 1].to_owned()
 }
 
 impl ToolExecutor for RedactingTools {
@@ -98,6 +138,7 @@ impl ToolExecutor for RedactingTools {
 mod tests {
     use super::*;
     use crate::vault::PassphraseProvider;
+    use serde_json::json;
     use std::sync::Arc;
 
     /// An inner executor returning a fixed string.
@@ -160,6 +201,45 @@ mod tests {
         assert_eq!(
             redactor.execute("tool", &Value::Null),
             "prefix [REDACTED]def suffix [REDACTED]"
+        );
+    }
+
+    #[test]
+    fn json_escaped_forms_of_secrets_are_redacted() {
+        // P1-M6-1: a value containing a quote and a newline never appears
+        // literally in a serialized result — only its JSON-escaped form does.
+        // The redactor must catch that encoding too.
+        const VALUE: &str = "line1\"quote\nline2";
+        let vault = fixture_vault(&[("pem", VALUE)]);
+        let serialized = json!({ "stdout": VALUE }).to_string();
+        assert!(
+            !serialized.contains(VALUE),
+            "precondition: the literal form is absent from the encoded string"
+        );
+        let redactor = RedactingTools::new(Arc::new(Fixed(serialized)), Some(vault));
+        let out = redactor.execute("tool", &Value::Null);
+        assert_eq!(out, json!({ "stdout": REDACTED }).to_string(), "{out}");
+    }
+
+    #[test]
+    fn escaped_variants_share_the_longest_first_order() {
+        // A backslash-containing secret whose literal prefix overlaps another
+        // secret: the union of literal + escaped forms must still resolve
+        // longest-first deterministically.
+        let vault = fixture_vault(&[("short", "sk-live"), ("long", "sk-liv\\eabc")]);
+        let redactor = RedactingTools::new(
+            Arc::new(Fixed(
+                json!({ "out": "sk-liv\\eabcdef sk-live" }).to_string(),
+            )),
+            Some(vault),
+        );
+        let out = redactor.execute("tool", &Value::Null);
+        // The escaped long secret (`sk-liv\\eabc` in the wire form) is longer
+        // than `sk-live`, so it must win as one whole marker, not mangle.
+        assert_eq!(
+            out,
+            json!({ "out": "[REDACTED]def [REDACTED]" }).to_string(),
+            "{out}"
         );
     }
 

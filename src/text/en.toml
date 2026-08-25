@@ -60,6 +60,7 @@ unsafe_path = "The encrypted vault path contains a symbolic link or unsafe compo
 lock_failed = "The encrypted vault could not be locked safely. Check its permissions and try again."
 missing_value = "Secret values must be non-empty. Provide MOOSHIK_SECRET_VALUE or stdin."
 input_too_large = "That secret input or encrypted vault is larger than the supported limit. Reduce it and try again."
+nul_byte = "Secret values cannot contain NUL bytes. Remove them and try again."
 
 [memory]
 serve_help = "Serve Lambo memory over MCP and publish a session endpoint"
@@ -86,7 +87,7 @@ tool_loop = "The companion kept calling tools without finishing. Try again."
 
 [tools]
 chat_memory_unavailable = "Workspace memory is unavailable, so this chat starts with no tools. Check the store and embedder configuration."
-vault_unavailable = "The encrypted vault could not be opened, so tool results are not checked against secrets this session. Chat continues without redaction."
+vault_unavailable = "The encrypted vault could not be opened, so tool results are not checked against secrets this session. Chat continues without redaction; in particular, provider = \"passphrase\" with MOOSHIK_VAULT_PASSPHRASE unset degrades silently to this state — degraded mode is not protection."
 scratch_env_unavailable = "The encrypted vault could not be opened, so the configured secret environment could not be resolved; the script was not started."
 scratch_secret_missing = "Secret '{name}' is not in the vault; the script was not started."
 scratch_secret_failed = "A configured secret could not be read from the vault; the script was not started."
