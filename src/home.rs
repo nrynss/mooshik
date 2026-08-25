@@ -331,6 +331,22 @@ mod tests {
         let _ = fs::remove_dir_all(&outside);
         fs::create_dir_all(&root).unwrap();
         fs::create_dir_all(&outside).unwrap();
+        // Mark the home explicitly (mode included): under a restrictive umask
+        // the raw directory would already pass validation, and an unmarked,
+        // non-empty root would stop at MigrationRequired before the vault
+        // check. With a valid marked home, the Err(UnsafePath) below can only
+        // come from rejecting the vault symlink itself.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        fs::write(root.join(MARKER), MARKER_BYTES).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(root.join(MARKER), fs::Permissions::from_mode(0o600)).unwrap();
+        }
         std::os::unix::fs::symlink(&outside, root.join("vault")).unwrap();
         assert!(matches!(
             HomeLayout::new(&root).init(),
