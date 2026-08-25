@@ -50,7 +50,7 @@ M11 is last on purpose and is allowed to fail; see M11.
 | **M0** | Built 2026-08-21, `fca2f13`. |
 | **M1** | Built 2026-08-24, `79fcc2e`. P3-R8-1 (staging cleanup race) closed: fail-closed preserve, pin in `secure_path` tests. |
 | **M2 + M2b** | Built 2026-08-25, `5ed3e68` / `33a5bcb`. Review round 2 **APPROVE**, zero residue (`m2-round2.md`). CI green. Live Cloud SQL + Vertex pin `bf362b3`. |
-| **M3** | Implemented in this worktree; review pending. |
+| **M3** | Built 2026-08-25, `9652f39` / `8e168f6`. Review round 2 **APPROVE**, zero residue (`m3-round2.md`). |
 | **M4** | Not started. |
 | **M5** | Not started. |
 | **M6** | Vault file + `secret` CLI built 2026-08-24, `79fcc2e` (with M1). Injection into tools and egress redaction are **not** started — they need M4. |
@@ -198,12 +198,15 @@ that returns malformed tool JSON.
 
 **Depends on:** M0.
 
-**Status: implemented in this worktree; review pending.** Hand-rolled OpenAI-compatible
-`/v1` streaming client (reqwest 0.12, SSE parser, no provider SDK), `[companion]` config with
-product field defaults on partial tables, `mooshik chat` REPL, tool-call protocol with a
-`ToolExecutor` seam (production registers no tools), context packing that drops old turns and
-calls a `RecallInjector` seam (default no-op). Default `cargo test` uses an in-process HTTP/SSE
-mock and does not call a live model. Record: `dev-diary/adversarial-review/m3-implementation.md`.
+**Status: built 2026-08-25.** Implement `9652f39`, remediate `8e168f6`, review record
+`m3-round2.md`. Adversarial round 2 **APPROVE**, zero residue. 98 tests.
+
+Hand-rolled OpenAI-compatible `/v1` streaming client (reqwest 0.12, SSE parser, no provider SDK),
+`[companion]` config with product field defaults on partial tables, `mooshik chat` REPL, tool-call
+protocol with a `ToolExecutor` seam (production registers no tools), context packing that drops
+old turns and calls a `RecallInjector` seam (default no-op). Default `cargo test` uses an
+in-process HTTP/SSE mock and does not call a live model. Record:
+`dev-diary/adversarial-review/m3-implementation.md`.
 
 ---
 
@@ -241,7 +244,7 @@ survived review. In `~/work/lambo/src/mcp/`:
 
 **Depends on:** M2, M3.
 
-**Status: not started.** Unblocked once M3 lands; M2 is done.
+**Status: not started.** Unblocked; M2 and M3 have landed.
 
 ---
 
