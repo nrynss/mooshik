@@ -319,3 +319,66 @@ async fn api_key_never_appears_in_client_errors() {
     );
     server.assert_all_streaming();
 }
+
+/// The M4 composition pin: a model tool-call must flow through the `Session`
+/// loop into the real memory-backed executor — not a stub — and the derive
+/// outcome must post back to the model as the tool result.
+#[tokio::test]
+async fn model_tool_call_reaches_the_memory_backed_executor() {
+    let mut memory_config = crate::config::Config::default();
+    memory_config.store.kind = lambo::StoreKind::Memory;
+    memory_config.embedder.kind = lambo::EmbedderKind::Fixture;
+    memory_config.embedder.dim = 1024;
+    memory_config.session.id = "mooshik".to_owned();
+    crate::memory::provision(&memory_config).await.unwrap();
+    let memory = crate::memory::open(&memory_config).await.unwrap();
+
+    let first = Script::sse(vec![
+        Frame::tool_head(0, "call_1", crate::tools::TOOL_DERIVE),
+        Frame::tool_args(
+            0,
+            "{\"agent_id\":\"mooshik\",\"concepts\":[{\"content\":\"mooshik m4 \
+             session composition marker\",\"concept_type\":\"entity\"}]}",
+        ),
+        Frame::finish("tool_calls"),
+        Frame::done(),
+    ]);
+    let server = MockServer::spawn(vec![first, stop_script(&["stored"])]).await;
+    let client = CompanionClient::from_config(&config(&server.base_url)).unwrap();
+    let mut chat = Session::new(client, 32768)
+        .with_system("s")
+        .with_executor(crate::tools::MemoryTools::from_memory(memory));
+    let reply = chat
+        .turn("remember this", &Cancellation::new(), |_| {})
+        .await
+        .unwrap();
+    assert_eq!(reply, "stored");
+
+    // The model was offered the four real specs, and the tool result it got
+    // back is a genuine derive outcome from the graph.
+    let first_body = request_json(&server.requests()[0].body);
+    let advertised: Vec<&str> = first_body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        advertised,
+        vec![
+            crate::tools::TOOL_RECALL,
+            crate::tools::TOOL_DERIVE,
+            crate::tools::TOOL_STATS,
+            crate::tools::TOOL_SCRATCH
+        ]
+    );
+    let second = request_json(&server.requests()[1].body);
+    let messages = second["messages"].as_array().unwrap();
+    let tool = messages
+        .iter()
+        .find(|msg| msg["role"] == "tool")
+        .expect("derive result posted back");
+    let outcome: Value = serde_json::from_str(tool["content"].as_str().unwrap()).unwrap();
+    assert_eq!(outcome["created"].as_array().unwrap().len(), 1);
+    server.assert_all_streaming();
+}
