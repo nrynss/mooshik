@@ -8,19 +8,29 @@ use crate::config::{CompanionConfig, Config};
 use super::cancel::Cancellation;
 use super::client::CompanionClient;
 use super::session::Session;
+use super::tools::ToolExecutor;
 use super::CompanionError;
 
-pub fn run_chat(config: &Config) -> Result<(), CompanionError> {
+/// Run the interactive chat loop.
+///
+/// `executor` provides the tool surface (in M4, the lambo tools + scratch
+/// runner, or a No-op when memory is unavailable). The chat loop itself never
+/// opens Memory — the caller (`crate::cli::chat`) opens and injects it, keeping
+/// this module free of any direct reference to the memory module (M3 pin).
+pub fn run_chat(config: &Config, executor: Arc<dyn ToolExecutor>) -> Result<(), CompanionError> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|_| CompanionError::Runtime)?
-        .block_on(run_chat_async(&config.companion))
+        .block_on(run_chat_async(&config.companion, executor))
 }
 
-async fn run_chat_async(config: &CompanionConfig) -> Result<(), CompanionError> {
+async fn run_chat_async(
+    config: &CompanionConfig,
+    executor: Arc<dyn ToolExecutor>,
+) -> Result<(), CompanionError> {
     let client = CompanionClient::from_config(config)?;
-    let mut session = Session::new(client, config.context_window);
+    let mut session = Session::new(client, config.context_window).with_executor(executor);
     let shutdown = Cancellation::new();
     let current: Arc<Mutex<Option<Cancellation>>> = Arc::new(Mutex::new(None));
     tokio::spawn({
