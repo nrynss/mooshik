@@ -43,6 +43,7 @@ pub fn command() -> Command {
                 .subcommand_required(true)
                 .subcommand(Command::new("show").about(text::get("config.show_help"))),
         )
+        .subcommand(Command::new("permissions").about(text::get("permissions.help")))
         .subcommand(
             Command::new("secret")
                 .about(text::get("vault.list_help"))
@@ -83,6 +84,7 @@ fn dispatch(matches: &clap::ArgMatches) -> anyhow::Result<()> {
         Some(("serve", _)) => serve(&layout),
         Some(("chat", _)) => chat(&layout),
         Some(("config", sub)) if sub.subcommand_name() == Some("show") => show_config(&layout),
+        Some(("permissions", _)) => show_permissions(&layout),
         Some(("secret", sub)) => dispatch_secret(&layout, sub),
         _ => Ok(()),
     }
@@ -92,6 +94,13 @@ fn show_config(layout: &HomeLayout) -> anyhow::Result<()> {
     let root = layout.open_existing_root().map_err(anyhow::Error::new)?;
     let config = Config::load_at(&root).map_err(anyhow::Error::new)?;
     print!("{}", config.redacted_toml());
+    Ok(())
+}
+
+fn show_permissions(layout: &HomeLayout) -> anyhow::Result<()> {
+    let root = layout.open_existing_root().map_err(anyhow::Error::new)?;
+    let config = Config::load_at(&root).map_err(anyhow::Error::new)?;
+    print!("{}", config.permissions.grants().render());
     Ok(())
 }
 
@@ -243,6 +252,18 @@ mod tests {
             .to_string()
             .contains("cowork partner"));
         assert!(!cmd.get_after_help().unwrap().to_string().is_empty());
+    }
+
+    #[test]
+    fn permissions_help_comes_from_text() {
+        let cmd = command();
+        let permissions = cmd
+            .find_subcommand("permissions")
+            .unwrap()
+            .get_about()
+            .unwrap()
+            .to_string();
+        assert_eq!(permissions, text::get("permissions.help"));
     }
 
     #[test]
