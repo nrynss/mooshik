@@ -41,12 +41,36 @@ jobs:
           python3 -m json.tool "$RUNNER_TEMP/sa.json" > /dev/null
           echo "credentials parsed as valid JSON"
 
+      - name: Rewrite DSN through the Cloud SQL Auth Proxy
+        env:
+          MOOSHIK_POSTGRES_DSN: ${{ secrets.MOOSHIK_POSTGRES_DSN }}
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_ENV"
+          import os
+          from urllib.parse import urlparse, ParseResult
+          u = urlparse(os.environ["MOOSHIK_POSTGRES_DSN"])
+          netloc = f"{u.username}:{u.password}@127.0.0.1:5432"
+          query = u.query.replace("sslmode=require", "sslmode=disable")
+          rewritten = ParseResult("postgresql", netloc, u.path, u.params, query, u.fragment).geturl()
+          print(f"MOOSHIK_POSTGRES_DSN={rewritten}")
+          print(f"LAMBO_POSTGRES_DSN={rewritten}")
+          EOF
+
+      - name: Start Cloud SQL Auth Proxy
+        run: |
+          curl -sS --fail -o /usr/local/bin/cloud-sql-proxy \
+            https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.14.2/cloud-sql-proxy.linux.amd64
+          chmod +x /usr/local/bin/cloud-sql-proxy
+          /usr/local/bin/cloud-sql-proxy mooshik:us-central1:lambo-pg --port 5432 &
+          for i in $(seq 1 30); do
+            (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null && break || sleep 1
+          done
+          (exec 3<>/dev/tcp/127.0.0.1/5432) || { echo "proxy did not open the port"; exit 1; }
+
       - name: Export live environment
         run: |
           project=$(python3 -c "import json,os;print(json.load(open(os.environ['RUNNER_TEMP']+'/sa.json'))['project_id'])")
           {
-            echo "MOOSHIK_POSTGRES_DSN=${{ secrets.MOOSHIK_POSTGRES_DSN }}"
-            echo "LAMBO_POSTGRES_DSN=${{ secrets.MOOSHIK_POSTGRES_DSN }}"
             echo "MOOSHIK_GEMINI_CREDENTIALS=$RUNNER_TEMP/sa.json"
             echo "GCP_LAMBO_CREDENTIALS=$RUNNER_TEMP/sa.json"
             echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json"
