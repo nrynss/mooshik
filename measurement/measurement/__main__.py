@@ -27,6 +27,15 @@ from .grade import (
 from .pools import coverage_overall
 from .report import render_report
 from .sample import read_jsonl, run_sampling, write_jsonl
+from .db import DEFAULT_SESSION, PgConnection, dsn_from_env
+
+
+def _non_negative_int(text: str) -> int:
+    """argparse type: reject negative N with a clean usage error (exit 2)."""
+    value = int(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"must be >= 0, got {value}")
+    return value
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -41,9 +50,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_sample = sub.add_parser("sample", help="seeded draws from the live pools")
-    p_sample.add_argument("--raw", type=int, default=10)
-    p_sample.add_argument("--canonical", type=int, default=5)
-    p_sample.add_argument("--rejected", type=int, default=10)
+    p_sample.add_argument("--raw", type=_non_negative_int, default=10)
+    p_sample.add_argument("--canonical", type=_non_negative_int, default=5)
+    p_sample.add_argument("--rejected", type=_non_negative_int, default=10)
     p_sample.add_argument("--out", type=Path, default=Path("sample.jsonl"))
     p_sample.add_argument("--seed", type=int, default=42)
     p_sample.add_argument("--session", default=DEFAULT_SESSION)
@@ -105,8 +114,12 @@ def _cmd_grade(args: argparse.Namespace) -> int:
         print(f"applied {applied}, skipped {skipped} -> {grades_file}")
         return 0
 
-    done = grade_interactive(items, grades)
-    save_grades(grades_file, grades)
+    try:
+        done = grade_interactive(items, grades)
+    finally:
+        # Save even on KeyboardInterrupt: verdicts recorded before a Ctrl-C
+        # must reach the sidecar (main() turns the interrupt into exit 130).
+        save_grades(grades_file, grades)
     print(f"\ngraded {done} this session; {len(grades)} total -> {grades_file}")
     return 0
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import math
 
-Z_95 = 1.959963984540054  # two-sided 95%, NormalDist().inv_cdf(0.975)
+Z_95 = 1.959963984540054  # two-sided 95%; agrees with NormalDist().inv_cdf(0.975) within ~5e-16
 
 
 def wilson(k: int, n: int, z: float = Z_95) -> tuple[float, float] | None:

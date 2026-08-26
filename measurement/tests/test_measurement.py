@@ -7,6 +7,8 @@ Cloud SQL and is recorded in dev-diary/adversarial-review/m9-implementation.md.
 
 from __future__ import annotations
 
+import argparse
+import io
 import json
 import sys
 from pathlib import Path
@@ -16,14 +18,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pytest
 
 from measurement import pools
+from measurement.__main__ import _build_parser, _cmd_grade
 from measurement.excerpt import excerpt_for, resolve_excerpt
 from measurement.grade import (
     apply_template,
     grades_path_for,
+    grade_interactive,
     load_grades,
     save_grades,
 )
-from measurement.report import COVERAGE_GATE, render_report
+from measurement.report import COVERAGE_GATE, render_report, tally
 from measurement.sample import draw, read_jsonl, run_sampling, write_jsonl
 from measurement.stats import precision, wilson
 
@@ -114,6 +118,22 @@ class TestSampling:
         rej_ids = [x.node_id for x in items if x.pool == "rejected"]
         assert len(ids) == len(set(ids))
         assert len(rej_ids) == len(set(rej_ids))
+
+    def test_join_fanout_duplicate_node_drawn_and_counted_once(self):
+        """A concept with two document parents yields two rows differing only
+        in source_ref; the sample, pool size and tally must each see ONE node."""
+        fanout = [
+            {**concept_row(7), "source_ref": "document:file:/a.md"},
+            {**concept_row(7), "source_ref": "document:file:/b.md"},
+        ]
+        conn = graph_conn(raw_rows=fanout, canonical_rows=[], rejected_rows=[])
+        items, sizes = run_sampling(conn, "s", 10, 0, 0, seed=23)
+        nid = concept_row(7)["node_id"]
+        drawn = [i.node_id for i in items]
+        assert drawn.count(nid) == 1, "fan-out must not grade a node twice"
+        assert sizes["raw"] == 1, "pool size counts distinct nodes, not rows"
+        t = tally("raw", [i for i in items if i.pool == "raw"], {nid: "correct"})
+        assert (t.total, t.correct, t.incorrect) == (1, 1, 0)
 
     def test_n_above_pool_size_clamps(self):
         items, sizes = run_sampling(graph_conn(), "s", 99, 99, 99, seed=4)
@@ -237,6 +257,69 @@ class TestGrading:
             load_grades(path)
 
 
+class _ScriptedInput:
+    """readline() yields scripted responses, then signals end of input.
+
+    ``eof`` selects the post-exhaustion behaviour: "" (piped input ran out)
+    or an exception class (Ctrl-C mid-prompt). A read-count guard turns a
+    reprompt regression into a fast failure instead of a hung suite.
+    """
+
+    def __init__(self, responses=(), eof="", eof_raises=None):
+        self._responses = list(responses)
+        self._eof = eof
+        self._eof_raises = eof_raises
+        self.reads = 0
+
+    def readline(self):
+        self.reads += 1
+        if self.reads > 64:
+            raise AssertionError("grading kept prompting after input ended")
+        if self._responses:
+            return self._responses.pop(0) + "\n"
+        if self._eof_raises is not None:
+            raise self._eof_raises()
+        return self._eof
+
+
+def _grade_args(sample_path):
+    return argparse.Namespace(
+        sample=sample_path, grades=None, template=None, apply=None
+    )
+
+
+class TestInteractiveGradingInterruptions:
+    def test_eof_quits_instead_of_reprompting_forever(self):
+        items, _ = run_sampling(graph_conn(), "s", 2, 0, 0, seed=20)
+        stream = _ScriptedInput()  # stdin closed before any answer
+        done = grade_interactive(items, {}, infile=stream, outfile=io.StringIO())
+        assert done == 0
+        assert stream.reads == 1, "one prompt seen, then EOF must quit"
+
+    def test_eof_via_cli_still_persists_grades(self, tmp_path, monkeypatch):
+        items, _ = run_sampling(graph_conn(), "s", 3, 0, 0, seed=21)
+        sample = tmp_path / "sample.jsonl"
+        write_jsonl(items, sample)
+        # one verdict answered, then the pipe closes mid-session
+        monkeypatch.setattr(sys, "stdin", _ScriptedInput(["c"]))
+        _cmd_grade(_grade_args(sample))
+        saved = load_grades(grades_path_for(sample))
+        assert saved[items[0].node_id] == "correct"
+        assert len(saved) == 1
+
+    def test_keyboard_interrupt_mid_session_still_persists(self, tmp_path, monkeypatch):
+        items, _ = run_sampling(graph_conn(), "s", 3, 0, 0, seed=22)
+        sample = tmp_path / "sample.jsonl"
+        write_jsonl(items, sample)
+        stream = _ScriptedInput(["c", "i"], eof_raises=KeyboardInterrupt)
+        monkeypatch.setattr(sys, "stdin", stream)
+        with pytest.raises(KeyboardInterrupt):
+            _cmd_grade(_grade_args(sample))
+        saved = load_grades(grades_path_for(sample))
+        assert saved[items[0].node_id] == "correct"
+        assert saved[items[1].node_id] == "incorrect"
+
+
 # ---------------------------------------------------------------- coverage
 
 
@@ -244,6 +327,11 @@ class TestCoverageAndReport:
     def test_coverage_reads_embedded_vs_total_from_cursor(self):
         conn = graph_conn(coverage=(16, 27))
         assert pools.coverage_overall(conn, "mooshik") == (16, 27)
+
+    def test_coverage_sql_is_join_free(self):
+        """Fan-out regression guard: coverage must stay a single-table count
+        (a JOIN here would double-count concepts with multiple edges)."""
+        assert "join" not in pools.COVERAGE_SQL.lower()
 
     def test_report_leads_with_coverage_and_gates_low_values(self):
         items, sizes = run_sampling(graph_conn(), "s", 4, 0, 4, seed=11)
@@ -282,6 +370,20 @@ class TestCoverageAndReport:
         assert "promotes nothing" in report
         assert "n/a" in report  # canonical precision honestly undefined
 
+    def test_unsure_excluded_from_report_n_and_interval(self):
+        """Report-level pin: an 'unsure' verdict leaves both the n-graded
+        column and the Wilson interval math untouched."""
+        items, sizes = run_sampling(graph_conn(), "s", 3, 0, 0, seed=24)
+        grades = {
+            items[0].node_id: "correct",
+            items[1].node_id: "correct",
+            items[2].node_id: "unsure",
+        }
+        report = render_report(items, grades, sizes, 30, 30, session="s")
+        row = next(l for l in report.splitlines() if l.startswith("| raw-extraction"))
+        lo, hi = wilson(2, 2)  # denominator 2 graded, not 3 sampled
+        assert f"| 2 | 2 | 100.0% | [{lo:.3f}, {hi:.3f}] |" in row
+
     def test_per_pool_coverage_table_present(self):
         rows = [
             concept_row(0, source="document:file:/a.md"),
@@ -313,6 +415,22 @@ class TestExcerpts:
     def test_excerpt_for_falls_back_to_refs(self):
         text = excerpt_for(["document:file:/nonexistent.md"])
         assert "not resolvable" in text
+
+
+
+# ------------------------------------------------------------ cli arguments
+
+
+class TestCliValidation:
+    @pytest.mark.parametrize("flag", ["--raw", "--canonical", "--rejected"])
+    def test_negative_n_is_a_usage_error_not_a_traceback(self, flag):
+        with pytest.raises(SystemExit) as ei:
+            _build_parser().parse_args(["sample", flag, "-3"])
+        assert ei.value.code == 2
+
+    def test_zero_n_is_accepted(self):
+        args = _build_parser().parse_args(["sample", "--raw", "0"])
+        assert args.raw == 0
 
 
 if __name__ == "__main__":  # pragma: no cover

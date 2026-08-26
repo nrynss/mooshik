@@ -13,6 +13,8 @@ Two modes:
   it.
 * **interactive mode** — default when neither flag is given: prints each
   ungraded item with its source excerpt, reads c/i/u/s verdicts one per item.
+  EOF on stdin (piped input exhausted, dropped terminal) quits like ``q``
+  instead of reprompting forever.
 """
 
 from __future__ import annotations
@@ -115,11 +117,14 @@ def grade_interactive(
         print("----------------------", file=outfile)
         while True:
             print(PROMPT, end="", flush=True, file=outfile)
-            answer = infile.readline().strip().lower()
+            answer_raw = infile.readline()
+            if answer_raw == "":
+                # EOF: readline() returns "" forever once stdin is closed;
+                # reprompting would spin infinitely. Quit like 'q'.
+                return done
+            answer = answer_raw.strip().lower()
             if answer == "q":
                 return done
-            if answer == "s":
-                break
             if answer in KEYMAP:
                 grades[item.node_id] = KEYMAP[answer]
                 done += 1

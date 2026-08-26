@@ -23,7 +23,7 @@ from typing import Any
 
 # Literal '%' inside a LIKE pattern must be doubled under psycopg's %s style.
 RAW_POOL_SQL = """
-SELECT c.id::text            AS node_id,
+SELECT DISTINCT c.id::text  AS node_id,
        c.content             AS content,
        c.concept_type        AS concept_type,
        c.canonization_status AS status,
@@ -42,7 +42,7 @@ ORDER BY c.id
 """
 
 REJECTED_POOL_SQL = """
-SELECT c.id::text            AS node_id,
+SELECT DISTINCT c.id::text  AS node_id,
        c.content             AS content,
        c.concept_type        AS concept_type,
        c.canonization_status AS status,
@@ -83,8 +83,23 @@ WHERE session_id = %s
 """
 
 
+def _dedupe_by_node_id(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse join fan-out to one row per concept.
+
+    DISTINCT removes fully identical rows, but a concept with two
+    ``document:*`` parents (same content extracted from two documents gains a
+    second Hierarchical edge) yields two rows differing only in
+    ``source_ref``. Keep the first occurrence per node_id; order stays stable
+    because the SQL orders by id.
+    """
+    unique: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        unique.setdefault(str(row["node_id"]), row)
+    return list(unique.values())
+
+
 def raw_pool(conn: Any, session: str) -> list[dict[str, Any]]:
-    return conn.query(RAW_POOL_SQL, (session,))
+    return _dedupe_by_node_id(conn.query(RAW_POOL_SQL, (session,)))
 
 
 def canonical_pool(conn: Any, session: str) -> list[dict[str, Any]]:
@@ -92,7 +107,7 @@ def canonical_pool(conn: Any, session: str) -> list[dict[str, Any]]:
 
 
 def rejected_pool(conn: Any, session: str) -> list[dict[str, Any]]:
-    return conn.query(REJECTED_POOL_SQL, (session,))
+    return _dedupe_by_node_id(conn.query(REJECTED_POOL_SQL, (session,)))
 
 
 def coverage_overall(conn: Any, session: str) -> tuple[int, int]:
