@@ -57,7 +57,7 @@ M11 is last on purpose and is allowed to fail; see M11.
 | **M7** | Built 2026-08-26, `caa8962` → `958564f`. Review round 2 **APPROVE**, zero residue (`m7-round2.md`). `recall` / `stats` commands; exit codes 0/2/1; live-verified against Cloud SQL + Vertex. |
 | **M8** | Built 2026-08-26, `ingester/` subdirectory, commits through `df8d779`. Review round 2 **APPROVE**, zero residue (`m8-round2.md`). J2 proxy path + Vertex Flash extraction proven live; Cloud Run deploy docs pending IAM. |
 | **M9** | Built 2026-08-26, `measurement/` subpackage, commits through `1f3217e`. Review round 2 **APPROVE**, zero residue (`m9-round2.md`). Live on the M8 graph: coverage 59.3% gated, raw precision 10/10, canonization promoted nothing (the predicted pathology, now measured). |
-| **M10** | Not started. Cut-able. |
+| **M10** | Built 2026-08-26, `2bc5665` → `f50765f`. Review round 2 **APPROVE**, zero residue (`m10-round2.md`). MCP host: configured servers, vault-ref env, `mcp.<server>.<tool>` naming, gate+redaction integrated, live-verified against real `lambo serve`. |
 | **M11** | Not started. Allowed to fail. |
 
 Lambo pin: `nrynss/lambo` git `rev = f90a662` (`lambo-for-mooshik`). E1/E2 (path dep, then rev pin) were done as the rev pin directly; bump the SHA after a Lambo fix.
@@ -565,7 +565,18 @@ day even with rmcp, and it competes with M8 and M9. If the clock forces a choice
 better thing to cut than M9 — M9 is the finding, this is plumbing that will still be here in
 September.
 
-**Status: not started.**
+**Status: built 2026-08-26.** Implement `2bc5665`, remediate `f50765f`, review records
+`m10-round1.md` / `m10-round2.md`. Adversarial round 2 **APPROVE**, zero residue.
+
+`[mcp_servers.<name>]` (command/args, env as vault secret refs resolved at spawn,
+per-server `expose` allowlist, empty-expose inert) → `McpTools` exposes
+`mcp.<server>.<tool>` tools into the same `GatedTools(RedactingTools(.))` chain;
+lazy spawn, bounded one-respawn reconnect, per-call timeout firebreak (a hung
+child frees the worker), dotted server keys rejected at load. `search_web` /
+`fetch_page` and github/obsidian now arrive as configured servers, not Rust
+code. rmcp 3.1.2 `default-features=false` + `client`/`transport-child-process`;
+reqwest still 0.12 once. Live-verified against `lambo serve` as a real MCP
+server (unique session): MCP-hosted derive landed and was recalled.
 
 ---
 
