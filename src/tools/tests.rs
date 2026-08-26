@@ -256,7 +256,7 @@ fn executor_for_chat_composes_gate_then_redaction_then_tools() {
         .next()
         .unwrap();
     assert!(
-        factory.contains("compose_chat_stack(inner"),
+        factory.contains("compose_chat_stack("),
         "executor_for_chat must build its stack through the shared \
          compose_chat_stack seam"
     );

@@ -16,7 +16,7 @@
 //! | `tools`     | M4        | lambo tools, scratch script runner           |
 //! | `perms`     | M5        | permission gate at the tool-call boundary    |
 //! | `vault`     | M6        | encrypted secret store, egress redaction     |
-//! | `mcp`       | M10       | MCP client host for configured servers       |
+//! | `mcp_host` | M10       | MCP client host for configured servers       |
 //!
 //! File-size discipline: soft target ~600 lines per file including tests and
 //! doc text; CI fails past 1000. User-facing prose never counts against this —
@@ -27,6 +27,7 @@ pub mod cli;
 pub mod companion;
 pub mod config;
 pub mod home;
+pub mod mcp_host;
 pub mod memory;
 mod secure_path;
 pub mod text;

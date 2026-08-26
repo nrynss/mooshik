@@ -36,13 +36,13 @@ mod worker;
 pub use permissions::{Confirm, GatedTools};
 pub use redact::RedactingTools;
 pub use scratch::ScratchConfig;
+pub use worker::{ToolRunError, ToolRuntime};
 
 use schema::{
     check_size, DeriveParams, RecallParams, ScratchParams, StatsParams, WireConceptType,
     MAX_CONCEPTS_PER_DERIVE, MAX_MAX_TOKENS, MAX_TOP_K, MAX_TRAVERSAL_DEPTH,
     SCRATCH_DEFAULT_TIMEOUT_SECS,
 };
-use worker::{ToolRunError, ToolRuntime};
 
 pub const TOOL_RECALL: &str = "lambo_recall";
 pub const TOOL_DERIVE: &str = "lambo_derive";
@@ -54,6 +54,39 @@ pub const TOOL_SCRATCH: &str = "run_scratch_script";
 const LAMBO_CALL_WAIT: Duration = Duration::from_secs(60);
 /// Bound on opening Memory for a chat session.
 const OPEN_WAIT: Duration = Duration::from_secs(20);
+
+/// A [`ToolExecutor`] that combines a list of peer tool executors, dispatching
+/// each call to whichever owns the tool name. M10 composes the memory tools
+/// and the MCP host behind a single composite sibling so the *one* permission
+/// gate ([`GatedTools`]) and the *one* egress redactor ([`RedactingTools`])
+/// wrap BOTH — `mcp.*` grants flow through the same M5 path and MCP results
+/// cross the same M6 scan.
+pub struct CompositeTools {
+    inner: Arc<dyn ToolExecutor>,
+    mcp: Arc<dyn ToolExecutor>,
+}
+
+impl CompositeTools {
+    pub fn new(inner: Arc<dyn ToolExecutor>, mcp: Arc<dyn ToolExecutor>) -> Self {
+        Self { inner, mcp }
+    }
+}
+
+impl ToolExecutor for CompositeTools {
+    fn specs(&self) -> Vec<ToolSpec> {
+        let mut all = self.inner.specs();
+        all.extend(self.mcp.specs());
+        all
+    }
+
+    fn execute(&self, name: &str, arguments: &Value) -> String {
+        if name.starts_with("mcp.") {
+            self.mcp.execute(name, arguments)
+        } else {
+            self.inner.execute(name, arguments)
+        }
+    }
+}
 
 /// The in-scope tool specifications, exposed to the companion model.
 pub fn tool_specs() -> Vec<ToolSpec> {
@@ -475,7 +508,12 @@ pub fn executor_for_chat(config: &Config, vault: Option<SharedVault>) -> Arc<dyn
             Arc::new(NoopExecutor)
         }
     };
-    compose_chat_stack(inner, vault, grants)
+    let mcp = Arc::new(crate::mcp_host::McpTools::from_config(
+        config,
+        vault.clone(),
+    ));
+    let composite: Arc<dyn ToolExecutor> = Arc::new(CompositeTools::new(inner, mcp));
+    compose_chat_stack(composite, vault, grants)
 }
 
 /// The chat boundary composition, shared verbatim by [`executor_for_chat`]

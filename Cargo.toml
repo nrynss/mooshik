@@ -26,6 +26,11 @@ lambo = { git = "https://github.com/nrynss/lambo", rev = "f90a66227b9bff52bdff23
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "io-util", "sync", "signal", "net"] }
 # Pin 0.12 so M10's rmcp (optional reqwest ^0.13.2) does not compile reqwest twice.
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+# MCP host (M10): client + child-process transport only. default-features =
+# false is REQUIRED — rmcp's optional reqwest is ^0.13.2 and this repo pins
+# 0.12; default features would compile reqwest twice.
+rmcp = { version = "3.1.2", default-features = false, features = ["client", "transport-child-process"] }
+parking_lot = "0.12"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", default-features = false, features = ["linux-native-sync-persistent", "crypto-rust"] }

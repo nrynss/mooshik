@@ -28,7 +28,7 @@ zero_context_window = "The companion context window must be greater than zero."
 dsn_conflict = "MOOSHIK_POSTGRES_DSN and LAMBO_POSTGRES_DSN (or DATABASE_URL) name different databases. Unset one of them or make them agree."
 invalid_permissions = "The [permissions] configuration contains an unsupported value. Use \"allow\", \"prompt\", \"deny\", or a list of granted tool names."
 invalid_scratch_env = "The [tools.scratch.env] configuration contains an unsupported entry. The key must be a valid environment variable name and the value a valid secret name: ASCII letters, digits, dots, underscores, or hyphens."
-show_failed = "Could not load the Mooshik configuration. Fix the file and try again."
+invalid_mcp = "A configured MCP server is invalid: the command is missing, or an env variable name or vault secret reference is malformed."
 
 [home]
 init_failed = "Could not initialize the Mooshik home directory. Check its path and permissions."
@@ -142,8 +142,16 @@ scratch_spawn_failed = "Could not start the script interpreter"
 scratch_sandbox_failed = "Could not create the sandbox working directory"
 scratch_write_failed = "Could not write the script into the sandbox"
 scratch_io_failed = "Could not read the script's output"
-memory_tool_failed = "workspace memory could not complete this call; its detail was withheld from the terminal"
 tool_panicked = "the tool panicked; the call was refused and the panic detail was withheld"
+mcp_servers_unavailable = "The encrypted vault could not be opened, so configured MCP server credentials could not be resolved; those servers were not started. Chat continues with the remaining tools."
+mcp_secret_missing = "MCP server '{server}': secret '{name}' is not in the vault; the server was not started."
+mcp_secret_failed = "MCP server '{server}': a configured secret could not be read from the vault; the server was not started."
+mcp_spawn_failed = "MCP server '{server}' could not be started."
+mcp_tool_failed = "MCP server '{server}' could not complete tool '{tool}'; its detail was withheld from the terminal."
+mcp_tool_unknown = "MCP server '{server}' has no exposed tool '{tool}'."
+memory_tool_failed = "workspace memory could not complete this call; its detail was withheld from the terminal"
+
+
 
 [permissions]
 help = "Print the resolved tool permission grants"

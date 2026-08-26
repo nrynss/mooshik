@@ -86,6 +86,16 @@ temperature = 0.2
 # the key is the env-var name the script reads, the value is the secret NAME
 # in the vault (never the value). Resolved fresh at every run.
 [tools.scratch.env]
+# MCP servers (M10): configured servers are surfaced to the companion as
+# mcp.<server>.<tool> tools, gated by [permissions] ("mcp.github.*" = "allow").
+# `expose` is an allowlist: only the named tools appear; an empty list leaves
+# the server inert (never spawned). `env` values are vault secret NAMES,
+# resolved at spawn time — never literal tokens here.
+# [mcp_servers.github]
+# command = "uvx"
+# args = ["mcp-server-github"]
+# env = { GITHUB_PERSONAL_ACCESS_TOKEN = "github-token" }
+# expose = ["create_issue", "list_issues"]
 # GITHUB_TOKEN = "github-token"
 "#;
 
@@ -101,8 +111,9 @@ pub enum ConfigError {
     ZeroFlush,
     ZeroContextWindow,
     DsnConflict,
-    InvalidPermissions,
     InvalidScratchEnv,
+    InvalidMcp,
+    InvalidPermissions,
 }
 
 impl std::fmt::Display for ConfigError {
@@ -118,6 +129,7 @@ impl std::fmt::Display for ConfigError {
             Self::ZeroFlush => "config.zero_flush",
             Self::ZeroContextWindow => "config.zero_context_window",
             Self::DsnConflict => "config.dsn_conflict",
+            Self::InvalidMcp => "config.invalid_mcp",
             Self::InvalidScratchEnv => "config.invalid_scratch_env",
             Self::InvalidPermissions => "config.invalid_permissions",
         };
@@ -188,6 +200,34 @@ pub struct ScratchToolsSection {
     /// script run through the vault; the value itself never appears here.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+}
+
+/// One configured MCP server under `[mcp_servers.<name>]`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerConfig {
+    /// Executable to spawn; may be an absolute path or a name on `PATH`.
+    pub command: String,
+    /// Extra arguments passed to `command` (default: none).
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Process-env-var name -> vault secret *name*. Resolved at spawn time;
+    /// the value is injected into the child's environment, never written into
+    /// a readable config file (M6 constraint).
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    /// Allowlist of tool names surfaced to the companion. Fail-closed: a
+    /// server whose list exposes nothing is inert.
+    #[serde(default)]
+    pub expose: Vec<String>,
+}
+
+impl McpServerConfig {
+    /// A server exposes something only when its allowlist is non-empty; the
+    /// `[mcp_servers]` table is data, held inert otherwise.
+    pub fn exposed(&self) -> bool {
+        !self.expose.is_empty()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -326,6 +366,8 @@ pub struct Config {
     #[serde(default)]
     pub permissions: PermissionsConfig,
     #[serde(default)]
+    pub mcp_servers: BTreeMap<String, McpServerConfig>,
+    #[serde(default)]
     pub tools: ToolsSection,
 }
 
@@ -370,12 +412,37 @@ impl Config {
             },
         }
     }
+
+    /// Fail closed on an `[mcp_servers.*]` entry that could never spawn: an
+    /// empty command, or an env ref naming an impossible secret name. The
+    /// `expose` allowlist being empty is *not* an error — such a server is
+    /// simply inert (never spawned), which is M10's fail-closed default.
+    pub fn validate_mcp(&self) -> Result<(), ConfigError> {
+        for config in self.mcp_servers.values() {
+            if config.command.trim().is_empty() {
+                return Err(ConfigError::InvalidMcp);
+            }
+            for (env_var, secret_name) in &config.env {
+                let valid_env = matches!(
+                    env_var.as_bytes().first(),
+                    Some(b'A'..=b'Z' | b'a'..=b'z' | b'_')
+                ) && env_var
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+                if !valid_env || !crate::vault::is_valid_name(secret_name) {
+                    return Err(ConfigError::InvalidMcp);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 pub fn resolve_home(
     environment: impl IntoIterator<Item = (String, String)>,
 ) -> Result<PathBuf, ConfigError> {
     let values: std::collections::HashMap<String, String> = environment.into_iter().collect();
+
     if let Some(path) = non_empty(&values, HOME_ENV) {
         return Ok(PathBuf::from(path));
     }
@@ -492,7 +559,68 @@ mod tests {
             Config::load(&root.join("config.toml")),
             Err(ConfigError::Io)
         ));
-        let _ = std::fs::remove_file(root);
-        let _ = std::fs::remove_dir_all(outside);
+        let _ = std::fs::remove_file(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn mcp_servers_parse_and_validate() {
+        let toml = r#"
+            [mcp_servers.github]
+            command = "uvx"
+            args = ["mcp-server-github"]
+            env = { GITHUB_PERSONAL_ACCESS_TOKEN = "github-token" }
+            expose = ["create_issue", "list_issues"]
+        "#;
+        let config = Config::from_toml_and_env(toml, []).unwrap();
+        let github = config.mcp_servers.get("github").unwrap();
+        assert_eq!(github.command, "uvx");
+        assert_eq!(github.args, vec!["mcp-server-github"]);
+        assert_eq!(
+            github
+                .env
+                .get("GITHUB_PERSONAL_ACCESS_TOKEN")
+                .map(String::as_str),
+            Some("github-token")
+        );
+        assert_eq!(github.expose, vec!["create_issue", "list_issues"]);
+    }
+
+    #[test]
+    fn mcp_missing_command_fails_closed() {
+        let toml = r#"
+            [mcp_servers.bad]
+            command = ""
+            expose = ["x"]
+        "#;
+        assert!(matches!(
+            Config::from_toml_and_env(toml, []),
+            Err(ConfigError::InvalidMcp)
+        ));
+    }
+
+    #[test]
+    fn mcp_invalid_env_ref_fails_closed() {
+        let toml = r#"
+            [mcp_servers.bad]
+            command = "uvx"
+            env = { "1X" = "not-a-valid-secret!" }
+            expose = ["x"]
+        "#;
+        assert!(matches!(
+            Config::from_toml_and_env(toml, []),
+            Err(ConfigError::InvalidMcp)
+        ));
+    }
+
+    #[test]
+    fn empty_expose_is_legal_and_inert() {
+        let toml = r#"
+            [mcp_servers.silent]
+            command = "uvx"
+            expose = []
+        "#;
+        let config = Config::from_toml_and_env(toml, []).unwrap();
+        assert!(!config.mcp_servers["silent"].exposed());
     }
 }

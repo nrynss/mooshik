@@ -36,6 +36,9 @@ impl Config {
         // entry that could never resolve must fail the load, not silently
         // start scripts without their secrets.
         config.tools.validate()?;
+        // [mcp_servers.*] fails closed like the other tables: an entry that
+        // could never spawn must fail the load, not break only at call time.
+        config.validate_mcp()?;
         let values: HashMap<String, String> = environment.into_iter().collect();
         overlay_vault(&mut config, &values)?;
         overlay_session(&mut config, &values);
