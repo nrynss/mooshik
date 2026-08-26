@@ -1,0 +1,26 @@
+[project]
+name = "mooshik-measurement"
+version = "0.1.0"
+description = "Mooshik M9 measurement harness: sample/grade/report precision of extraction and canonization over the Cloud SQL graph."
+requires-python = ">=3.10"
+dependencies = [
+    # Exact pin, same policy as ingester/: CI installs these directly.
+    # Imported lazily; the offline test suite never needs it installed.
+    "psycopg[binary]==3.2.13",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==9.1.1"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["measurement*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# `pytest measurement/tests -q` from the repo root resolves the package
+# without an install, mirroring ingester/'s pythonpath convention.
+pythonpath = ["."]
