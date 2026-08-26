@@ -41,3 +41,8 @@ venv/
 
 # Live-run fixture repo (created by ingest-fixtures/make-git-fixture.sh)
 ingest-fixtures/demo-repo/
+
+# M9 live-run artifacts (regenerable: sample --seed 42)
+measurement/sample.jsonl
+measurement/sample.grades.jsonl
+measurement/grades.tsv
