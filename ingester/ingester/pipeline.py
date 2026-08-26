@@ -158,6 +158,19 @@ async def ingest(
         checkpoint.mark(key, DONE)
         log.info("wrote %d concepts from %s", len(concepts), doc.source)
 
+    if not settings.dry_run and report.written:
+        # Durability gate: the last derive acks before the embedder runs, so
+        # tearing the child down now could discard the un-embedded tail (the
+        # abrupt exit loses it — J3's warning). Hold until the child reports
+        # an empty write-behind log.
+        from .writer import drain
+
+        if await drain(writer, settings.agent_id):
+            log.info("write-behind log drained; writes are durable")
+        else:
+            log.warning("write-behind log did NOT drain in time; the last "
+                        "writes may be lost")
+
     return report
 
 

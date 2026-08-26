@@ -15,15 +15,43 @@ with `shlex` so a full path plus flags works.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import shlex
+import time
 from typing import Any
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 log = logging.getLogger(__name__)
+
+async def drain(
+    writer: "LamboMcpWriter",
+    agent_id: str,
+    timeout: float = 60.0,
+    poll: float = 0.5,
+) -> bool:
+    """Poll `lambo_stats` until the write-behind log is empty.
+
+    The pipeline's last derive acks before the embedder runs (J3), so an
+    abrupt teardown after the final call can still discard the un-embedded
+    tail. Draining on log_depth == 0 before tearing the child down makes
+    every acknowledged write durable — which matters most where the child
+    dies with the process (Cloud Run Jobs).
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            stats = await writer._call("lambo_stats", {"agent_id": agent_id})
+        except Exception:
+            stats = None
+        if isinstance(stats, dict) and stats.get("log_depth") == 0:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(poll)
 
 
 class LamboMcpWriter:

@@ -298,6 +298,17 @@ class FakeWriter:
     def __init__(self):
         self.derives = []
         self.actions = []
+        self.stats_responses = [{"log_depth": 0}]
+        self.stats_calls = 0
+
+    async def _call(self, tool: str, arguments: dict):
+        if tool != "lambo_stats":
+            raise AssertionError(f"unexpected tool call: {tool}")
+        response = self.stats_responses[
+            min(self.stats_calls, len(self.stats_responses) - 1)
+        ]
+        self.stats_calls += 1
+        return response
 
     async def derive(self, agent_id, concepts, parent_of=None):
         self.derives.append((agent_id, concepts, parent_of))
@@ -411,3 +422,68 @@ def test_writer_child_env_is_an_allowlist_not_wholesale_inheritance(monkeypatch)
     assert env["LAMBO_EMBEDDER"] == "gemini"
     assert env["LAMBO_POSTGRES_DSN"] == "postgres://user@host/db"
     assert set(env) <= set(LamboMcpWriter._CHILD_ENV_ALLOWLIST)
+
+
+def test_pipeline_drains_write_behind_log_after_writes(tmp_path):
+    """The pipeline must hold the child open until the write-behind log
+    drains — an abrupt exit discards the un-embedded tail (J3)."""
+    import asyncio
+    from ingester.pipeline import ingest
+
+    (tmp_path / "note.md").write_text("# Note\na durable fact for the drain pin.\n" * 5)
+    settings = _make_settings(tmp_path)
+    writer = FakeWriter()
+    extractor = _extractor(
+        ['[{"content":"drain pin concept","concept_type":"entity"}]'] * 50
+    )
+    report = asyncio.run(ingest(settings, writer, extractor))
+
+    assert report.written == 1
+    assert writer.stats_calls >= 1
+
+
+def test_drain_polls_until_log_depth_reaches_zero():
+    import asyncio
+    from ingester.writer import drain
+
+    class SeqWriter:
+        def __init__(self, responses):
+            self.responses = list(responses)
+            self.calls = 0
+
+        async def _call(self, tool, arguments):
+            assert tool == "lambo_stats"
+            response = self.responses[min(self.calls, len(self.responses) - 1)]
+            self.calls += 1
+            return response
+
+    async def scenario():
+        drained = await drain(SeqWriter([{"log_depth": 2}, {"log_depth": 0}]),
+                              "bootstrap", timeout=5.0, poll=0.01)
+        assert drained is True
+        stalled = SeqWriter([{"log_depth": 2}])
+        gave_up = await drain(stalled, "bootstrap", timeout=0.1, poll=0.01)
+        assert gave_up is False
+
+    asyncio.run(scenario())
+
+
+def test_drain_survives_stats_errors_and_still_times_out():
+    import asyncio
+    from ingester.writer import drain
+
+    class FlakyWriter:
+        def __init__(self):
+            self.calls = 0
+
+        async def _call(self, tool, arguments):
+            self.calls += 1
+            raise RuntimeError("child busy")
+
+    async def scenario():
+        writer = FlakyWriter()
+        gave_up = await drain(writer, "bootstrap", timeout=0.1, poll=0.01)
+        assert gave_up is False
+        assert writer.calls >= 1
+
+    asyncio.run(scenario())

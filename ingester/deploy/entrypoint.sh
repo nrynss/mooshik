@@ -5,9 +5,22 @@
 set -euo pipefail
 
 CREDS_FLAG=()
+
+# On Cloud Run the SA json arrives as a secret env value (not a file), but
+# both the auth proxy and lambo's Gemini embedder need a FILE path. Write it
+# once, then point every credential variable at it.
+if [[ -n "${MOOSHIK_GCP_CREDENTIALS:-}" ]]; then
+  mkdir -p /tmp/creds
+  printf '%s' "$MOOSHIK_GCP_CREDENTIALS" > /tmp/creds/sa.json
+  export GOOGLE_APPLICATION_CREDENTIALS=/tmp/creds/sa.json
+  export GCP_LAMBO_CREDENTIALS=/tmp/creds/sa.json
+  export LAMBO_GEMINI_CREDENTIALS=/tmp/creds/sa.json
+fi
+
 if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]]; then
   CREDS_FLAG=(--credentials-file "$GOOGLE_APPLICATION_CREDENTIALS")
 fi
+
 
 # Default serve command carries the ingester's own session id; operators can
 # override with an explicit INGEST_LAMBO_SERVE (e.g. to match a holder).
@@ -15,7 +28,6 @@ if [[ -z "${INGEST_LAMBO_SERVE:-}" ]]; then
   INGEST_LAMBO_SERVE="/usr/local/bin/lambo serve --session ${INGEST_SESSION:-ingest-cloudrun}"
   export INGEST_LAMBO_SERVE
 fi
-
 /usr/local/bin/cloud-sql-proxy mooshik:us-central1:lambo-pg --port 5432 "${CREDS_FLAG[@]}" &
 PROXY_PID=$!
 trap 'kill "$PROXY_PID" 2>/dev/null || true' EXIT
