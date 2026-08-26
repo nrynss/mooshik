@@ -56,7 +56,7 @@ M11 is last on purpose and is allowed to fail; see M11.
 | **M6** | Built 2026-08-26, `071c10d` → `4613aea`. Review round 2 **APPROVE**, zero residue (`m6-round2.md`). Scratch env injection + egress redaction at the tool boundary. |
 | **M7** | Built 2026-08-26, `caa8962` → `958564f`. Review round 2 **APPROVE**, zero residue (`m7-round2.md`). `recall` / `stats` commands; exit codes 0/2/1; live-verified against Cloud SQL + Vertex. |
 | **M8** | Built 2026-08-26, `ingester/` subdirectory, commits through `df8d779`. Review round 2 **APPROVE**, zero residue (`m8-round2.md`). J2 proxy path + Vertex Flash extraction proven live; Cloud Run deploy docs pending IAM. |
-| **M9** | Not started. Prefer this over M10 if the clock forces a cut. |
+| **M9** | Built 2026-08-26, `measurement/` subpackage, commits through `1f3217e`. Review round 2 **APPROVE**, zero residue (`m9-round2.md`). Live on the M8 graph: coverage 59.3% gated, raw precision 10/10, canonization promoted nothing (the predicted pathology, now measured). |
 | **M10** | Not started. Cut-able. |
 | **M11** | Not started. Allowed to fail. |
 
@@ -503,8 +503,19 @@ quality is G's to calibrate, not something to tune from inside Mooshik.
 
 **Depends on:** M8.
 
-**Status: not started.** Sampling harness should exist before the corpus; do not squeeze this
-for M10.
+**Status: built 2026-08-26.** Implement → remediate `1f3217e` (branch `m9-measurement`), review
+records `m9-round1.md` / `m9-round2.md`. Adversarial round 2 **APPROVE**, zero residue.
+
+`measurement/` — Python subpackage, `python -m measurement sample/grade/report`. Seeded per-pool
+deterministic draws from the live Cloud SQL graph over a fakeable connection seam; grades keyed by
+node id with merge-on-save surviving Ctrl-C (save in `finally`) and EOF; fan-out dedup so a concept
+extracted from two documents is never counted twice; markdown report with Wilson 95% intervals —
+raw-extraction precision, canonical-fact precision, **wrongly-rejected rate** (the non-canonical
+slice of raw extractions), and embedding coverage reported FIRST with an explicit <90%
+keyword-leg warning gate. Live on the M8 graph: coverage 59.3% (gate fired), raw precision
+10/10 [0.722, 1.000], canonical pool empty — **canonization promoted nothing**, so every true
+extraction registers as wrongly rejected: the pathology this milestone predicted, now measured
+instead of asserted. 39 offline tests; measurement pytest added to regular CI.
 
 ---
 
