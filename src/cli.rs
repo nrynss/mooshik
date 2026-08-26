@@ -3,23 +3,125 @@
 //! Built with clap's builder API rather than derive: help strings come from the
 //! `text` module at runtime, and derive attributes only accept literals. Every
 //! new subcommand registers here and adds its strings to `text/en.toml`.
+//!
+//! M7 conventions pinned here:
+//!
+//! * Exit codes: `0` success · `2` user error · `1` internal failure, decided
+//!   once in [`Failure`] and documented in `--help`.
+//! * Errors reach the terminal through [`Failure::report`] and nowhere else —
+//!   top-level message only, never a source chain (see its doc comment).
+//! * Every example printed in `--help` parses as written (`cli::tests`).
 
 use std::{
     env,
+    future::Future,
     io::{self, Read},
     sync::Arc,
 };
 
 use anyhow::anyhow;
 use clap::{Arg, Command};
+use lambo::{ConceptType, MemoryStats, RecallResult};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
-    config::{self, Config, VaultProvider},
-    home::HomeLayout,
+    companion::CompanionError,
+    config::{self, Config, ConfigError, VaultProvider},
+    home::{HomeError, HomeLayout},
+    memory::MemoryError,
     text,
-    vault::{KeyProvider, KeyringProvider, PassphraseProvider, Vault},
+    vault::{KeyProvider, KeyringProvider, PassphraseProvider, Vault, VaultError},
 };
+
+/// Why one CLI invocation failed, and therefore how the process should exit.
+///
+/// Exit-code convention (also documented in `--help`'s afterword):
+///
+/// * `0` — success.
+/// * `2` ([`Failure::User`]) — the operator asked for something the current
+///   setup cannot do: bad usage, invalid configuration, a name that does not
+///   exist. Scripts may branch on this; the message says what to fix.
+/// * `1` ([`Failure::Internal`]) — unexpected internal failure: broken state,
+///   IO, or a bug. Retrying or reporting is the next step, not reconfiguring.
+pub enum Failure {
+    User(anyhow::Error),
+    Internal(anyhow::Error),
+}
+
+impl From<anyhow::Error> for Failure {
+    fn from(error: anyhow::Error) -> Self {
+        if is_user_error(&error) {
+            Self::User(error)
+        } else {
+            Self::Internal(error)
+        }
+    }
+}
+
+impl Failure {
+    /// The process exit code for this failure class.
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            Self::User(_) => 2,
+            Self::Internal(_) => 1,
+        }
+    }
+
+    /// The message the terminal sees: exactly the top-level `Display`, nothing
+    /// else. Every error type renders what failed, why, and what to do next
+    /// through `text/en.toml`, so the top level is complete by construction —
+    /// while wrapped sources are NOT covered by that guarantee
+    /// (`MemoryError::Backend` can wrap a store error whose detail names DSN
+    /// material), so the chain never prints.
+    fn rendered(&self) -> String {
+        match self {
+            Self::User(error) | Self::Internal(error) => error.to_string(),
+        }
+    }
+
+    /// THE one place an error reaches the terminal. Print here or fix the code
+    /// that bypasses this; do not grow a second formatter.
+    pub fn report(&self) -> i32 {
+        eprintln!("{}", self.rendered());
+        self.exit_code()
+    }
+}
+
+/// Whether the deepest known cause is something the operator authored and can
+/// fix. Unknown error classes fail internal (exit 1): an unclassified error
+/// must never punish a script with a misleading "you did it wrong".
+fn is_user_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause.downcast_ref::<ConfigError>().is_some()
+            || cause
+                .downcast_ref::<HomeError>()
+                .is_some_and(|error| matches!(error, HomeError::MissingHome))
+            || cause.downcast_ref::<VaultError>().is_some_and(|error| {
+                matches!(
+                    error,
+                    VaultError::NotFound
+                        | VaultError::InvalidName
+                        | VaultError::MissingValue
+                        | VaultError::NulByte
+                        | VaultError::InputTooLarge
+                        | VaultError::MissingPassphrase
+                        | VaultError::Authentication
+                )
+            })
+            || cause
+                .downcast_ref::<MemoryError>()
+                .is_some_and(|error| matches!(error, MemoryError::MissingDsn))
+            || cause.downcast_ref::<CompanionError>().is_some_and(|error| {
+                matches!(
+                    error,
+                    CompanionError::Unreachable
+                        | CompanionError::Timeout
+                        | CompanionError::HttpStatus
+                        | CompanionError::TurnTooLarge
+                )
+            })
+    })
+}
 
 pub fn command() -> Command {
     Command::new("mooshik")
@@ -36,6 +138,21 @@ pub fn command() -> Command {
             Command::new("chat")
                 .about(text::get("companion.chat_help"))
                 .after_help(text::get("companion.chat_after_help")),
+        )
+        .subcommand(
+            Command::new("recall")
+                .about(text::get("memory.recall_help"))
+                .after_help(text::get("memory.recall_after_help"))
+                .arg(
+                    Arg::new("query")
+                        .help(text::get("memory.query_help"))
+                        .required(true),
+                ),
+        )
+        .subcommand(
+            Command::new("stats")
+                .about(text::get("memory.stats_help"))
+                .after_help(text::get("memory.stats_after_help")),
         )
         .subcommand(
             Command::new("config")
@@ -57,10 +174,13 @@ pub fn command() -> Command {
 }
 
 /// Parse argv and dispatch the commands implemented by the current milestones.
-pub fn run() -> anyhow::Result<()> {
+///
+/// Clap answers usage errors itself (its own help/usage text on stderr, exit
+/// code 2), which is the same number [`Failure`] uses for runtime user errors —
+/// one convention end to end.
+pub fn run() -> Result<(), Failure> {
     let matches = command().get_matches();
-    dispatch(&matches)?;
-    Ok(())
+    dispatch(&matches).map_err(Failure::from)
 }
 
 fn secret_command(name: &'static str, help: &'static str) -> Command {
@@ -83,6 +203,8 @@ fn dispatch(matches: &clap::ArgMatches) -> anyhow::Result<()> {
         Some(("init", _)) => initialize(&layout),
         Some(("serve", _)) => serve(&layout),
         Some(("chat", _)) => chat(&layout),
+        Some(("recall", args)) => recall(&layout, args),
+        Some(("stats", _)) => stats(&layout),
         Some(("config", sub)) if sub.subcommand_name() == Some("show") => show_config(&layout),
         Some(("permissions", _)) => show_permissions(&layout),
         Some(("secret", sub)) => dispatch_secret(&layout, sub),
@@ -151,6 +273,131 @@ fn serve(layout: &HomeLayout) -> anyhow::Result<()> {
     block_on(crate::memory::serve(&config))
 }
 
+/// One-shot search over workspace memory (`crate::memory::recall` opens and
+/// closes its own handle), then render the hits for the local operator.
+fn recall(layout: &HomeLayout, matches: &clap::ArgMatches) -> anyhow::Result<()> {
+    let query = matches
+        .get_one::<String>("query")
+        .expect("clap marks the query argument required")
+        .clone();
+    let root = layout.open_existing_root().map_err(anyhow::Error::new)?;
+    let config = Config::load_at(&root).map_err(anyhow::Error::new)?;
+    let recalled = block_on(crate::memory::recall(&config, query.clone()))?;
+    println!("{}", render_recall(&query, &recalled));
+    Ok(())
+}
+
+/// Session health over workspace memory, rendered for the local operator.
+fn stats(layout: &HomeLayout) -> anyhow::Result<()> {
+    let root = layout.open_existing_root().map_err(anyhow::Error::new)?;
+    let config = Config::load_at(&root).map_err(anyhow::Error::new)?;
+    let health = block_on(crate::memory::stats(&config))?;
+    println!("{}", render_stats(&health));
+    Ok(())
+}
+
+/// Render recall results. Local-operator output only — see
+/// `memory::ops::recall` for why this path deliberately skips chat's egress
+/// redaction: nothing recalled here reaches a model or history.
+fn render_recall(query: &str, recalled: &RecallResult) -> String {
+    if recalled.hits.is_empty() {
+        return text::get("memory.recall_empty").replace("{query}", query);
+    }
+    let mut out = text::get("memory.recall_header").replace("{query}", query);
+    out.push('\n');
+    for (index, hit) in recalled.hits.iter().enumerate() {
+        out.push_str(&format!("\n  {}. {}\n     ", index + 1, hit.content));
+        let mut detail: Vec<String> = Vec::new();
+        if let Some(kind) = hit.concept_type {
+            detail.push(concept_kind(kind).to_owned());
+        }
+        if hit.is_canonical {
+            detail.push(text::get("memory.recall_canonical").to_owned());
+        }
+        detail.push(
+            text::get("memory.recall_relevance").replace("{score}", &format!("{:.2}", hit.score)),
+        );
+        if let Some(radius) = hit.blast_radius {
+            detail.push(
+                text::get("memory.recall_blast_radius").replace("{count}", &radius.to_string()),
+            );
+        }
+        out.push_str(&detail.join(" · "));
+        out.push('\n');
+    }
+    if !recalled.warnings.is_empty() {
+        out.push('\n');
+        out.push_str(text::get("memory.recall_warnings"));
+        out.push('\n');
+        for warning in &recalled.warnings {
+            out.push_str(&format!("  - {warning}\n"));
+        }
+    }
+    out
+}
+
+fn concept_kind(kind: ConceptType) -> &'static str {
+    match kind {
+        ConceptType::Entity => text::get("memory.kind_entity"),
+        ConceptType::Logic => text::get("memory.kind_logic"),
+        ConceptType::Constraint => text::get("memory.kind_constraint"),
+        ConceptType::Resource => text::get("memory.kind_resource"),
+        ConceptType::Observation => text::get("memory.kind_observation"),
+    }
+}
+
+fn render_stats(health: &MemoryStats) -> String {
+    let degraded = if health.degraded {
+        text::get("memory.degraded_yes")
+    } else {
+        text::get("memory.degraded_no")
+    };
+    [
+        text::get("memory.stats_header")
+            .replace("{session}", health.session.as_str())
+            .replace("{agent}", health.agent.as_str()),
+        format!(
+            "  {}",
+            text::get("memory.stats_concepts")
+                .replace("{total}", &health.concept_count.to_string())
+                .replace("{canonical}", &health.canonical_count.to_string())
+                .replace("{embedded}", &health.embedded_concepts.to_string())
+        ),
+        format!(
+            "  {}",
+            text::get("memory.stats_graph")
+                .replace("{nodes}", &health.node_count.to_string())
+                .replace("{edges}", &health.edge_count.to_string())
+        ),
+        format!(
+            "  {}",
+            text::get("memory.stats_log_depth").replace("{depth}", &health.log_depth.to_string())
+        ),
+        format!(
+            "  {}",
+            text::get("memory.stats_flush_lag")
+                .replace("{lag}", &format!("{:.1}s", health.flush_lag.as_secs_f64()),)
+        ),
+        format!(
+            "  {}",
+            text::get("memory.stats_dead_letters")
+                .replace("{count}", &health.dead_lettered.to_string())
+        ),
+        format!(
+            "  {}",
+            text::get("memory.stats_degraded").replace("{degraded}", degraded)
+        ),
+        format!(
+            "  {}",
+            text::get("memory.stats_cycles")
+                .replace("{daemon}", &health.daemon_cycles.to_string())
+                .replace("{canonization}", &health.canonization_cycles.to_string())
+                .replace("{failures}", &health.canonization_failures.to_string())
+        ),
+    ]
+    .join("\n")
+}
+
 /// Test seam for the M3 pin below: chat loads configuration without ever
 /// touching the memory subsystem.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -184,10 +431,7 @@ fn open_vault_for_chat(
         .map(crate::vault::Vault::shared)
 }
 
-fn block_on<F>(fut: F) -> anyhow::Result<()>
-where
-    F: std::future::Future<Output = Result<(), crate::memory::MemoryError>>,
-{
+fn block_on<T>(fut: impl Future<Output = Result<T, MemoryError>>) -> anyhow::Result<T> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -284,6 +528,26 @@ mod tests {
             .unwrap()
             .to_string();
         assert_eq!(permissions, text::get("permissions.help"));
+    }
+
+    #[test]
+    fn recall_and_stats_help_come_from_text() {
+        let cmd = command();
+        let recall = cmd.find_subcommand("recall").unwrap();
+        assert_eq!(
+            recall.get_about().unwrap().to_string(),
+            text::get("memory.recall_help")
+        );
+        let stats = cmd.find_subcommand("stats").unwrap();
+        assert_eq!(
+            stats.get_about().unwrap().to_string(),
+            text::get("memory.stats_help")
+        );
+        // The query argument is positional and required: `mooshik recall` with
+        // no query is a usage error answered by clap, not a panic later.
+        assert!(command()
+            .try_get_matches_from(["mooshik", "recall"])
+            .is_err());
     }
 
     #[test]
@@ -410,5 +674,204 @@ mod tests {
     fn invalid_utf8_stdin_value_is_rejected_without_moving_bytes_out() {
         let error = normalize_stdin_bytes(Zeroizing::new(vec![b's', 0xff, b'\n'])).unwrap_err();
         assert_eq!(error.to_string(), text::get("vault.io_failed"));
+    }
+
+    #[test]
+    fn exit_codes_distinguish_user_error_from_internal_failure() {
+        let user_errors = [
+            anyhow::Error::new(ConfigError::InvalidToml),
+            anyhow::Error::new(HomeError::MissingHome),
+            anyhow::Error::new(VaultError::NotFound),
+            anyhow::Error::new(VaultError::InvalidName),
+            anyhow::Error::new(VaultError::MissingPassphrase),
+            anyhow::Error::new(MemoryError::MissingDsn),
+            anyhow::Error::new(CompanionError::Unreachable),
+            anyhow::Error::new(CompanionError::HttpStatus),
+        ];
+        for error in user_errors {
+            assert_eq!(Failure::from(error).exit_code(), 2);
+        }
+        let internal_errors = [
+            anyhow::Error::new(HomeError::Io),
+            anyhow::Error::new(VaultError::Io),
+            anyhow::Error::new(VaultError::Keyring),
+            anyhow::Error::new(CompanionError::Runtime),
+        ];
+        for error in internal_errors {
+            assert_eq!(Failure::from(error).exit_code(), 1);
+        }
+    }
+
+    #[test]
+    fn backend_failures_classify_internal_but_render_the_mapped_message() {
+        let error = anyhow::Error::new(MemoryError::Backend(lambo::LamboError::Config(
+            "session lease refused".to_owned(),
+        )));
+        let failure = Failure::from(error);
+        assert_eq!(failure.exit_code(), 1);
+        assert_eq!(failure.rendered(), text::get("memory.backend_failed"));
+    }
+
+    #[test]
+    fn report_renders_the_top_level_message_never_the_wrapped_chain() {
+        let dsn_material = "postgres://m7user:m7p4ssw0rd@db.internal/mooshik";
+        let error = anyhow::Error::new(MemoryError::Backend(lambo::LamboError::Config(format!(
+            "connect failed for {dsn_material}"
+        ))));
+        // The chain DOES carry the wrapped detail — which is exactly why the
+        // terminal renderer must not walk it.
+        assert!(error
+            .chain()
+            .any(|cause| cause.to_string().contains(dsn_material)));
+        let failure = Failure::from(error);
+        assert_eq!(failure.exit_code(), 1);
+        let rendered = failure.rendered();
+        assert_eq!(rendered, text::get("memory.backend_failed"));
+        assert!(!rendered.contains(dsn_material));
+        // And the entry point itself never grew a chain printer back.
+        assert!(!include_str!("main.rs").contains("{err:#}"));
+    }
+
+    #[test]
+    fn a_vault_value_never_reaches_a_rendered_error() {
+        let value_in_play = "s3cret-alpha-value-m7";
+        let root =
+            std::env::temp_dir().join(format!("mooshik-m7-vault-pin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let layout = HomeLayout::new(&root);
+        let file = layout.init().unwrap();
+        let provider = Arc::new(PassphraseProvider::new("m7-pin-passphrase").unwrap());
+        let mut vault = Vault::open_at(&layout.vault, file, provider).unwrap();
+        vault.set("alpha", value_in_play).unwrap();
+        let missing = vault.get("beta").unwrap_err();
+        drop(vault);
+        let failure = Failure::from(anyhow::Error::new(missing));
+        assert_eq!(failure.exit_code(), 2, "an unknown name is a user error");
+        let rendered = failure.rendered();
+        assert_eq!(rendered, text::get("vault.not_found"));
+        assert!(
+            !rendered.contains(value_in_play),
+            "a stored value leaked into an error about a different name"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn every_documented_example_parses_as_written() {
+        let src = include_str!("text/en.toml");
+        let examples = documented_mooshik_examples(src);
+        assert!(
+            examples.contains(&"mooshik init".to_owned()),
+            "en.toml should document `mooshik init`; extraction broke"
+        );
+        for example in &examples {
+            let tokens = tokenize_example(example);
+            assert!(
+                command().try_get_matches_from(tokens).is_ok(),
+                "`{example}` is documented but does not parse as written"
+            );
+        }
+    }
+
+    /// Backticked spans in en.toml that start with `mooshik ` — the runnable
+    /// examples help promises. `split('`')` alternates outside/inside, so odd
+    /// slices are the spans.
+    fn documented_mooshik_examples(src: &str) -> Vec<String> {
+        src.split('`')
+            .skip(1)
+            .step_by(2)
+            .map(str::trim)
+            .filter(|span| span.starts_with("mooshik ") || *span == "mooshik")
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn tokenize_example(example: &str) -> Vec<String> {
+        let mut tokens = Vec::new();
+        let mut current = String::new();
+        let mut quoted = false;
+        for ch in example.chars() {
+            match ch {
+                '"' => quoted = !quoted,
+                c if c.is_whitespace() && !quoted => {
+                    if !current.is_empty() {
+                        tokens.push(std::mem::take(&mut current));
+                    }
+                }
+                c => current.push(c),
+            }
+        }
+        if !current.is_empty() {
+            tokens.push(current);
+        }
+        tokens
+    }
+
+    #[test]
+    fn recall_render_names_hits_and_warns_without_leaking_types() {
+        let recalled = RecallResult {
+            hits: vec![lambo::RecallHit {
+                node_id: lambo::NodeId::nil(),
+                content: "live m7 cli sweep marker".to_owned(),
+                concept_type: Some(ConceptType::Entity),
+                score: 0.83,
+                is_canonical: true,
+                blast_radius: Some(2),
+            }],
+            context: String::new(),
+            warnings: vec!["embedding leg skipped".to_owned()],
+        };
+        let rendered = render_recall("m7 marker", &recalled);
+        assert!(rendered.contains("Matches for 'm7 marker':"), "{rendered}");
+        assert!(rendered.contains("live m7 cli sweep marker"), "{rendered}");
+        assert!(rendered.contains("entity"), "{rendered}");
+        assert!(rendered.contains("canonical"), "{rendered}");
+        assert!(rendered.contains("relevance 0.83"), "{rendered}");
+        assert!(rendered.contains("blast radius 2"), "{rendered}");
+        assert!(rendered.contains("Warnings:"), "{rendered}");
+        assert!(
+            !rendered.contains("Entity"),
+            "Rust variant names must not reach the terminal"
+        );
+
+        let empty = RecallResult {
+            hits: Vec::new(),
+            context: String::new(),
+            warnings: Vec::new(),
+        };
+        let rendered = render_recall("nothing-here", &empty);
+        assert!(rendered.contains("nothing-here"), "{rendered}");
+        assert!(rendered.contains("mooshik chat"), "{rendered}");
+    }
+
+    #[test]
+    fn stats_render_reports_health_in_one_voice() {
+        let health = MemoryStats {
+            session: lambo::SessionId::new("mooshik"),
+            agent: lambo::AgentId::new("mooshik"),
+            flush_lag: std::time::Duration::from_millis(1500),
+            log_depth: 3,
+            flush_depth: 5,
+            dead_lettered: 1,
+            degraded: true,
+            node_count: 12,
+            edge_count: 20,
+            concept_count: 8,
+            canonical_count: 3,
+            embedded_concepts: 7,
+            epoch: 4,
+            daemon_cycles: 9,
+            canonization_cycles: 2,
+            canonization_failures: 1,
+        };
+        let rendered = render_stats(&health);
+        assert!(rendered.contains("session 'mooshik'"), "{rendered}");
+        assert!(rendered.contains("concepts: 8 total, 3 canonical, 7 embedded"));
+        assert!(rendered.contains("graph: 12 nodes, 20 edges"));
+        assert!(rendered.contains("write-behind log depth: 3"));
+        assert!(rendered.contains("flush lag: 1.5s"));
+        assert!(rendered.contains("dead-lettered batches: 1"));
+        assert!(rendered.contains("durability degraded: yes"));
+        assert!(rendered.contains("2 canonization (1 failed)"));
     }
 }

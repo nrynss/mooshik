@@ -33,6 +33,11 @@ pub mod text;
 pub mod tools;
 pub mod vault;
 
-pub fn run() -> anyhow::Result<()> {
-    cli::run()
+/// Run one CLI invocation and return the process exit code:
+/// `0` success · `2` user error · `1` internal failure (`cli::Failure`).
+pub fn run() -> i32 {
+    match cli::run() {
+        Ok(()) => 0,
+        Err(failure) => failure.report(),
+    }
 }
