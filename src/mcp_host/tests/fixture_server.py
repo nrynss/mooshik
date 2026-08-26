@@ -13,10 +13,6 @@ just enough of the MCP lifecycle for rmcp's client to initialize and drive it:
 
 The `crash` tool exits the process (for the reconnect test); a malformed tool
 name returns a `-32602` JSON-RPC error; the `fail` tool returns
-`is_error: true` with text content. A `MOOSHIK_DELAY_MS` env var, when set,
-sleeps before answering `initialize` (not used in tests, but handy to exercise
-timeout bounds).
-
 Framing: one JSON object per line (the MCP stdio / newline-delimited format).
 """
 
@@ -65,6 +61,11 @@ TOOLS = [
     {
         "name": "crash",
         "description": "Exit the process (reconnect test).",
+        "inputSchema": TOOL_SCHEMA,
+    },
+    {
+        "name": "hang",
+        "description": "Never answer the call (worker-bound test).",
         "inputSchema": TOOL_SCHEMA,
     },
 ]
@@ -129,7 +130,9 @@ def main():
             arguments = params.get("arguments") or {}
             if name == "crash":
                 sys.exit(3)
-            if name == "fail":
+            if name == "hang":
+                time.sleep(300)  # never answers the call
+            elif name == "fail":
                 emit({
                     "jsonrpc": "2.0",
                     "id": msg_id,

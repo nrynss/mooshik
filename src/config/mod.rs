@@ -418,7 +418,13 @@ impl Config {
     /// `expose` allowlist being empty is *not* an error — such a server is
     /// simply inert (never spawned), which is M10's fail-closed default.
     pub fn validate_mcp(&self) -> Result<(), ConfigError> {
-        for config in self.mcp_servers.values() {
+        for (name, config) in &self.mcp_servers {
+            if name.contains('.') {
+                // `mcp.<server>.<tool>` is ambiguous for a dotted server key —
+                // fail config load rather than resolve silently to the wrong
+                // server.
+                return Err(ConfigError::InvalidMcp);
+            }
             if config.command.trim().is_empty() {
                 return Err(ConfigError::InvalidMcp);
             }
@@ -584,6 +590,21 @@ mod tests {
             Some("github-token")
         );
         assert_eq!(github.expose, vec!["create_issue", "list_issues"]);
+    }
+
+    #[test]
+    fn a_dotted_server_key_fails_closed() {
+        // `mcp.<server>.<tool>` is ambiguous for a dotted server name — fail
+        // config load rather than resolve silently to the wrong server (P3-M10-1).
+        let toml = r#"
+            [mcp_servers."github.app"]
+            command = "uvx"
+            expose = ["create_issue"]
+        "#;
+        assert!(matches!(
+            Config::from_toml_and_env(toml, []),
+            Err(ConfigError::InvalidMcp)
+        ));
     }
 
     #[test]

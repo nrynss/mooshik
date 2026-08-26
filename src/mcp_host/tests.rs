@@ -119,7 +119,27 @@ fn a_crashed_child_is_reconnected_on_the_next_call() {
     assert_eq!(second, "{\"n\": 2}");
 }
 
-// ---- missing env-ref secret fails spawn (contained) -------------------------
+// ---- a hung-but-alive child frees the worker (P2-M10-1) ---------------------
+
+#[test]
+fn a_hung_but_alive_child_does_not_pin_the_worker() {
+    use std::time::Duration;
+    let config = config_with_server(&["echo", "hang"], "srv");
+    let executor =
+        Arc::new(McpTools::from_config(&config, None).with_call_wait(Duration::from_millis(300)));
+    // Warm the worker with the fixture up.
+    let warm = executor.execute("mcp.srv.echo", &json!({"n": 1}));
+    assert_eq!(warm, "{\"n\": 1}");
+    // A child that never answers must surface a contained error within the
+    // per-call bound — and the worker must still be usable afterwards.
+    let hung = executor.execute("mcp.srv.hang", &json!({}));
+    assert!(
+        !hung.is_empty() && !hung.contains("panicked"),
+        "hung call must be a contained error, got {hung:?}"
+    );
+    let after = executor.execute("mcp.srv.echo", &json!({"n": 2}));
+    assert_eq!(after, "{\"n\": 2}");
+}
 
 #[test]
 fn missing_secret_fails_the_server_closed() {
@@ -196,5 +216,18 @@ fn fixture_vault(secrets: &[(&str, &str)]) -> crate::vault::SharedVault {
     for (name, value) in secrets {
         vault.set(name, value).unwrap();
     }
+
     vault.shared()
+}
+
+#[test]
+fn a_later_call_after_a_dead_initial_spawn_recovers() {
+    // P3-M10-2: attempt_spawn leaves `spawned=false` on a failed first pass,
+    // so a server that came up late is NOT hidden from specs() forever. Crash
+    // on first expose'd call, then the next echo must reconnect and succeed.
+    let config = config_with_server(&["echo", "crash"], "srv");
+    let executor = Arc::new(McpTools::from_config(&config, None));
+    let _ = executor.execute("mcp.srv.crash", &json!({}));
+    let out = executor.execute("mcp.srv.echo", &json!({"k": "v"}));
+    assert_eq!(out, "{\"k\": \"v\"}");
 }

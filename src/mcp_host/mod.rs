@@ -139,6 +139,10 @@ pub struct McpTools {
     servers: Vec<Arc<ServerConfig>>,
     lives: Vec<Arc<Mutex<Option<LiveServer>>>>,
     vault: Option<SharedVault>,
+    /// Hard bound per MCP tool call; the worker-release firebreak for a hung
+    /// but alive child (P2-M10-1). Defaults to [`MCP_CALL_WAIT`]; tests shrink
+    /// it to keep the hung-child pin fast.
+    call_wait: Duration,
     /// Have we attempted the initial spawn of all servers?
     spawned: Mutex<bool>,
     /// Cached merged tool specs, refreshed after spawn.
@@ -175,9 +179,17 @@ impl McpTools {
             servers: servers.into_iter().map(Arc::new).collect(),
             lives: (0..n).map(|_| Arc::new(Mutex::new(None))).collect(),
             vault,
+            call_wait: MCP_CALL_WAIT,
             spawned: Mutex::new(false),
             all_specs: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Override the per-call bound (tests only; shrinks the hung-child pin).
+    #[cfg(test)]
+    fn with_call_wait(mut self, wait: Duration) -> Self {
+        self.call_wait = wait;
+        self
     }
 
     /// Ensure all servers are spawned and tool specs computed.
@@ -187,20 +199,32 @@ impl McpTools {
         if *spawned {
             return;
         }
-        *spawned = true;
+        // Mark attempted BEFORE spawning; on failure leave it false so the
+        // next specs()/execute retries rather than caching a dead slot
+        // forever (P3-M10-2). The per-execute phase-1 respawn still covers
+        // tool calls; this covers the spec list recovering on a later call.
+        if self.attempt_spawn() {
+            *spawned = true;
+        }
+    }
 
+    /// One spawn pass over all servers; true when every non-inert server has
+    /// a live slot. Runs on the worker runtime. Caller holds `spawned`.
+    fn attempt_spawn(&self) -> bool {
         let servers = self.servers.clone();
         let lives = self.lives.clone();
         let vault = self.vault.clone();
         let total_budget = MCP_SPAWN_WAIT * self.servers.len().max(1) as u32;
 
-        let _ = self.worker.run(
-            move |rt: &Runtime| {
-                rt.block_on(spawn_all(&servers, &lives, vault.as_ref()));
-            },
-            total_budget,
-        );
+        let ok = self
+            .worker
+            .run(
+                move |rt: &Runtime| rt.block_on(spawn_all(&servers, &lives, vault.as_ref())),
+                total_budget,
+            )
+            .is_ok();
         self.refresh_specs();
+        ok && self.lives.iter().all(|slot| slot.lock().is_some())
     }
 
     /// Rebuild the merged spec list from whatever lives slots hold.
@@ -238,11 +262,20 @@ impl McpTools {
         let tool = tool_name.to_owned();
         let args = arguments.clone();
 
+        let call_wait = self.call_wait;
         let outcome: Result<Result<String, String>, ToolRunError> = self.worker.run(
             move |rt: &Runtime| {
-                rt.block_on(execute_on_worker(&slot, &cfg, vault.as_ref(), &tool, &args))
+                let wait = call_wait;
+                rt.block_on(execute_on_worker(
+                    &slot,
+                    &cfg,
+                    vault.as_ref(),
+                    &tool,
+                    &args,
+                    wait,
+                ))
             },
-            MCP_CALL_WAIT + MCP_SPAWN_WAIT,
+            call_wait + MCP_SPAWN_WAIT,
         );
 
         match outcome {
@@ -403,8 +436,23 @@ async fn spawn_one(cfg: &ServerConfig, vault: Option<&SharedVault>) -> Option<Li
     Some(LiveServer { session, specs })
 }
 
-/// Inner execute: runs on the worker runtime via `rt.block_on`. Ensures a live
-/// session (respawning on the first transport-level failure), calls the tool,
+/// Run one MCP tool call under a hard per-call wall-clock bound. A child that
+/// is alive but never answers would otherwise pin the shared worker thread
+/// indefinitely (P2-M10-1); the outer `ToolRuntime::run` budget fires on the
+/// caller side and cannot free the worker. This timeout does.
+async fn bounded_call(
+    live: &LiveServer,
+    tool: &str,
+    arguments: &Value,
+    wait: Duration,
+) -> Result<String, CallError> {
+    timeout(wait, live.call_tool(tool, arguments))
+        .await
+        .unwrap_or(Err(CallError::Transport))
+}
+
+/// Run one MCP tool call: ensures a live session (respawning once on the
+/// first transport-level failure), calls the tool under a hard per-call bound,
 /// and returns a fully-formed contained string. The slot lock is never held
 /// across an await — each phase locks, takes/sets, and releases.
 async fn execute_on_worker(
@@ -413,6 +461,7 @@ async fn execute_on_worker(
     vault: Option<&SharedVault>,
     tool: &str,
     arguments: &Value,
+    call_wait: Duration,
 ) -> Result<String, String> {
     // Phase 1: ensure a live session exists. Lock, decide, release.
     let needs_spawn = slot.lock().as_ref().is_none_or(|live| !live.alive());
@@ -428,7 +477,7 @@ async fn execute_on_worker(
         .lock()
         .take()
         .ok_or_else(|| text::get("tools.mcp_spawn_failed").replace("{server}", &cfg.name))?;
-    let result = live.call_tool(tool, arguments).await;
+    let result = bounded_call(&live, tool, arguments, call_wait).await;
 
     // Phase 3: carry through the result. On a transport failure, the session
     // is dead — spawn one replacement (bounded) and retry once.
@@ -450,7 +499,7 @@ async fn execute_on_worker(
                 .unwrap_or(None);
             match revived {
                 Some(revived) => {
-                    let result = revived.call_tool(tool, arguments).await;
+                    let result = bounded_call(&revived, tool, arguments, call_wait).await;
                     match result {
                         Ok(text) => {
                             *slot.lock() = Some(revived);
