@@ -55,7 +55,7 @@ M11 is last on purpose and is allowed to fail; see M11.
 | **M5** | Built 2026-08-26, `75cda1a` → `88abf81`. Review round 2 **APPROVE**, zero residue (`m5-round2.md`). Default grants: Decision 6 settled — lambo memory tools allowed, scratch prompt, rest deny. |
 | **M6** | Built 2026-08-26, `071c10d` → `4613aea`. Review round 2 **APPROVE**, zero residue (`m6-round2.md`). Scratch env injection + egress redaction at the tool boundary. |
 | **M7** | Built 2026-08-26, `caa8962` → `958564f`. Review round 2 **APPROVE**, zero residue (`m7-round2.md`). `recall` / `stats` commands; exit codes 0/2/1; live-verified against Cloud SQL + Vertex. |
-| **M8** | Not started. Unblocked: M2b published the endpoint; Lambo A and B have landed. |
+| **M8** | Built 2026-08-26, `ingester/` subdirectory, commits through `df8d779`. Review round 2 **APPROVE**, zero residue (`m8-round2.md`). J2 proxy path + Vertex Flash extraction proven live; Cloud Run deploy docs pending IAM. |
 | **M9** | Not started. Prefer this over M10 if the clock forces a cut. |
 | **M10** | Not started. Cut-able. |
 | **M11** | Not started. Allowed to fail. |
@@ -464,7 +464,18 @@ where secrets hide.
 
 **Depends on:** M2, and Lambo's A and B. **Those dependencies have landed.** M8 itself has not.
 
-**Status: not started.** Decision 5 settled (subdirectory); nothing blocks the first commit.
+**Status: built 2026-08-26.** Implement → remediate `df8d779` (branch `m8-ingester`), review
+records `m8-round1.md` / `m8-round2.md`. Adversarial round 2 **APPROVE**, zero residue.
+
+`ingester/` — Python package (google-genai extraction, ADK-shaped agent module, official `mcp`
+stdio client). Pipeline: extension allowlist walk (symlinks never cross the root) → secret
+scanner dropping whole documents pre-chunking (path-only logging) → chunker with checkpoint
+resume keyed on content hash (documented at-least-once window) → Gemini Flash concepts → writer
+spawning `lambo serve`, whose child env is a targeted ALLOWLIST (vault passphrase canary pinned
+absent). Provenance: `lambo_record_action` resources + derive `parent_of`. Live-proven: J2 proxy
+path (ingester's serve proxied into a running `mooshik serve` holder), 14 concepts written and
+recalled via fresh-process CLI; dropped PEM content absent from the graph (SQL-verified).
+Offline pytest suite (36) in regular CI. Cloud Run deploy documented, pending IAM setup.
 
 ---
 
