@@ -13,6 +13,14 @@ The agent stays thin; this module owns every non-model decision:
   Note: `lambo_derive` itself has no `produces` field on the wire (that is
   `lambo_record_action`'s); the brief's "derive produces resources" is
   realized as the pair of these two calls, which keeps the schema honest.
+
+Delivery semantics are **at-least-once**: the checkpoint for a document is
+marked only after its concepts are written, so a crash between the last
+derive and the mark re-extracts and re-writes that document on the next run —
+duplicates, never loss. Acceptable for a bootstrap loader (the graph
+tolerates re-derives; M9 curation can merge), and a corrupt state file
+degrades the same way: clean slate, full re-ingest. See the `checkpoint`
+module docstring for recovery details.
 """
 
 from __future__ import annotations
@@ -90,12 +98,16 @@ async def ingest(
     writer,
     extractor: ConceptExtractor | None,
 ) -> Report:
-    """Full run against a live writer and extractor (None ⇒ scan-only)."""
+    """Full run against a live writer and extractor (None ⇒ scan-only).
+
+    Per document: derive + record-action first, `checkpoint.mark` last —
+    the crash window in between yields at-least-once delivery (duplicates
+    on resume), never loss. See the module docstring.
+    """
     from .checkpoint import Checkpoint, DONE, DROPPED
 
     kept, report = plan(settings)
     checkpoint = Checkpoint(settings.state_path)
-
     for doc in kept:
         key = Checkpoint.key(doc.source, content_hash(doc.text))
         previous = checkpoint.status(key)

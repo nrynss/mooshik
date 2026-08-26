@@ -90,6 +90,25 @@ def test_skip_dirs_are_never_descended(tmp_path):
     assert walker.collect_documents(tmp_path, (".md",)) == []
 
 
+def test_symlinks_never_cross_the_corpus_root_boundary(tmp_path):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "elsewhere.md").write_text("content living outside the root\n")
+    (root / "inside.md").write_text("inside\n")
+
+    # file symlink inside the root -> target outside the root
+    (root / "link.md").symlink_to(outside / "elsewhere.md")
+    # directory symlink inside the root -> directory outside the root
+    (root / "dir-link").symlink_to(outside, target_is_directory=True)
+
+    sources = [d.source for d in walker.collect_documents(root, (".md",))]
+    assert any(s.endswith("inside.md") for s in sources)
+    assert not any("link.md" in s for s in sources), sources
+    assert not any("elsewhere" in s for s in sources), sources
+
+
 # --------------------------------------------------------- secretscanner ----
 
 
@@ -364,3 +383,31 @@ def test_report_defaults_shape():
     report = Report()
     assert report.documents == [] and isinstance(report.documents, list)
     assert DocumentReport("s", "written").concepts == 0
+
+
+# ---------------------------------------------------------------- writer ----
+
+
+def test_writer_child_env_is_an_allowlist_not_wholesale_inheritance(monkeypatch):
+    from ingester.writer import LamboMcpWriter
+
+    # planted canaries: secrets from the parent env must not reach the child
+    monkeypatch.setenv("MOOSHIK_VAULT_PASSPHRASE", "CANARY-vault-passphrase")
+    monkeypatch.setenv("AWS_SESSION_TOKEN", "CANARY-aws-token")
+    monkeypatch.setenv("SOME_RANDOM_FAMILY_SECRET", "CANARY-other")
+    # documented store/embedder config the serve child does need
+    monkeypatch.setenv("LAMBO_STORE", "postgres")
+    monkeypatch.setenv("LAMBO_EMBEDDER", "gemini")
+    monkeypatch.setenv("LAMBO_POSTGRES_DSN", "postgres://user@host/db")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+    params = LamboMcpWriter._build_params(["lambo", "serve"])
+    env = params.env
+    assert env is not None
+    assert "MOOSHIK_VAULT_PASSPHRASE" not in env
+    assert "AWS_SESSION_TOKEN" not in env
+    assert "SOME_RANDOM_FAMILY_SECRET" not in env
+    assert env["LAMBO_STORE"] == "postgres"
+    assert env["LAMBO_EMBEDDER"] == "gemini"
+    assert env["LAMBO_POSTGRES_DSN"] == "postgres://user@host/db"
+    assert set(env) <= set(LamboMcpWriter._CHILD_ENV_ALLOWLIST)

@@ -3,6 +3,24 @@
 State lives in `.ingest/state.json` (gitignored), keyed by
 `(source_path, content_hash)` — a re-run of unchanged content is skipped even
 if the file moved; changed content is re-extracted under its own key.
+
+## Semantics are at-least-once, not exactly-once
+
+The checkpoint is marked only *after* a document's concepts have been written
+to the graph (`pipeline.ingest`). A crash in the window between the last
+`lambo_derive` landing and `checkpoint.mark` leaves the document unmarked,
+so the next run re-extracts and re-writes the same concepts: **duplicates,
+never loss**. This is deliberate for a bootstrap loader — memory graphs
+tolerate re-derives far better than gaps, and M9-style curation can merge or
+retract duplicates; lost extractions could not be recovered without re-reading
+the corpus anyway.
+
+To force a fully clean re-run, delete the state file
+(`rm <root>/.ingest/state.json`) and retract the session's previously written
+concepts on the lambo side (or accept additive duplicates). Note that a
+*corrupt* state file is handled the same way as a missing one: `_load`
+swallows the error and starts clean, so corruption silently degrades to a
+full re-ingest with the same duplicate exposure as the crash window.
 """
 
 from __future__ import annotations

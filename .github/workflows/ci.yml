@@ -60,7 +60,8 @@ jobs:
           python-version: "3.13"
 
       - name: Install ingester deps
-        run: pip install pytest "mcp>=1.2" "google-genai>=1.0" "google-adk>=1.0"
+        # Exact pins, mirrored from ingester/pyproject.toml — reproducible installs.
+        run: pip install pytest==9.1.1 mcp==2.1.1 google-genai==2.20.0 google-adk==2.7.1
 
       - name: Test (offline)
         run: pytest ingester/tests -q

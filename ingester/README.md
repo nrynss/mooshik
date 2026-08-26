@@ -70,14 +70,22 @@ Client choice: the official **`mcp` package** (`stdio_client` +
 `ClientSession`). It matched lambo's wire shapes with zero friction, so no
 hand-rolled JSON-RPC was needed. One sharp edge, fixed in `writer.py`: the
 package filters the child environment to a whitelist by default, which
-silently strips `LAMBO_*`/DSN config from the subprocess — the writer
-therefore inherits the full environment explicitly.
+silently strips `LAMBO_*`/DSN config — so the writer builds its own
+**targeted allowlist** (`LamboMcpWriter._CHILD_ENV_ALLOWLIST`) of exactly the
+variables the serve child needs: `PATH`, `HOME`, `TMPDIR`, `LANG`, `TZ`,
+the store/embedder knobs (`LAMBO_STORE`, `LAMBO_EMBEDDER`,
+`LAMBO_EMBED_DIM`), Gemini credentials (`LAMBO_GEMINI_PROJECT/_LOCATION/
+_CREDENTIALS`, `GCP_LAMBO_CREDENTIALS`,
+`GOOGLE_APPLICATION_CREDENTIALS`), and the Postgres DSN authorities
+(`MOOSHIK_POSTGRES_DSN`, `LAMBO_POSTGRES_DSN`, `DATABASE_URL`). Everything
+else in the parent environment — vault passphrases, cloud tokens, whatever
+else a shell accumulates — stays out of the subprocess.
 
 For the **proxy path** the `lambo serve` child must resolve the same store
 as the holder, so a refused start proxies into it instead of opening its own
 (SQLite) graph. With a feature-built binary
 (`cargo build --features store-postgres,embed-gemini`) export before the
-run — the writer passes its whole environment to the child:
+run — only allowlisted names reach the child, so export these exact ones:
 
 ```bash
 export LAMBO_STORE=postgres LAMBO_EMBEDDER=gemini LAMBO_EMBED_DIM=1536
@@ -107,6 +115,19 @@ record-action + parent_of pair, which keeps lambo's schemas honest.
 Checkpoint state lives in `.ingest/state.json` keyed by
 `(source_path, content_hash)`: re-runs resume and never re-extract unchanged
 documents; changed content re-extracts under its own key.
+
+Delivery is **at-least-once, not exactly-once**: the checkpoint for a
+document is marked only after its concepts are written, so a crash between
+the last `lambo_derive` and the mark re-extracts and re-writes that document
+on the next run. Duplicates, never loss — acceptable for a bootstrap loader,
+since the graph tolerates re-derives and M9-style curation can merge or
+retract them, whereas a lost extraction would need a full corpus re-read.
+A corrupt state file degrades the same way: it is treated as missing and the
+run starts clean (full re-ingest). To force a clean re-run deliberately,
+delete `.ingest/state.json` and retract the previously written concepts on
+the lambo side if accumulation matters. See also the `checkpoint` module
+docstring and the M9 heads-up in
+`dev-diary/adversarial-review/m8-round1.md`.
 
 ## ADK vs genai (decision)
 

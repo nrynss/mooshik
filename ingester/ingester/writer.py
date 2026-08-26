@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import logging
-import shlex
 import os
 import shlex
 from typing import Any
@@ -39,14 +38,44 @@ class LamboMcpWriter:
         self.session: ClientSession | None = None
 
 
-    @staticmethod
-    def _build_params(parts: list[str]) -> StdioServerParameters:
-        # The official mcp client filters the child environment down to a
-        # safe whitelist by default, which silently strips LAMBO_* / DSN
-        # config. The writer contract is a plain subprocess: inherit all.
-        return StdioServerParameters(
-            command=parts[0], args=parts[1:], env=dict(os.environ)
-        )
+    #: Environment handed to the `lambo serve` child: a targeted allowlist,
+    #: not wholesale inheritance. The mcp package's own default whitelist
+    #: strips even LAMBO_*/DSN config, so the answer is to enumerate exactly
+    #: what the child needs (documented in ingester/README.md "Write path")
+    #: rather than pass every parent variable — including vault passphrases
+    #: and cloud tokens — into a subprocess whose log/config surface we do
+    #: not control.
+    _CHILD_ENV_ALLOWLIST: tuple[str, ...] = (
+        # bare process essentials
+        "PATH",
+        "HOME",
+        "TMPDIR",
+        "LANG",
+        "TZ",
+        # store / embedder resolution for the proxy-or-hub serve child
+        "LAMBO_STORE",
+        "LAMBO_EMBEDDER",
+        "LAMBO_EMBED_DIM",
+        # Gemini embedder credentials (lambo adapter reads these names)
+        "LAMBO_GEMINI_PROJECT",
+        "LAMBO_GEMINI_LOCATION",
+        "LAMBO_GEMINI_CREDENTIALS",
+        "GCP_LAMBO_CREDENTIALS",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        # Postgres DSN authorities (Mooshik overlay + lambo native names)
+        "MOOSHIK_POSTGRES_DSN",
+        "LAMBO_POSTGRES_DSN",
+        "DATABASE_URL",
+    )
+
+    @classmethod
+    def _build_params(cls, parts: list[str]) -> StdioServerParameters:
+        env = {
+            name: value
+            for name, value in os.environ.items()
+            if name in cls._CHILD_ENV_ALLOWLIST
+        }
+        return StdioServerParameters(command=parts[0], args=parts[1:], env=env)
 
     async def __aenter__(self) -> "LamboMcpWriter":
         self._transport = stdio_client(self._params)

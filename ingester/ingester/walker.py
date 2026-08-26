@@ -53,7 +53,14 @@ class Document:
 
 
 def iter_files(root: Path, extensions: tuple[str, ...]) -> list[Path]:
-    """Allowlisted files under ``root``, skipping repos' metadata-only dirs."""
+    """Allowlisted files under ``root``, skipping repos' metadata-only dirs.
+
+    Symbolic links are never collected — neither files nor directories.
+    ``rglob`` does not recurse into directory symlinks, but it *does* yield
+    file symlinks, and following one would ingest content living outside
+    the corpus root. The root directory is the trust boundary; a symlink
+    crossing it is rejected on sight.
+    """
     allowed = {ext.lower() for ext in extensions}
     found: list[Path] = []
     stack = [root]
@@ -70,6 +77,8 @@ def iter_files(root: Path, extensions: tuple[str, ...]) -> list[Path]:
                 continue  # repositories are handled by iter_commits only
             stack.append(entry)
     for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            continue  # never cross the corpus-root boundary via a link
         if not path.is_file():
             continue
         if any(part in SKIP_DIRS for part in path.relative_to(root).parts):

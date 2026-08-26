@@ -4,13 +4,15 @@ version = "0.1.0"
 description = "Mooshik bootstrap ingester: corpus -> Gemini Flash concepts -> Cloud SQL graph via lambo serve (MCP)."
 requires-python = ">=3.10"
 dependencies = [
-    "mcp>=1.2",
-    "google-genai>=1.0",
-    "google-adk>=1.0",
+    # Exact pins: the CI job installs these directly, so floating ranges
+    # would make builds non-reproducible (round-1 finding). Bump deliberately.
+    "mcp==2.1.1",
+    "google-genai==2.20.0",
+    "google-adk==2.7.1",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest==9.1.1"]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -21,3 +23,7 @@ include = ["ingester*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Let `pytest ingester/tests -q` from the repo root resolve the package
+# without an install: rootdir-relative "." puts ingester/ on sys.path, and
+# running from inside ingester/ works unchanged.
+pythonpath = ["."]
