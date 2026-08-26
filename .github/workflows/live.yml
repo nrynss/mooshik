@@ -33,9 +33,13 @@ jobs:
 
       - name: Install dbus headers
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
-
       - name: Write service-account credentials
-        run: printf '%s' "${{ secrets.MOOSHIK_GCP_CREDENTIALS }}" > "$RUNNER_TEMP/sa.json"
+        env:
+          MOOSHIK_GCP_CREDENTIALS: ${{ secrets.MOOSHIK_GCP_CREDENTIALS }}
+        run: |
+          printf '%s' "$MOOSHIK_GCP_CREDENTIALS" > "$RUNNER_TEMP/sa.json"
+          python3 -m json.tool "$RUNNER_TEMP/sa.json" > /dev/null
+          echo "credentials parsed as valid JSON"
 
       - name: Export live environment
         run: |
