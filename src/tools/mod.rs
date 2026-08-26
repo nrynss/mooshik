@@ -107,8 +107,8 @@ impl Drop for MemoryTools {
         if let Some(owner) = self.owner.take() {
             let mem = Arc::clone(&self.mem);
             owner.block_on(async move {
-                if let Err(error) = mem.close().await {
-                    eprintln!("memory close: {error}");
+                if mem.close().await.is_err() {
+                    eprintln!("{}", text::get("tools.close_failed"));
                 }
             });
         }

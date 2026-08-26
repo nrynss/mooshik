@@ -23,7 +23,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::scratch::answer_yes;
-use super::{panic_message, tool_internal_error, ToolExecutor, ToolSpec};
+use super::{tool_internal_error, ToolExecutor, ToolSpec};
 use crate::config::{GrantMode, Grants};
 use crate::text;
 
@@ -98,8 +98,8 @@ impl ToolExecutor for GatedTools {
         match catch_unwind(AssertUnwindSafe(|| self.authorized(name))) {
             Ok(true) => self.inner.execute(name, arguments),
             Ok(false) => text::get("permissions.denied").to_owned(),
-            Err(payload) => {
-                eprintln!("permission gate panicked: {}", panic_message(&payload));
+            Err(_) => {
+                eprintln!("{}", text::get("permissions.gate_panicked"));
                 tool_internal_error()
             }
         }
