@@ -25,6 +25,9 @@ __pycache__/
 .venv/
 venv/
 
+# Ingester checkpoint state
+.ingest/
+
 # Editors and OS
 .DS_Store
 *.swp
@@ -35,3 +38,6 @@ venv/
 # Added by cargo
 
 /target
+
+# Live-run fixture repo (created by ingest-fixtures/make-git-fixture.sh)
+ingest-fixtures/demo-repo/
