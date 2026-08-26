@@ -406,8 +406,13 @@ impl MemoryTools {
     }
 
     fn lambo_err(&self, what: &str, error: LamboError) -> String {
-        eprintln!("{what}: memory error: {error}");
-        format!("{what}: memory error (the detail was logged)")
+        // The raw LamboError Display can carry store/connection material
+        // (`Store` wraps backend messages naming DSN hosts), so neither the
+        // terminal nor the model sees it — same discipline as `gate_panicked`.
+        drop(error);
+        let notice = text::get("tools.memory_tool_failed");
+        eprintln!("{what}: {notice}");
+        format!("{what}: {notice}")
     }
 
     fn lambo_run_err(&self, what: &str, run: ToolRunError) -> String {
@@ -430,7 +435,10 @@ impl ToolExecutor for MemoryTools {
         match catch_unwind(AssertUnwindSafe(|| self.dispatch(name, arguments))) {
             Ok(output) => output,
             Err(payload) => {
-                eprintln!("tool {name} panicked: {}", panic_message(&payload));
+                // A panic payload is arbitrary data — it may carry vault
+                // values — so it is dropped, never formatted.
+                drop(payload);
+                eprintln!("{}", text::get("tools.tool_panicked"));
                 tool_internal_error()
             }
         }
@@ -544,16 +552,6 @@ fn bad_param(error: &dyn std::fmt::Display) -> String {
 
 fn tool_internal_error() -> String {
     text::get("tools.internal_error").to_owned()
-}
-
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
-    match payload.downcast_ref::<&str>() {
-        Some(message) => (*message).to_owned(),
-        None => match payload.downcast_ref::<String>() {
-            Some(message) => message.clone(),
-            None => "unknown panic".to_owned(),
-        },
-    }
 }
 
 #[cfg(test)]

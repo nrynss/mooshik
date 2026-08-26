@@ -93,9 +93,15 @@ impl Failure {
 fn is_user_error(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause.downcast_ref::<ConfigError>().is_some()
-            || cause
-                .downcast_ref::<HomeError>()
-                .is_some_and(|error| matches!(error, HomeError::MissingHome))
+            || cause.downcast_ref::<HomeError>().is_some_and(|error| {
+                matches!(
+                    error,
+                    HomeError::MissingHome
+                        | HomeError::UnsafePath
+                        | HomeError::MigrationRequired
+                        | HomeError::LayoutConflict
+                )
+            })
             || cause.downcast_ref::<VaultError>().is_some_and(|error| {
                 matches!(
                     error,
@@ -106,11 +112,22 @@ fn is_user_error(error: &anyhow::Error) -> bool {
                         | VaultError::InputTooLarge
                         | VaultError::MissingPassphrase
                         | VaultError::Authentication
+                        // The rest of the vault surface prints operator
+                        // fix-it instructions ("restore a valid vault",
+                        // "select passphrase mode"), so it is a refusal,
+                        // not an internal failure.
+                        | VaultError::InvalidFormat
+                        | VaultError::UnsafePath
+                        | VaultError::LockFailed
+                        | VaultError::Keyring
                 )
             })
-            || cause
-                .downcast_ref::<MemoryError>()
-                .is_some_and(|error| matches!(error, MemoryError::MissingDsn))
+            || cause.downcast_ref::<MemoryError>().is_some_and(|error| {
+                matches!(
+                    error,
+                    MemoryError::MissingDsn | MemoryError::SessionConflict(_)
+                )
+            })
             || cause.downcast_ref::<CompanionError>().is_some_and(|error| {
                 matches!(
                     error,
@@ -118,6 +135,10 @@ fn is_user_error(error: &anyhow::Error) -> bool {
                         | CompanionError::Timeout
                         | CompanionError::HttpStatus
                         | CompanionError::TurnTooLarge
+                        // "Check the endpoint" / "try again" are
+                        // reconfiguration-style advice.
+                        | CompanionError::InvalidResponse
+                        | CompanionError::ToolLoop
                 )
             })
     })
@@ -461,20 +482,22 @@ fn read_secret_value() -> anyhow::Result<Zeroizing<String>> {
     io::stdin()
         .take((MAX_INPUT_BYTES + 1) as u64)
         .read_to_end(&mut bytes)
-        .map_err(|_| anyhow!(text::get("vault.io_failed")))?;
+        // Typed, not bare anyhow!: the classifier — not this call site —
+        // decides the exit class, so the chain must carry a known variant.
+        .map_err(|_| anyhow::Error::new(VaultError::Io))?;
     normalize_stdin_bytes(bytes)
 }
 
 fn normalize_environment_value(mut value: Zeroizing<String>) -> anyhow::Result<Zeroizing<String>> {
     const MAX_INPUT_BYTES: usize = crate::vault::MAX_SECRET_VALUE_BYTES;
     if value.len() > MAX_INPUT_BYTES {
-        return Err(anyhow!(text::get("vault.input_too_large")));
+        return Err(anyhow::Error::new(VaultError::InputTooLarge));
     }
     while matches!(value.chars().last(), Some('\r' | '\n')) {
         value.pop();
     }
     if value.is_empty() {
-        return Err(anyhow!(text::get("vault.missing_value")));
+        return Err(anyhow::Error::new(VaultError::MissingValue));
     }
     Ok(value)
 }
@@ -482,13 +505,13 @@ fn normalize_environment_value(mut value: Zeroizing<String>) -> anyhow::Result<Z
 fn normalize_stdin_bytes(mut bytes: Zeroizing<Vec<u8>>) -> anyhow::Result<Zeroizing<String>> {
     const MAX_INPUT_BYTES: usize = crate::vault::MAX_SECRET_VALUE_BYTES;
     if bytes.len() > MAX_INPUT_BYTES {
-        return Err(anyhow!(text::get("vault.input_too_large")));
+        return Err(anyhow::Error::new(VaultError::InputTooLarge));
     }
     while matches!(bytes.last(), Some(b'\r' | b'\n')) {
         bytes.pop();
     }
     if bytes.is_empty() {
-        return Err(anyhow!(text::get("vault.missing_value")));
+        return Err(anyhow::Error::new(VaultError::MissingValue));
     }
     let value = match std::str::from_utf8(bytes.as_slice()) {
         Ok(value) => value.to_owned(),
@@ -496,7 +519,7 @@ fn normalize_stdin_bytes(mut bytes: Zeroizing<Vec<u8>>) -> anyhow::Result<Zeroiz
             // Keep rejected credential bytes inside the zeroizing allocation;
             // do not move them into String::from_utf8's ordinary Vec error.
             bytes.as_mut_slice().zeroize();
-            return Err(anyhow!(text::get("vault.io_failed")));
+            return Err(anyhow::Error::new(VaultError::Io));
         }
     };
     Ok(Zeroizing::new(value))
@@ -681,12 +704,24 @@ mod tests {
         let user_errors = [
             anyhow::Error::new(ConfigError::InvalidToml),
             anyhow::Error::new(HomeError::MissingHome),
+            anyhow::Error::new(HomeError::UnsafePath),
+            anyhow::Error::new(HomeError::MigrationRequired),
+            anyhow::Error::new(HomeError::LayoutConflict),
             anyhow::Error::new(VaultError::NotFound),
             anyhow::Error::new(VaultError::InvalidName),
             anyhow::Error::new(VaultError::MissingPassphrase),
+            anyhow::Error::new(VaultError::InvalidFormat),
+            anyhow::Error::new(VaultError::UnsafePath),
+            anyhow::Error::new(VaultError::LockFailed),
+            anyhow::Error::new(VaultError::Keyring),
             anyhow::Error::new(MemoryError::MissingDsn),
+            anyhow::Error::new(MemoryError::SessionConflict(
+                "session mooshik is already held by another writer".to_owned(),
+            )),
             anyhow::Error::new(CompanionError::Unreachable),
             anyhow::Error::new(CompanionError::HttpStatus),
+            anyhow::Error::new(CompanionError::InvalidResponse),
+            anyhow::Error::new(CompanionError::ToolLoop),
         ];
         for error in user_errors {
             assert_eq!(Failure::from(error).exit_code(), 2);
@@ -694,12 +729,88 @@ mod tests {
         let internal_errors = [
             anyhow::Error::new(HomeError::Io),
             anyhow::Error::new(VaultError::Io),
-            anyhow::Error::new(VaultError::Keyring),
             anyhow::Error::new(CompanionError::Runtime),
         ];
         for error in internal_errors {
             assert_eq!(Failure::from(error).exit_code(), 1);
         }
+    }
+
+    #[test]
+    fn empty_secret_values_classify_user_with_the_missing_value_message() {
+        // P1-a: both input paths used to raise a bare `anyhow!` whose chain
+        // carried no VaultError, so the canonical operator mistake exited 1.
+        let errors = [
+            normalize_environment_value(Zeroizing::new(String::new())).unwrap_err(),
+            normalize_stdin_bytes(Zeroizing::new(Vec::new())).unwrap_err(),
+        ];
+        for error in errors {
+            assert_eq!(error.to_string(), text::get("vault.missing_value"));
+            assert!(
+                error.chain().any(|cause| cause
+                    .downcast_ref::<VaultError>()
+                    .is_some_and(|e| matches!(e, VaultError::MissingValue))),
+                "the chain must carry the typed variant: {error:?}"
+            );
+            let failure = Failure::from(error);
+            assert_eq!(failure.exit_code(), 2);
+            assert_eq!(failure.rendered(), text::get("vault.missing_value"));
+        }
+    }
+
+    #[test]
+    fn oversized_unreadable_and_non_utf8_secret_input_is_typed_too() {
+        const MAX_INPUT_BYTES: usize = crate::vault::MAX_SECRET_VALUE_BYTES;
+        let too_large = vec![b'x'; MAX_INPUT_BYTES + 1];
+        let errors = [
+            normalize_environment_value(Zeroizing::new("x".repeat(MAX_INPUT_BYTES + 1)))
+                .unwrap_err(),
+            normalize_stdin_bytes(Zeroizing::new(too_large)).unwrap_err(),
+            normalize_stdin_bytes(Zeroizing::new(vec![b's', 0xff])).unwrap_err(),
+        ];
+        for error in errors {
+            assert!(
+                error
+                    .chain()
+                    .any(|cause| cause.downcast_ref::<VaultError>().is_some()),
+                "every secret-input rejection must be typed: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lease_conflicts_classify_user_and_render_holder_remediation() {
+        // P2-c: a held single-writer lease is an operator situation, not an
+        // internal failure — and its safe detail (holder + age + takeover
+        // hint) must surface instead of the wrong "check credentials" advice.
+        let detail = "session mooshik is already held by another writer (a@h#1) — it \
+                      acquired the single-writer lease 12s ago. If that holder is wedged, \
+                      an operator can force a takeover"
+            .to_owned();
+        let failure = Failure::from(anyhow::Error::new(MemoryError::SessionConflict(
+            detail.clone(),
+        )));
+        assert_eq!(failure.exit_code(), 2);
+        let rendered = failure.rendered();
+        assert!(rendered.contains("another writer"), "{rendered}");
+        assert!(rendered.contains("force a takeover"), "{rendered}");
+        assert!(rendered.contains(&detail), "{rendered}");
+        assert!(!rendered.contains("postgres://"));
+    }
+
+    #[test]
+    fn lambo_conflicts_map_to_the_session_conflict_variant_not_the_generic_backend() {
+        let mapped = MemoryError::from(lambo::LamboError::Conflict("held".to_owned()));
+        assert!(
+            matches!(mapped, MemoryError::SessionConflict(_)),
+            "{mapped:?}"
+        );
+        let mapped = MemoryError::from(lambo::LamboError::Other(anyhow::anyhow!("boom")));
+        assert!(matches!(mapped, MemoryError::Backend(_)), "{mapped:?}");
+        // The generic backend path still renders the fixed message and stays
+        // internal — only Conflict is promoted.
+        let error = anyhow::Error::new(mapped);
+        assert_eq!(Failure::from(error).exit_code(), 1);
     }
 
     #[test]

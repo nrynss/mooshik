@@ -470,7 +470,10 @@ fn set_private_permissions(file: &fs::File) -> Result<(), VaultError> {
 }
 
 fn validate_name(name: &str) -> Result<(), VaultError> {
+    // A leading `-` would make `secret list | xargs mooshik secret get`
+    // feed the name to the argument parser as a flag — rejected at set time.
     if name.is_empty()
+        || name.starts_with('-')
         || name.len() > 64
         || !name
             .bytes()
@@ -621,7 +624,12 @@ mod tests {
     #[test]
     fn names_and_missing_values_are_distinct_and_safe() {
         assert!(validate_name("bad\nname").is_err());
+        assert!(
+            validate_name("-flaglike").is_err(),
+            "a leading hyphen would become a flag for naive xargs consumers"
+        );
         assert!(validate_name("ok_name-1").is_ok());
+        assert!(validate_name("-").is_err());
         let path = path("not-found");
         clean(&path);
         let vault =

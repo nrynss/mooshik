@@ -22,13 +22,18 @@ pub fn run_chat(config: &Config, executor: Arc<dyn ToolExecutor>) -> Result<(), 
     // session's clone dies inside the async context, and the last reference
     // drops only after the runtime is gone — so a memory-backed executor can
     // run its graceful close (`Runtime::block_on` in `Drop`) legally.
-    tokio::runtime::Builder::new_multi_thread()
+    //
+    // The outcome is bound first so the executor closes on the FAILURE path
+    // too: a classified-failure exit must not skip the graceful close, or the
+    // single-writer lease is held until its TTL lapses and the write-behind
+    // tail is lost like a crash.
+    let outcome = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|_| CompanionError::Runtime)?
-        .block_on(run_chat_async(&config.companion, Arc::clone(&executor)))?;
+        .block_on(run_chat_async(&config.companion, Arc::clone(&executor)));
     drop(executor);
-    Ok(())
+    outcome
 }
 
 async fn run_chat_async(
@@ -109,6 +114,35 @@ mod tests {
         assert!(
             production.contains("CompanionClient::from_config"),
             "{production}"
+        );
+    }
+
+    #[test]
+    fn run_chat_closes_the_executor_on_the_failure_path_too() {
+        // P2-c (honesty half): the block_on outcome must be bound, then the
+        // executor dropped UNCONDITIONALLY, before the outcome returns. A `?`
+        // on the block_on line would skip the explicit close on the failure
+        // path — lease held to TTL, write-behind tail lost like a crash.
+        let src = include_str!("chat.rs");
+        let body = src
+            .split("pub fn run_chat")
+            .nth(1)
+            .unwrap()
+            .split("\nasync fn run_chat_async")
+            .next()
+            .unwrap();
+        let block_on = ".block_on(run_chat_async(&config.companion, Arc::clone(&executor)));";
+        assert!(
+            body.contains(block_on),
+            "the block_on outcome must be bound, not propagated with `?`: {body}"
+        );
+        let close = body
+            .find("drop(executor);")
+            .expect("run_chat must drop the executor");
+        let loop_end = body.find(block_on).unwrap();
+        assert!(
+            close > loop_end,
+            "the executor close must run after the loop exits, on every path"
         );
     }
 }

@@ -656,3 +656,53 @@ fn chat_composes_and_answers_even_when_the_vault_cannot_open() {
         crate::text::get("companion.unknown_tool"),
     );
 }
+
+#[test]
+fn tool_boundary_stderr_notices_route_through_en_toml_without_raw_detail() {
+    // P2-e: the raw `LamboError` Display can carry store/connection material
+    // (a `Store` wrap naming DSN hosts), and a panic payload is arbitrary
+    // data that may carry vault values. Both stderr sites must print fixed
+    // en.toml notices and nothing else — the same discipline as
+    // `gate_panicked`.
+    let production = include_str!("mod.rs").split("#[cfg(test)]").next().unwrap();
+    assert!(
+        production.contains(r#"text::get("tools.memory_tool_failed")"#),
+        "the lambo_err site must print the en.toml notice"
+    );
+    assert!(
+        production.contains(r#"text::get("tools.tool_panicked")"#),
+        "the panic-catch site must print the en.toml notice"
+    );
+    for raw in ["memory error: {error}", "panicked:", "panic_message"] {
+        assert!(
+            !production.contains(raw),
+            "raw detail formatting `{raw}` must never reach the terminal"
+        );
+    }
+    // The notices themselves carry no placeholder and no example material.
+    for key in ["tools.memory_tool_failed", "tools.tool_panicked"] {
+        let notice = crate::text::get(key);
+        assert!(!notice.contains('{'), "{key} must be fully fixed: {notice}");
+        assert!(!notice.contains("postgres://"), "{key}: {notice}");
+    }
+}
+
+#[tokio::test]
+async fn lambo_err_returns_the_fixed_notice_not_the_lambo_display() {
+    // Behavioral half of P2-e: even when the wrapped error names DSN
+    // material, the model-facing result string is the fixed notice.
+    let tools = MemoryTools::from_memory(fixture_memory().await);
+    let out = tools.lambo_err(
+        TOOL_RECALL,
+        lambo::LamboError::Other(anyhow::anyhow!(
+            "connect failed for postgres://m7user:m7p4ssw0rd@db.internal/mooshik"
+        )),
+    );
+    let expected = format!(
+        "{}: {}",
+        TOOL_RECALL,
+        crate::text::get("tools.memory_tool_failed")
+    );
+    assert_eq!(out, expected, "{out}");
+    assert!(!out.contains("m7p4ssw0rd"), "{out}");
+}
