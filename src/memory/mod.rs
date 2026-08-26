@@ -7,7 +7,7 @@ use crate::text;
 mod ops;
 mod resolve;
 
-pub use ops::{open, provision, serve, serve_plan, ServePlan};
+pub use ops::{open, provision, recall, serve, serve_plan, stats, ServePlan};
 pub use resolve::{resolve_product, resolve_store};
 
 #[derive(Debug)]

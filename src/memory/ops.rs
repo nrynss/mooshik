@@ -1,4 +1,4 @@
-use lambo::{mcp::ServeOptions, Memory};
+use lambo::{mcp::ServeOptions, Memory, MemoryStats, RecallQuery, RecallResult};
 
 use super::{
     resolve::{resolve_product, resolve_store},
@@ -31,6 +31,45 @@ pub async fn provision(config: &Config) -> Result<(), MemoryError> {
         .await
         .map_err(lambo::LamboError::Store)?;
     Ok(())
+}
+
+/// Recall defaults for the one-shot `mooshik recall` command: a small page of
+/// the most relevant concepts, no graph expansion. Chat's recall injection has
+/// its own budget; this is the operator-facing read path.
+pub const RECALL_TOP_K: usize = 5;
+pub const RECALL_MAX_TOKENS: usize = 200;
+pub const RECALL_TRAVERSAL_DEPTH: usize = 0;
+
+/// Search the session's concept graph for the operator. Opens and closes its
+/// own [`Memory`] handle: `recall` is one-shot, not a long-lived session.
+///
+/// This is the local-operator read path, deliberately NOT routed through chat's
+/// egress redaction: nothing recalled here reaches a model or history, so a
+/// vault value that happens to match concept text stays visible to the person
+/// who owns the machine.
+pub async fn recall(config: &Config, query: String) -> Result<RecallResult, MemoryError> {
+    let memory = open(config).await?;
+    let outcome = memory
+        .recall(RecallQuery {
+            query,
+            top_k: RECALL_TOP_K,
+            max_tokens: RECALL_MAX_TOKENS,
+            traversal_depth: RECALL_TRAVERSAL_DEPTH,
+        })
+        .await;
+    let closed = memory.close().await;
+    let recalled = outcome?;
+    closed?;
+    Ok(recalled)
+}
+
+/// Session health for the one-shot `mooshik stats` command. Same contract as
+/// [`recall`]: local-operator output only.
+pub async fn stats(config: &Config) -> Result<MemoryStats, MemoryError> {
+    let memory = open(config).await?;
+    let stats = memory.stats();
+    memory.close().await?;
+    Ok(stats)
 }
 
 /// What `serve` will ask Lambo to run. Extracted so tests can pin session,
@@ -135,6 +174,53 @@ mod tests {
             "a new MemoryStore must not see the first handle's write"
         );
         second.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn one_shot_recall_and_stats_run_against_fixture_memory() {
+        let config = fixture_config();
+        provision(&config).await.unwrap();
+
+        // Same-handle recall finds what derive wrote: the keyword leg must see
+        // a freshly derived concept without any flush in between.
+        let memory = open(&config).await.unwrap();
+        memory
+            .derive(
+                &[("m7 cli sweep marker", ConceptType::Entity)],
+                &ParentOf::none(),
+            )
+            .await
+            .unwrap();
+        let live = memory
+            .recall(RecallQuery {
+                query: "m7 cli sweep marker".into(),
+                top_k: RECALL_TOP_K,
+                max_tokens: RECALL_MAX_TOKENS,
+                traversal_depth: RECALL_TRAVERSAL_DEPTH,
+            })
+            .await
+            .unwrap();
+        assert!(
+            live.hits
+                .iter()
+                .any(|hit| hit.content == "m7 cli sweep marker"),
+            "{live:?}"
+        );
+        memory.close().await.unwrap();
+
+        // The one-shot wrappers open their own handle and answer from whatever
+        // the configured store holds — empty here, because an in-memory store
+        // lives and dies with its handle (durable stores carry the graph).
+        let recalled = recall(&config, "m7 cli sweep marker".to_owned())
+            .await
+            .unwrap();
+        assert!(recalled.hits.is_empty());
+        assert!(recalled.context.is_empty());
+
+        let health = stats(&config).await.unwrap();
+        assert_eq!(health.session.as_str(), "mooshik");
+        assert_eq!(health.agent.as_str(), "mooshik");
+        assert_eq!(health.concept_count, 0);
     }
 
     #[tokio::test]
