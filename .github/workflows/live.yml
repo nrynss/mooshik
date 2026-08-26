@@ -1,0 +1,108 @@
+# Live verification against the real Google endpoints (Cloud SQL + Vertex
+# Gemini). On-demand only — never runs on push or PR; the regular CI workflow
+# stays net/model-free by design.
+#
+# Required secrets:
+#   MOOSHIK_GCP_CREDENTIALS  — full Google service-account JSON
+#   MOOSHIK_POSTGRES_DSN     — Cloud SQL Postgres DSN reachable from runners
+#   MOOSHIK_VAULT_PASSPHRASE — vault key for unattended secret set/get
+#
+# The runner has no keyring daemon, so every vault-touching step uses the
+# passphrase provider (Mooshik's documented unattended mode).
+
+name: Live
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      # dtolnay/rust-toolchain master; version from rust-toolchain.toml
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: "1.97.1"
+
+      - name: Install dbus headers
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - name: Write service-account credentials
+        run: printf '%s' "${{ secrets.MOOSHIK_GCP_CREDENTIALS }}" > "$RUNNER_TEMP/sa.json"
+
+      - name: Export live environment
+        run: |
+          project=$(python3 -c "import json,os;print(json.load(open(os.environ['RUNNER_TEMP']+'/sa.json'))['project_id'])")
+          {
+            echo "MOOSHIK_POSTGRES_DSN=${{ secrets.MOOSHIK_POSTGRES_DSN }}"
+            echo "LAMBO_POSTGRES_DSN=${{ secrets.MOOSHIK_POSTGRES_DSN }}"
+            echo "MOOSHIK_GEMINI_CREDENTIALS=$RUNNER_TEMP/sa.json"
+            echo "GCP_LAMBO_CREDENTIALS=$RUNNER_TEMP/sa.json"
+            echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json"
+            echo "MOOSHIK_GEMINI_PROJECT=$project"
+            echo "MOOSHIK_GEMINI_LOCATION=us-central1"
+            echo "MOOSHIK_VAULT_PROVIDER=passphrase"
+            echo "MOOSHIK_VAULT_PASSPHRASE=${{ secrets.MOOSHIK_VAULT_PASSPHRASE }}"
+            echo "MOOSHIK_COMPANION_BASE_URL=https://aiplatform.googleapis.com/v1beta1/projects/$project/locations/global/endpoints/openapi"
+          } >> "$GITHUB_ENV"
+
+      - name: Live memory round trip (ignored test)
+        run: cargo test --locked --lib memory::ops::tests::live_postgres_and_gemini_round_trip -- --ignored --nocapture
+
+      - name: Build binary for CLI smoke
+        run: cargo build --locked
+
+      - name: CLI smoke — init, config, secrets, permissions
+        run: |
+          set -euo pipefail
+          cargo run --quiet -- init
+          cargo run --quiet -- config show >/dev/null   # rendered output must not carry the raw DSN
+          printf 'live-ci-probe-value' | cargo run --quiet -- secret set ci-probe
+          cargo run --quiet -- secret list | grep -x 'ci-probe'
+          value=$(cargo run --quiet -- secret get ci-probe)
+          test "$value" = 'live-ci-probe-value'
+          cargo run --quiet -- permissions >/dev/null
+
+      # Mint a short-lived Vertex access token from the service account
+      # (JWT RS256 -> oauth2 token exchange); never printed.
+      - name: Mint companion access token
+        env:
+          MOOSHIK_COMPANION_MODEL: google/gemini-3.7-flash
+        run: |
+          set -euo pipefail
+          KEY=$(mktemp); chmod 600 "$KEY"
+          trap 'rm -f "$KEY"' EXIT
+          python3 -c "import json,os;open('$KEY','w').write(json.load(open(os.environ['RUNNER_TEMP']+'/sa.json'))['private_key'])"
+          b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+          now=$(date +%s)
+          email=$(python3 -c "import json,os;print(json.load(open(os.environ['RUNNER_TEMP']+'/sa.json'))['client_email'])")
+          header='{"alg":"RS256","typ":"JWT"}'
+          claims="{\"iss\":\"${email}\",\"scope\":\"https://www.googleapis.com/auth/cloud-platform\",\"aud\":\"https://oauth2.googleapis.com/token\",\"iat\":${now},\"exp\":$((now+3600))}"
+          h="$(printf '%s' "$header" | b64url)"; c="$(printf '%s' "$claims" | b64url)"
+          sig=$(printf '%s.%s' "$h" "$c" | openssl dgst -sha256 -sign "$KEY" -binary | b64url)
+          jwt="$h.$c.$sig"
+          token=$(curl -sS --max-time 30 -X POST https://oauth2.googleapis.com/token \
+            -d "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}" \
+            | python3 -c 'import json,sys;print(json.load(sys.stdin)["access_token"])')
+          test -n "$token"
+          echo "MOOSHIK_COMPANION_API_KEY=$token" >> "$GITHUB_ENV"
+
+      - name: CLI smoke — chat derive, then recall in a fresh process
+        run: |
+          set -euo pipefail
+          marker="live ci marker $(date +%s)"
+          echo "Use lambo_derive to store one concept with content '${marker}' typed entity for agent mooshik, then confirm briefly." \
+            | timeout 240 cargo run --quiet -- chat
+          sleep 3   # allow the write-behind flush before the fresh process reads
+          out=$(cargo run --quiet -- recall "${marker}")
+          echo "$out" | grep -q "${marker}"
+
+      - name: Stats summary
+        run: cargo run --quiet -- stats
