@@ -454,9 +454,8 @@ volume, and writes through `lambo serve` over MCP.
 and proxies into it, provided M2b published an endpoint. That is the intended path, not a
 workaround: one graph, one hub, and the companion stays up while the corpus loads.
 
-**Open decision: where does it live?** It is Python, and Mooshik is Rust. Its own repo is cleaner
-to reason about; a subdirectory here means one link in the submission and one clone for a judge.
-Judges have to find it either way, so the tiebreaker is probably the submission, not the code.
+**Decided: subdirectory of this repo.** Mooshik is public; the ingester lives here — one link
+in the submission, one clone for a judge.
 
 Ingest rules: allowlist by extension rather than denylist, a
 secret scanner over every candidate document with a hit dropping the document rather than
@@ -465,7 +464,7 @@ where secrets hide.
 
 **Depends on:** M2, and Lambo's A and B. **Those dependencies have landed.** M8 itself has not.
 
-**Status: not started.** Open decision 5 (repo location) still blocks the first commit.
+**Status: not started.** Decision 5 settled (subdirectory); nothing blocks the first commit.
 
 ---
 
@@ -577,14 +576,13 @@ the CLI and this is cut, which is a decision rather than a failure.
 | ~~2~~ | ~~`run_scratch_script` in scope~~ | — | **Decided: in scope.** See M4. |
 | ~~3~~ | ~~Vault key: keyring or passphrase~~ | — | **Decided: keyring default, passphrase fallback.** Unattended start is possible. See M6. |
 | ~~4~~ | ~~Chat loop or one-shot CLI~~ | — | **Decided: a chat with context.** See M7. |
-| 5 | Ingester repo location | M8 | Cheap now, awkward once CI and docs exist |
-| 6 | Default grant set for the demo | M5 | Only bites at recording time, but bites hard |
+| ~~5~~ | ~~Ingester repo location~~ | — | **Decided: subdirectory of this repo** (Mooshik is public). See M8. |
+| ~~6~~ | ~~Default grant set for the demo~~ | — | **Decided: lambo memory tools allowed, scratch prompts, rest denies.** Landed with M5. |
 | ~~7~~ | ~~Where the surface effort goes~~ | — | **Decided: CLI throughout, a repair sweep at M7, TUI last.** See M7 and M11. |
 | ~~8~~ | ~~Companion loop: framework or hand-rolled~~ | — | **Decided: hand-rolled.** See below. |
 
-Six settled. Two remain: the ingester's home when M8 starts, and the demo grant set at recording
-time. Product backends (Postgres + Gemini, not SQLite + fixture) were decided when M2 started
-and are not a numbered row here.
+All eight settled. Product backends (Postgres + Gemini, not SQLite + fixture) were decided when
+M2 started and are not a numbered row here.
 
 **On decision 8**, since it will be proposed again: the companion targets exactly one wire format,
 OpenAI-compatible `/v1`, which every candidate endpoint already speaks. A framework's value is an
