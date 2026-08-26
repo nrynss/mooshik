@@ -106,19 +106,26 @@ inert-expose semantics.
   existing architecture.
 - **No `mooshik mcp-list` subcommand.** The companion sees MCP tools through
   `specs()`; an operator-facing command is future work.
-- **No live verification.** The M10 brief requires `lambo serve` as a live
-  verification using the *worktree's* own `mooshik` binary. This is a planned
-  follow-up step performed by the `Main` agent: configure `[mcp_servers.memory]`
-  → `lambo serve --session m10-live`, grant `mcp.memory.*`, drive a chat turn
-  that calls an MCP tool, then check via `MOOSHIK_SESSION=m10-live mooshik recall`.
-  The plumbing is in production code and all 10 offline tests confirm the path.
+- **No live verification at commit time.** Performed by Main afterwards (below).
 
-## Live verification (remaining)
+## Live verification (performed 2026-08-26, real Google endpoints)
 
-To be performed by `Main`:
-1. Build: `cargo build --locked`
-2. Config: add `[mcp_servers.memory]` pointing at `lambo serve --session m10-live`
-3. Grant: `mcp.memory.* = "allow"` in `[permissions]`
-4. Chat: `mooshik chat` (model may call e.g. `mcp.memory.lambo_derive`)
-5. Verify: `MOOSHIK_SESSION=m10-live ./target/debug/mooshik recall ...`
-6. Denial demo: remove the grant → `mcp.*` tools vanish from `specs()`
+Setup (all on this machine, real Cloud SQL + Vertex):
+1. `[mcp_servers.memory]` → `/home/nryn/work/lambo/target/debug/lambo serve --session m10-live`,
+   vault-ref env (`LAMBO_STORE`/`LAMBO_EMBEDDER`/`LAMBO_EMBED_DIM`/
+   `LAMBO_POSTGRES_DSN`/`LAMBO_GEMINI_PROJECT`/`LAMBO_GEMINI_LOCATION`/
+   `GCP_LAMBO_CREDENTIALS`, each a real vault secret), `expose` =
+   `["lambo_derive","lambo_stats","lambo_recall"]`.
+2. `[permissions] 'mcp.memory.*' = "allow"`.
+3. `mooshik chat` turn: the model called `mcp.memory.lambo_derive` with content
+   `m10 mcp host live marker via real lambo server`; the lambo-serve child
+   logged session attach (`session=m10-live`, embedder=gemini dim=1536), the
+   tfx returned `Concept stored for agent m10-live (receipt …)`, and the child
+   closed cleanly on chat exit. One benign cold-start warning: the write-queue
+   embedder **probe** timing out at 5s — the actual derive embedded fine.
+4. `stats` (session m10-live): 1 concept, **1 embedded**, log depth 0.
+5. Fresh-process `recall "m10 mcp host live marker"` (session m10-live, after
+   the child's lease cleared): returns the concept verbatim (relevance 1.07).
+
+Grant-denial is pinned offline (specs filtering by the M5 gate); the live run
+demonstrates the allow path end to end through a real MCP server over Cloud SQL.
