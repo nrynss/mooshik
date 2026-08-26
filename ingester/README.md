@@ -140,39 +140,65 @@ abstractions are built for interactive multi-turn agents whose history they
 want to own — we deliberately keep none. Documented here and in
 `dev-diary/adversarial-review/m8-implementation.md`.
 
-## Deployment (Cloud Run) — docs only, deploy step pending IAM setup
+## Deployment (Cloud Run Job) — deployed 2026-08-26
 
-The container builds and runs; the deploy step itself is pending IAM setup
-(service account with Vertex User + Cloud SQL Client roles, Artifact
-Registry writer for CI). Recorded as such for this cycle.
+The image builds from the repo root (`docker build -f ingester/Dockerfile .`)
+and bakes in the pinned `lambo` binary plus the Cloud SQL Auth Proxy. Deployed
+as a Cloud Run **Job** (batch, not a serving service): each execution starts
+the proxy, runs one ingest pass over `/corpus`, and exits.
 
-Build and push once IAM exists:
-
-```bash
-gcloud artifacts repositories create mooshik \
-  --repository-format=docker --location=us-central1
-
-docker build -t us-central1-docker.pkg.dev/PROJECT/mooshik/ingester:latest .
-docker push us-central1-docker.pkg.dev/PROJECT/mooshik/ingester:latest
-```
-
-Deploy with Cloud Run **VPC egress / Unix socket for Cloud SQL**, mounting
-the ingester service account:
+One-time setup (already applied on project `mooshik`):
 
 ```bash
-gcloud run deploy mooshik-ingester \
-  --image us-central1-docker.pkg.dev/PROJECT/mooshik/ingester:latest \
-  --region us-central1 \
-  --service-account INGESTER_SA@PROJECT.iam.gserviceaccount.com \
-  --set-env-vars MOOSHIK_GEMINI_PROJECT=PROJECT,MOOSHIK_GEMINI_LOCATION=us-central1,\
-MOOSHIK_GEMINI_CREDENTIALS=/secrets/sa.json,INGEST_SESSION=ingest-cloudrun \
-  --no-allow-unauthenticated
+gcloud services enable run.googleapis.com artifactregistry.googleapis.com \
+  cloudbuild.googleapis.com secretmanager.googleapis.com sqladmin.googleapis.com \
+  --project mooshik
+gcloud artifacts repositories create ingest --repository-format=docker \
+  --location=us-central1 --project=mooshik
+gcloud projects add-iam-policy-binding mooshik \
+  --member=serviceAccount:cachy-nryn@mooshik.iam.gserviceaccount.com \
+  --role=roles/cloudsql.client
+gcloud artifacts repositories add-iam-policy-binding ingest \
+  --location=us-central1 --project=mooshik \
+  --member=serviceAccount:cachy-nryn@mooshik.iam.gserviceaccount.com \
+  --role=roles/artifactregistry.reader
+# Vertex inference lives on nryn-personal:
+gcloud projects add-iam-policy-binding nryn-personal \
+  --member=serviceAccount:cachy-nryn@mooshik.iam.gserviceaccount.com \
+  --role=roles/aiplatform.user
+# DSN as a Secret Manager secret, rewritten to the proxy form:
+printf '%s' "postgresql://lambo:PW@127.0.0.1:5432/lambo?sslmode=disable" \
+  | gcloud secrets create ingest-dsn --project mooshik --data-file=-
+gcloud secrets add-iam-policy-binding ingest-dsn --project mooshik \
+  --member=serviceAccount:cachy-nryn@mooshik.iam.gserviceaccount.com \
+  --role=roles/secretmanager.secretAccessor
 ```
 
-Environment list (all from the table above): `MOOSHIK_GEMINI_*`,
-`INGEST_*`, and the Postgres DSN passed to the `lambo serve` child through
-lambo's own env chain. Service-account note: the runtime SA needs
-`roles/aiplatform.user` (Vertex), `roles/cloudsql.client` (Cloud SQL), and
-its json referenced by `MOOSHIK_GEMINI_CREDENTIALS` — or Application Default
-Credentials when running on GCP, in which case leave
-`MOOSHIK_GEMINI_CREDENTIALS` unset.
+Build, push, deploy, execute:
+
+```bash
+docker build -f ingester/Dockerfile -t ingester:m9 .
+docker tag ingester:m9 us-central1-docker.pkg.dev/mooshik/ingest/ingester:m9
+gcloud auth configure-docker us-central1-docker.pkg.dev
+docker push us-central1-docker.pkg.dev/mooshik/ingest/ingester:m9
+
+gcloud run jobs create ingester --project mooshik --region us-central1 \
+  --image us-central1-docker.pkg.dev/mooshik/ingest/ingester:m9 \
+  --service-account cachy-nryn@mooshik.iam.gserviceaccount.com \
+  --set-secrets=MOOSHIK_POSTGRES_DSN=ingest-dsn:latest,LAMBO_POSTGRES_DSN=ingest-dsn:latest \
+  --set-env-vars=LAMBO_STORE=postgres,LAMBO_EMBEDDER=gemini,LAMBO_EMBED_DIM=1536,\
+MOOSHIK_GEMINI_PROJECT=nryn-personal,MOOSHIK_GEMINI_LOCATION=us-central1,\
+LAMBO_GEMINI_PROJECT=nryn-personal,LAMBO_GEMINI_LOCATION=us-central1 \
+  --max-retries 0
+
+gcloud run jobs execute ingester --project mooshik --region us-central1 --wait
+```
+
+Notes: the job authenticates via **Application Default Credentials** of the
+attached service account — both the auth proxy and `google-genai` pick it up,
+so no SA json is baked into or mounted into the image. The proxy is required
+because Cloud SQL authorized-networks does not admit Cloud Run egress IPs.
+Vertex inference is cross-project (SA from `mooshik`, `roles/aiplatform.user`
+on `nryn-personal`). Verified 2026-08-26: execution `ingester-pwd4q`
+Completed; concepts extracted inside Cloud Run were recalled by a fresh local
+`mooshik recall`.

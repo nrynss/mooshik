@@ -475,7 +475,10 @@ spawning `lambo serve`, whose child env is a targeted ALLOWLIST (vault passphras
 absent). Provenance: `lambo_record_action` resources + derive `parent_of`. Live-proven: J2 proxy
 path (ingester's serve proxied into a running `mooshik serve` holder), 14 concepts written and
 recalled via fresh-process CLI; dropped PEM content absent from the graph (SQL-verified).
-Offline pytest suite (36) in regular CI. Cloud Run deploy documented, pending IAM setup.
+Offline pytest suite (36) in regular CI. **Deployed to Cloud Run as a batch
+Job 2026-08-26** (`ingester` in project `mooshik`, us-central1): auth-proxy
+tunnel to Cloud SQL, ADC-attached service account for Vertex inference;
+execution verified end-to-end via fresh-process recall.
 
 ---
 

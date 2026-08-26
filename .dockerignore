@@ -1,0 +1,13 @@
+# Keep the build context small: the repo root carries gigabytes of build
+# state, virtualenvs and diaries the image never needs.
+/target
+/.git
+/dev-diary
+/docs
+/ingester/.venv
+/ingester/tests
+/measurement
+/src
+*.md
+!ingester/README.md
+.env
