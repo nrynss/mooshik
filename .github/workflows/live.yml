@@ -61,8 +61,8 @@ jobs:
           curl -sS --fail -o /usr/local/bin/cloud-sql-proxy \
             https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.14.2/cloud-sql-proxy.linux.amd64
           chmod +x /usr/local/bin/cloud-sql-proxy
-          /usr/local/bin/cloud-sql-proxy mooshik:us-central1:lambo-pg --port 5432 &
-          for i in $(seq 1 30); do
+          /usr/local/bin/cloud-sql-proxy mooshik:us-central1:lambo-pg --port 5432 \
+            --credentials-file "$RUNNER_TEMP/sa.json" &
             (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null && break || sleep 1
           done
           (exec 3<>/dev/tcp/127.0.0.1/5432) || { echo "proxy did not open the port"; exit 1; }
