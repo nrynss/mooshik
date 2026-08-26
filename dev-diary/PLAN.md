@@ -54,7 +54,7 @@ M11 is last on purpose and is allowed to fail; see M11.
 | **M4** | Built 2026-08-25, `73e13e1` → `5e3d113`; live-verified 2026-08-26 (`17fbe71`, `35ae812`: Gemini 3.x thought-signature echo, memory-runtime ownership). Review round 2 **APPROVE**, zero residue (`m4-round2.md`). |
 | **M5** | Built 2026-08-26, `75cda1a` → `88abf81`. Review round 2 **APPROVE**, zero residue (`m5-round2.md`). Default grants: Decision 6 settled — lambo memory tools allowed, scratch prompt, rest deny. |
 | **M6** | Built 2026-08-26, `071c10d` → `4613aea`. Review round 2 **APPROVE**, zero residue (`m6-round2.md`). Scratch env injection + egress redaction at the tool boundary. |
-| **M7** | Not started. CLI so far: `init`, `config show`, `secret set/get/list`, `serve`, `chat`. |
+| **M7** | Built 2026-08-26, `caa8962` → `958564f`. Review round 2 **APPROVE**, zero residue (`m7-round2.md`). `recall` / `stats` commands; exit codes 0/2/1; live-verified against Cloud SQL + Vertex. |
 | **M8** | Not started. Unblocked: M2b published the endpoint; Lambo A and B have landed. |
 | **M9** | Not started. Prefer this over M10 if the clock forces a cut. |
 | **M10** | Not started. Cut-able. |
@@ -356,8 +356,20 @@ This decision does more work than it looks like it does — see below.
 reader who has never seen the project can get from `mooshik --help` to a recall without asking
 anyone.
 
-**Status: not started.** Present CLI, grown with the landed milestones: `init`, `config show`,
-`secret set/get/list`, `serve`, `chat`, `permissions`. `recall` / `stats` arrive with M6–M7.
+**Status: built 2026-08-26.** Implement `caa8962` → `4dbf798`, remediate `958564f`, review
+records `m7-round1.md` / `m7-round2.md`. Adversarial round 2 **APPROVE**, zero residue.
+
+The sweep: `recall` / `stats` one-shot commands over in-process memory (defaults top_k 5,
+max_tokens 200, depth 0); exit codes **0 ok / 2 user error / 1 internal** decided once in a
+chain-walking classifier; ONE terminal error path that prints only the top-level en.toml message —
+wrapped sources (LamboError can carry DSN material) never print, proven by a subprocess pin whose
+fixture chain plants fake credentials; no vault value reachable from any error string, pinned
+behaviorally. Lease conflicts surface as their own user error naming the holder and the takeover
+remediation instead of a generic backend message; chat's graceful executor close runs on the
+failure path too. Live-verified against Cloud SQL + Vertex Gemini: every command exit-0, and a
+chat-driven derive was recalled by a separate `mooshik recall` process through the real stack.
+Known documented limits: recall-during-held-lease classification is pinned at variant level;
+help-example parser tokenizes raw TOML bytes.
 
 ---
 
