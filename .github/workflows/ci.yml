@@ -66,6 +66,27 @@ jobs:
       - name: Test (offline)
         run: pytest ingester/tests -q
 
+  # M10 news MCP server: offline seam tests only (no Google, no network).
+  news-mcp:
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      # actions/setup-python v5 (pinned by tag SHA)
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.13"
+
+      - name: Install news MCP deps
+        # Exact pins, mirrored from mcp-servers/news/pyproject.toml. No
+        # google-adk: an MCP tool call is one request/response, so this server
+        # drives google-genai directly rather than running an ADK Runner.
+        run: pip install pytest==9.1.1 mcp==2.1.1 google-genai==2.20.0
+
+      - name: Test (offline)
+        run: pytest mcp-servers/news/tests -q
+
   # M9 measurement harness: offline seam tests only (no Cloud SQL).
   measurement:
     runs-on: ubuntu-latest
