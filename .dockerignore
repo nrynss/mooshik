@@ -1,5 +1,12 @@
 # Keep the build context small: the repo root carries gigabytes of build
 # state, virtualenvs and diaries the image never needs.
+#
+# NOTE: `/src` is deliberately NOT here. The image compiles `mooshik` from
+# this checkout so the MCP serve child is the same code the library is — see
+# ingester/Dockerfile. Excluding it fails the build at `COPY src`.
+#
+# `*.md` is root-level only (Docker's `*` does not cross `/`), so the
+# markdown corpus under ingest-fixtures/ is untouched by it.
 /target
 /.git
 /dev-diary
@@ -7,7 +14,7 @@
 /ingester/.venv
 /ingester/tests
 /measurement
-/src
+/mcp-servers
 *.md
 !ingester/README.md
 .env
