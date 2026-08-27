@@ -22,7 +22,7 @@ zeroize = { version = "1", features = ["serde"] }
 # which does not carry the hosted adapters. Bump the SHA after a Lambo fix.
 # default-features = false so embed-bge (llama.cpp) does not come along.
 # embed-fixture is the test double; the product path is Vertex + Cloud SQL.
-lambo = { git = "https://github.com/nrynss/lambo", rev = "71334f0bfb38e68c6071537a5eba1d587f07acea", default-features = false, features = ["store-postgres", "store-memory", "embed-gemini", "embed-fixture"] }
+lambo = { git = "https://github.com/nrynss/lambo", rev = "71334f0bfb38e68c6071537a5eba1d587f07acea", default-features = false, features = ["store-postgres", "store-sqlite", "store-memory", "embed-gemini", "embed-bge", "embed-fixture"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "io-util", "sync", "signal", "net"] }
 # Pin 0.12 so M10's rmcp (optional reqwest ^0.13.2) does not compile reqwest twice.
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }

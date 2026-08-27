@@ -53,6 +53,38 @@ mod tests {
         config
     }
 
+    /// The spec promises a local posture — "Standalone, offline, no services
+    /// to run", and a companion that "works on a plane". That is a **build**
+    /// property: `StoreKind`/`EmbedderKind` accept every variant whatever this
+    /// binary compiled, so dropping `store-sqlite` or `embed-bge` from the
+    /// dependency's feature list would leave the config parsing happily and
+    /// failing only at runtime, on a user's machine, as an internal error.
+    ///
+    /// Constructing both here is what makes the claim testable. Neither call
+    /// touches the network: the sqlite store opens a file, and the BGE
+    /// embedder only holds a URL until something asks it to embed.
+    #[test]
+    fn the_offline_backends_this_build_promises_are_actually_compiled_in() {
+        let dir = crate::secure_path::canonical_temp_dir()
+            .join(format!("mooshik-offline-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut config = Config::default();
+        config.store.kind = StoreKind::Sqlite;
+        config.store.path = Some(dir.join("mooshik.db").to_string_lossy().into_owned());
+        config.embedder.kind = EmbedderKind::BgeM3;
+        config.embedder.dim = 1024;
+
+        // No DSN, no credentials, no network — and it must still resolve.
+        let backends = resolve_product(&config).expect("offline backends resolve");
+        assert_eq!(backends.embedding.dim, 1024);
+        assert_eq!(backends.config.promotion_policy, PromotionPolicy::Solo);
+        resolve_store(&config).expect("sqlite store builds");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn fake_gemini_credentials() -> (std::path::PathBuf, Config) {
         let dir = crate::secure_path::canonical_temp_dir().join(format!(
             "mooshik-gemini-{}-{}",

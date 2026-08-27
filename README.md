@@ -28,6 +28,29 @@ cargo test           # unit tests live alongside their code
 ./target/debug/mooshik --help
 ```
 
+## Backends
+
+Which backends exist is a **build** decision; which one runs is a config one
+(`~/.mooshik/config.toml`). This binary compiles both postures:
+
+| Posture | `[store]` | `[embedder]` | Needs |
+| --- | --- | --- | --- |
+| **Local** | `sqlite` | `bge_m3` | a llama.cpp server; nothing else |
+| **Shared** | `postgres` | `gemini` | a Postgres DSN + Vertex credentials |
+
+The defaults written by `mooshik init` are the shared pair, because that is
+what a desktop and a laptop flushing into one memory needs. For a standalone
+machine, set `kind = "sqlite"` with a `path`, point `[embedder]` and
+`[companion]` at local servers, and nothing leaves the box.
+
+`memory` / `fixture` are compiled too, but they are **test doubles** — the
+memory store keeps nothing across a restart and the fixture embedder's
+vectors carry no meaning. Never point a real workspace at them.
+
+Changing embedder mid-session means re-embedding: the embedding contract
+(kind + model + dim) is stamped per session and a mismatched vector space is
+refused rather than silently mixed.
+
 ## Conventions
 
 - **User-facing strings live in TOML, not Rust source** — `src/text/en.toml`,
