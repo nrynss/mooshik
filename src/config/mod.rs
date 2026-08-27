@@ -17,14 +17,18 @@ mod companion;
 mod overlay;
 mod permissions;
 mod show;
+mod write;
 
 pub use companion::{
-    ApiKey, CompanionConfig, COMPANION_API_KEY_ENV, COMPANION_BASE_URL_ENV,
-    COMPANION_CONTEXT_WINDOW_ENV, COMPANION_MODEL_ENV, COMPANION_TEMPERATURE_ENV,
+    vertex_base_url, ApiKey, CompanionAuth, CompanionConfig, COMPANION_API_KEY_ENV,
+    COMPANION_AUTH_ENV, COMPANION_BASE_URL_ENV, COMPANION_CONTEXT_WINDOW_ENV,
+    COMPANION_GOOGLE_LOCATION_ENV, COMPANION_GOOGLE_PROJECT_ENV, COMPANION_MODEL_ENV,
+    COMPANION_TEMPERATURE_ENV, DEFAULT_GOOGLE_LOCATION,
 };
 pub use permissions::{
     GrantDecision, GrantMode, GrantSource, Grants, PermissionsConfig, RawGrant, ScopedGrant,
 };
+pub use write::{apply_setting, settable_keys, store_move_requires_confirmation};
 
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 
@@ -70,10 +74,22 @@ gemini_model = "gemini-embedding-001"
 flush_interval_ms = 1000
 
 [companion]
+# Local posture (the default): any OpenAI-compatible /v1 endpoint. A bearer
+# credential is never written into this file — store it with
+# `mooshik secret set <name>`, then reference that name from the CLI
+# (`mooshik config set --help` lists every settable key).
 base_url = "http://127.0.0.1:8080/v1"
 model = "local-model"
 context_window = 32768
 temperature = 0.2
+# Google posture (Vertex's OpenAI-compatible endpoint). There is no URL to
+# paste: the endpoint is derived from project and location, and the access
+# token is minted from your Google credentials and refreshed before it
+# expires. Reachable without hand-editing this file:
+#   mooshik config set companion.auth google
+#   mooshik config set companion.google_project my-project
+#   mooshik config set companion.google_location us-central1
+#   mooshik config set companion.model gemini-2.5-flash
 
 [permissions]
 # Autonomy is granted, not configured (docs/SPEC.md). Families: memory, scratch.
@@ -114,11 +130,75 @@ pub enum ConfigError {
     InvalidScratchEnv,
     InvalidMcp,
     InvalidPermissions,
+    /// `[store]` names both a literal `dsn` and a `dsn_secret`. Two authorities
+    /// for one database, and picking one silently is how a provision lands on
+    /// the wrong cluster — so it fails the load instead.
+    DsnAndSecret,
+    InvalidStoreSecret,
+    InvalidApiKeySecret,
+    InvalidCompanionAuth,
+    MissingGoogleProject,
+    /// A key `mooshik config set` does not know. Carries the key so the
+    /// message can name it (never a `Debug` dump of the value).
+    UnknownKey(String),
+    /// A known key handed a value it cannot accept. `expected` is the resolved
+    /// "what is valid" sentence; the offending value is deliberately NOT
+    /// carried, because a rejected value can be credential material.
+    InvalidSetting {
+        key: &'static str,
+        expected: &'static str,
+    },
+    /// A key that would put a credential in `config.toml`. Carries the key and
+    /// the reference key that takes a vault secret name instead.
+    SecretKey {
+        key: &'static str,
+        reference: &'static str,
+    },
+    /// The edited file did not read back as the value that was asked for. The
+    /// editor is surgical, so this is the fail-closed net: refuse rather than
+    /// leave a user's configuration in a shape nobody asked for.
+    WriteVerifyFailed,
+    WriteFailed,
+    /// The store would move to a different database and `--confirm-database-change`
+    /// was not given.
+    StoreMoveUnconfirmed,
+    /// A referenced store DSN secret is not in the vault. Carries the *name*,
+    /// which is configuration (`config show` prints secret names), never a value.
+    MissingStoreSecret(String),
+    /// A referenced companion API-key secret is not in the vault.
+    MissingApiKeySecret(String),
+    VaultUnavailable,
 }
 
 impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let key = match self {
+        let message = match self {
+            Self::UnknownKey(key) => text::get("config.unknown_key")
+                .replace("{key}", key)
+                .replace("{keys}", &settable_keys().join(", ")),
+            Self::InvalidSetting { key, expected } => text::get("config.set_invalid")
+                .replace("{key}", key)
+                .replace("{expected}", expected),
+            Self::SecretKey { key, reference } => text::get("config.secret_key")
+                .replace("{key}", key)
+                .replace("{reference}", reference),
+            Self::MissingStoreSecret(name) => {
+                text::get("config.missing_store_secret").replace("{name}", name)
+            }
+            Self::MissingApiKeySecret(name) => {
+                text::get("config.missing_api_key_secret").replace("{name}", name)
+            }
+            other => text::get(other.key()).to_owned(),
+        };
+        f.write_str(&message)
+    }
+}
+
+impl ConfigError {
+    /// The `en.toml` key for the fixed-message variants. The four variants
+    /// that interpolate are handled by `Display` directly.
+    fn key(&self) -> &'static str {
+        match self {
             Self::Io => "config.read_failed",
             Self::HomeUnavailable => "config.home_unavailable",
             Self::InvalidToml => "config.invalid_toml",
@@ -132,8 +212,23 @@ impl std::fmt::Display for ConfigError {
             Self::InvalidMcp => "config.invalid_mcp",
             Self::InvalidScratchEnv => "config.invalid_scratch_env",
             Self::InvalidPermissions => "config.invalid_permissions",
-        };
-        f.write_str(text::get(key))
+            Self::DsnAndSecret => "config.dsn_and_secret",
+            Self::InvalidStoreSecret => "config.invalid_store_secret",
+            Self::InvalidApiKeySecret => "config.invalid_api_key_secret",
+            Self::InvalidCompanionAuth => "config.invalid_companion_auth",
+            Self::MissingGoogleProject => "config.missing_google_project",
+            Self::WriteVerifyFailed => "config.write_verify_failed",
+            Self::WriteFailed => "config.write_failed",
+            Self::StoreMoveUnconfirmed => "config.store_move_unconfirmed",
+            Self::VaultUnavailable => "config.vault_unavailable",
+            Self::UnknownKey(_)
+            | Self::InvalidSetting { .. }
+            | Self::SecretKey { .. }
+            | Self::MissingStoreSecret(_)
+            | Self::MissingApiKeySecret(_) => {
+                unreachable!("interpolating variants are rendered by Display")
+            }
+        }
     }
 }
 
@@ -276,6 +371,11 @@ pub struct StoreSection {
     pub kind: StoreKind,
     #[serde(default)]
     pub dsn: Option<String>,
+    /// The *name* of a vault secret holding the DSN — never the DSN. This is
+    /// the reference the CLI write path sets, so a connection string carrying
+    /// a password never has to be typed into a readable config file.
+    #[serde(default)]
+    pub dsn_secret: Option<String>,
     #[serde(default)]
     pub path: Option<String>,
     #[serde(default)]
@@ -287,6 +387,7 @@ impl Default for StoreSection {
         Self {
             kind: default_store_kind(),
             dsn: None,
+            dsn_secret: None,
             path: None,
             vector_dim: None,
         }
@@ -294,6 +395,25 @@ impl Default for StoreSection {
 }
 
 impl StoreSection {
+    /// Fail closed on a `[store]` table that names two DSN authorities, and on
+    /// a `dsn_secret` the vault could never hold.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if let Some(name) = &self.dsn_secret {
+            if self
+                .dsn
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty())
+            {
+                return Err(ConfigError::DsnAndSecret);
+            }
+            if !crate::vault::is_valid_name(name) {
+                return Err(ConfigError::InvalidStoreSecret);
+            }
+        }
+        Ok(())
+    }
+
     pub fn to_lambo(&self) -> StoreConfig {
         StoreConfig {
             kind: self.kind,

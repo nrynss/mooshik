@@ -425,13 +425,17 @@ mod tests {
         // this the model only ever sees old context when it decides to call
         // `lambo_recall` itself — the gap this milestone closed.
         //
-        // The pin lives here rather than in `cli.rs` because that file is at
-        // its line budget; `include_str!` reads the caller's neighbour.
-        let src = include_str!("../cli.rs");
+        // The pin lives here rather than in the CLI's own tests because it is
+        // this module's wire that would go missing; `include_str!` reads the
+        // caller's source. `cli.rs` became the `cli/` directory module when a
+        // config write path pushed it past the 1000-line cap, so the same two
+        // functions are now read from `cli/chat_cmd.rs` — same slice markers,
+        // same property, same failure when the wire is cut.
+        let src = include_str!("../cli/chat_cmd.rs");
         let body = src
             .split("fn chat(")
             .nth(1)
-            .expect("cli::chat must exist")
+            .expect("cli::chat_cmd::chat must exist")
             .split("fn open_vault_for_chat")
             .next()
             .unwrap();

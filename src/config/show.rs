@@ -20,12 +20,27 @@ struct ShowConfig<'a> {
 
 #[derive(Serialize)]
 struct ShowCompanion<'a> {
-    base_url: &'a str,
+    /// The base URL actually used, which under the Google posture is *derived*
+    /// from project and location. `config show` prints the resolved
+    /// configuration, so it prints the endpoint the next request will hit
+    /// rather than the placeholder still sitting in the file.
+    base_url: String,
     model: &'a str,
+    auth: super::CompanionAuth,
     context_window: u32,
     temperature: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     api_key: Option<&'static str>,
+    /// A secret *name* is configuration, not a secret; it prints as-is, the
+    /// same way `[tools.scratch.env]` names do.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_key_secret: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    google_project: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    google_location: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    google_credentials: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -44,6 +59,11 @@ struct ShowStore {
     kind: StoreKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     dsn: Option<String>,
+    /// A secret *name*, not a DSN — safe to print, and the whole point of the
+    /// reference: `config show` can tell you *where* the connection string
+    /// lives without telling you what it is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dsn_secret: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -76,6 +96,11 @@ impl Config {
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(|_| "***REDACTED***".to_owned()),
+            dsn_secret: self
+                .store
+                .dsn_secret
+                .clone()
+                .filter(|value| !value.is_empty()),
             path: self.store.path.clone().filter(|value| !value.is_empty()),
             vector_dim: self.store.vector_dim,
         };
@@ -105,8 +130,9 @@ impl Config {
                 .filter(|value| !value.is_empty()),
         };
         let companion = ShowCompanion {
-            base_url: &self.companion.base_url,
+            base_url: self.companion.resolved_base_url(),
             model: &self.companion.model,
+            auth: self.companion.auth,
             context_window: self.companion.context_window,
             temperature: self.companion.temperature,
             api_key: self
@@ -117,6 +143,27 @@ impl Config {
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(|_| "***REDACTED***"),
+            api_key_secret: self
+                .companion
+                .api_key_secret
+                .as_deref()
+                .filter(|value| !value.is_empty()),
+            google_project: self
+                .companion
+                .google_project
+                .as_deref()
+                .filter(|value| !value.is_empty()),
+            google_location: self
+                .companion
+                .google_location
+                .as_deref()
+                .filter(|value| !value.is_empty()),
+            google_credentials: self
+                .companion
+                .google_credentials
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .filter(|value| !value.is_empty()),
         };
         toml::to_string_pretty(&ShowConfig {
             vault: &self.vault,

@@ -688,6 +688,50 @@ pub(crate) fn read_private_at(_: &File, _: &OsStr, _: u64) -> io::Result<Vec<u8>
     ))
 }
 
+/// Replace `leaf` under `parent` with `bytes`, privately and atomically.
+///
+/// The one write primitive for a private file that already exists: a fresh
+/// 0600 staging entry under an unpredictable name is written and fsynced, then
+/// renamed over the leaf and the directory fsynced, so a reader never sees a
+/// half-written file and a crash leaves either the old bytes or the new ones.
+/// `create_new_at` is `O_EXCL | O_NOFOLLOW` against the retained directory
+/// descriptor, so no path component and no symlink can be swapped underneath.
+/// A failed attempt unlinks its own staging name, which — unlike the directory
+/// case in `preserve_staging_directory` — is safe: `O_EXCL` means the name is
+/// ours and no other writer can have taken it.
+#[cfg(unix)]
+pub(crate) fn write_private_at(parent: &File, leaf: &OsStr, bytes: &[u8]) -> io::Result<()> {
+    let mut random = [0u8; 12];
+    OsRng
+        .try_fill_bytes(&mut random)
+        .map_err(|_| io::Error::other("secure random generation failed"))?;
+    let mut temp = OsString::from(format!(".mooshik-write-{}-", std::process::id()));
+    for byte in random {
+        use std::fmt::Write;
+        write!(&mut temp, "{byte:02x}").expect("writing to OsString cannot fail");
+    }
+    temp.push(".tmp");
+    let result = (|| {
+        let mut file = create_new_at(parent, &temp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        rename_at(parent, &temp, leaf)?;
+        parent.sync_all()
+    })();
+    if result.is_err() {
+        let _ = unlink_at(parent, &temp);
+    }
+    result
+}
+
+#[cfg(not(unix))]
+pub(crate) fn write_private_at(_: &File, _: &OsStr, _: &[u8]) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "unsupported platform",
+    ))
+}
+
 #[cfg(unix)]
 pub(crate) fn open_lock_at(parent: &File, leaf: &OsStr) -> io::Result<File> {
     let file = match open_file_at(parent, leaf, false, false) {

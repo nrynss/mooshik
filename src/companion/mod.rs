@@ -12,6 +12,8 @@ mod tools;
 mod types;
 
 #[cfg(test)]
+mod google_tests;
+#[cfg(test)]
 mod loop_tests;
 #[cfg(test)]
 mod mock;
@@ -37,6 +39,11 @@ pub enum CompanionError {
     Runtime,
     Io,
     ToolLoop,
+    /// A Google access token could not be minted for a transient reason: the
+    /// credential file is unreadable, or the token endpoint is unreachable.
+    AuthUnavailable,
+    /// Google refused the credential. Permanent until an operator fixes it.
+    AuthRefused,
 }
 
 impl std::fmt::Display for CompanionError {
@@ -51,6 +58,8 @@ impl std::fmt::Display for CompanionError {
             Self::Runtime => "companion.runtime_failed",
             Self::Io => "companion.io_failed",
             Self::ToolLoop => "companion.tool_loop",
+            Self::AuthUnavailable => "companion.auth_unavailable",
+            Self::AuthRefused => "companion.auth_refused",
         };
         f.write_str(text::get(key))
     }

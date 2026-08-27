@@ -1,8 +1,12 @@
 use std::time::Duration;
 
+use lambo::gcp_auth::{
+    build_client, credentials_path_from_env, load_credentials, GoogleAuthError,
+    GoogleOAuthTokenSource,
+};
 use zeroize::Zeroizing;
 
-use crate::config::CompanionConfig;
+use crate::config::{CompanionAuth, CompanionConfig};
 
 use super::cancel::Cancellation;
 use super::sse::{parse_chunk, SseEvent, SseParser};
@@ -16,12 +20,31 @@ use super::CompanionError;
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How this client authenticates every request.
+///
+/// The distinction is not cosmetic. A static key is minted once by a human and
+/// is still valid tomorrow; a Google access token expires in about an hour, so
+/// a header built once at construction authenticates for one hour and 401s
+/// after that — on a companion whose whole premise is running beside you all
+/// day. The Google arm therefore asks for a token *per request* and lets
+/// `lambo::gcp_auth` cache and refresh it ahead of expiry.
+enum Auth {
+    /// A fixed bearer key, or none at all. The local and generic
+    /// OpenAI-compatible path, unchanged.
+    Static(Option<crate::config::ApiKey>),
+    /// Google OAuth. The `Mutex` is `tokio`'s because `access_token` is async
+    /// and takes `&mut self`, while `complete` only has `&self`.
+    /// Boxed: the token source dwarfs the static key, and an unboxed
+    /// variant makes every `Auth` that size.
+    Google(Box<tokio::sync::Mutex<GoogleOAuthTokenSource>>),
+}
+
 pub struct CompanionClient {
     http: reqwest::Client,
     completions_url: String,
     model: String,
     temperature: f64,
-    api_key: Option<crate::config::ApiKey>,
+    auth: Auth,
 }
 
 #[derive(Debug)]
@@ -40,11 +63,32 @@ impl CompanionClient {
             .map_err(|_| CompanionError::Unreachable)?;
         Ok(Self {
             http,
-            completions_url: chat_completions_url(&config.base_url),
+            // Derived, not pasted: under the Google posture the endpoint is a
+            // pure function of project and location (`resolved_base_url`).
+            completions_url: chat_completions_url(&config.resolved_base_url()),
             model: config.model.clone(),
             temperature: config.temperature,
-            api_key: config.api_key.clone(),
+            auth: build_auth(config)?,
         })
+    }
+
+    /// The `Authorization` header for one request, or `None` when the endpoint
+    /// takes no credential (the local default).
+    ///
+    /// The Google arm mints through `lambo::gcp_auth`, which caches until
+    /// roughly a minute before expiry and re-mints after — so a day-long chat
+    /// keeps working rather than 401ing an hour in. The token is wrapped in
+    /// `Zeroizing` the instant it arrives: it is a live credential for the
+    /// next hour and must not be left in our memory once the request is built.
+    async fn authorization(&self) -> Result<Option<Zeroizing<String>>, CompanionError> {
+        match &self.auth {
+            Auth::Static(key) => Ok(bearer_header(key.as_ref())),
+            Auth::Google(source) => {
+                let mut guard = source.lock().await;
+                let token = Zeroizing::new(guard.access_token().await.map_err(map_google)?);
+                Ok(Some(Zeroizing::new(format!("Bearer {}", token.as_str()))))
+            }
+        }
     }
 
     pub async fn complete(
@@ -61,8 +105,14 @@ impl CompanionClient {
             temperature: self.temperature,
             tools: wire_tools(tools),
         };
+        // Minting can block on Google's token endpoint, so Ctrl-C reaches it
+        // too rather than only the completion that follows.
+        let authorization = tokio::select! {
+            _ = cancel.cancelled() => return Err(CompanionError::Cancelled),
+            header = self.authorization() => header?,
+        };
         let mut builder = self.http.post(&self.completions_url).json(&request);
-        if let Some(header) = bearer_header(self.api_key.as_ref()) {
+        if let Some(header) = &authorization {
             builder = builder.header(reqwest::header::AUTHORIZATION, header.as_str());
         }
 
@@ -153,6 +203,41 @@ fn wire_tools(tools: &[ToolSpec]) -> Option<Vec<WireTool>> {
 fn bearer_header(key: Option<&crate::config::ApiKey>) -> Option<Zeroizing<String>> {
     let value = key.map(|k| k.expose()).filter(|s| !s.is_empty())?;
     Some(Zeroizing::new(format!("Bearer {value}")))
+}
+
+/// Build the auth arm from configuration. Nothing here reaches the network:
+/// the token source only reads the credential file and keeps a client, so a
+/// test can construct a Google client from a dummy credential and never mint.
+fn build_auth(config: &CompanionConfig) -> Result<Auth, CompanionError> {
+    match config.auth {
+        CompanionAuth::Static => Ok(Auth::Static(config.api_key.clone())),
+        CompanionAuth::Google => {
+            let path = config
+                .google_credentials
+                .clone()
+                .or_else(credentials_path_from_env)
+                .ok_or(CompanionError::AuthUnavailable)?;
+            let credentials = load_credentials(&path).map_err(map_google)?;
+            let http = build_client().map_err(map_google)?;
+            let source =
+                GoogleOAuthTokenSource::for_vertex(credentials, http).map_err(map_google)?;
+            Ok(Auth::Google(Box::new(tokio::sync::Mutex::new(source))))
+        }
+    }
+}
+
+/// Map Google's two-way classification onto this module's, keeping the split
+/// (transient vs. operator-fixable) and dropping the *message*.
+///
+/// The message is dropped deliberately, not lazily: `GoogleAuthError::Backend`
+/// formats the token endpoint's response body into itself, and a body is not
+/// something this crate gets to promise is free of credential material. The
+/// terminal sees `en.toml` and nothing else.
+fn map_google(error: GoogleAuthError) -> CompanionError {
+    match error {
+        GoogleAuthError::Unavailable(_) => CompanionError::AuthUnavailable,
+        GoogleAuthError::Backend(_) => CompanionError::AuthRefused,
+    }
 }
 
 fn assemble(partial: Vec<PartialToolCall>) -> Vec<ToolCall> {

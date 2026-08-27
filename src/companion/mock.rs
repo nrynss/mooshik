@@ -191,6 +191,71 @@ impl Drop for MockServer {
     }
 }
 
+/// An in-process OAuth token endpoint.
+///
+/// Separate from [`MockServer`] because the two speak different protocols: the
+/// completions mock rejects any body without `stream: true`, while a token
+/// exchange is a form POST. Nothing here reaches Google — the credential
+/// fixture points `token_uri` at this loopback address, so the refresh
+/// behaviour is exercised offline.
+pub struct TokenServer {
+    pub url: String,
+    pub captured: Arc<Mutex<Vec<String>>>,
+    handle: JoinHandle<()>,
+}
+
+impl TokenServer {
+    /// Serve one JSON body per request, in order.
+    pub async fn spawn(responses: Vec<(u16, String)>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let queue = Arc::new(Mutex::new(VecDeque::from(responses)));
+        let captured_bg = captured.clone();
+        let handle = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let queue = queue.clone();
+                let captured = captured_bg.clone();
+                tokio::spawn(async move {
+                    let Ok(request) = read_http(&mut stream).await else {
+                        return;
+                    };
+                    captured.lock().unwrap().push(request.body);
+                    let (status, body) = queue
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .unwrap_or_else(|| (500, "{\"error\":\"no script left\"}".to_owned()));
+                    let head = format!(
+                        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes()).await;
+                    let _ = stream.write_all(body.as_bytes()).await;
+                });
+            }
+        });
+        Self {
+            url: format!("http://{addr}/token"),
+            captured,
+            handle,
+        }
+    }
+
+    pub fn mint_count(&self) -> usize {
+        self.captured.lock().unwrap().len()
+    }
+}
+
+impl Drop for TokenServer {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
 async fn handle_conn(
     mut stream: TcpStream,
     queue: Arc<Mutex<VecDeque<Script>>>,

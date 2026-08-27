@@ -3,11 +3,12 @@ use std::collections::HashMap;
 use lambo::{store::FALLBACK_DSN_ENV, EmbedderKind, StoreKind};
 
 use super::{
-    non_empty, ApiKey, Config, ConfigError, VaultProvider, AGENT_ENV, COMPANION_API_KEY_ENV,
-    COMPANION_BASE_URL_ENV, COMPANION_CONTEXT_WINDOW_ENV, COMPANION_MODEL_ENV,
-    COMPANION_TEMPERATURE_ENV, EMBEDDER_ENV, EMBED_DIM_ENV, FLUSH_INTERVAL_ENV,
-    GEMINI_CREDENTIALS_ENV, GEMINI_LOCATION_ENV, GEMINI_MODEL_ENV, GEMINI_PROJECT_ENV,
-    POSTGRES_DSN_ENV, PROVIDER_ENV, SESSION_ENV, STORE_KIND_ENV,
+    non_empty, ApiKey, CompanionAuth, Config, ConfigError, VaultProvider, AGENT_ENV,
+    COMPANION_API_KEY_ENV, COMPANION_AUTH_ENV, COMPANION_BASE_URL_ENV,
+    COMPANION_CONTEXT_WINDOW_ENV, COMPANION_GOOGLE_LOCATION_ENV, COMPANION_GOOGLE_PROJECT_ENV,
+    COMPANION_MODEL_ENV, COMPANION_TEMPERATURE_ENV, EMBEDDER_ENV, EMBED_DIM_ENV,
+    FLUSH_INTERVAL_ENV, GEMINI_CREDENTIALS_ENV, GEMINI_LOCATION_ENV, GEMINI_MODEL_ENV,
+    GEMINI_PROJECT_ENV, POSTGRES_DSN_ENV, PROVIDER_ENV, SESSION_ENV, STORE_KIND_ENV,
 };
 
 const LAMBO_STORE_ENV: &str = "LAMBO_STORE";
@@ -39,6 +40,9 @@ impl Config {
         // [mcp_servers.*] fails closed like the other tables: an entry that
         // could never spawn must fail the load, not break only at call time.
         config.validate_mcp()?;
+        // Two DSN authorities in one [store] table, or a secret reference the
+        // vault could never hold, fail the load rather than resolve silently.
+        config.store.validate()?;
         let values: HashMap<String, String> = environment.into_iter().collect();
         overlay_vault(&mut config, &values)?;
         overlay_session(&mut config, &values);
@@ -53,6 +57,9 @@ impl Config {
         if config.companion.context_window == 0 {
             return Err(ConfigError::ZeroContextWindow);
         }
+        // Last, so an env-supplied project can satisfy an `auth = "google"`
+        // that the file alone could not.
+        config.companion.validate()?;
         Ok(config)
     }
 }
@@ -211,6 +218,19 @@ fn overlay_companion(
             return Err(ConfigError::InvalidNumber);
         }
         config.companion.temperature = temperature;
+    }
+    if let Some(value) = non_empty(values, COMPANION_AUTH_ENV) {
+        config.companion.auth = match value.to_ascii_lowercase().as_str() {
+            "static" => CompanionAuth::Static,
+            "google" => CompanionAuth::Google,
+            _ => return Err(ConfigError::InvalidCompanionAuth),
+        };
+    }
+    if let Some(value) = non_empty(values, COMPANION_GOOGLE_PROJECT_ENV) {
+        config.companion.google_project = Some(value);
+    }
+    if let Some(value) = non_empty(values, COMPANION_GOOGLE_LOCATION_ENV) {
+        config.companion.google_location = Some(value);
     }
     Ok(())
 }

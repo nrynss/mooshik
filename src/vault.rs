@@ -4,7 +4,7 @@ use std::{
     collections::BTreeMap,
     ffi::OsString,
     fs,
-    io::{Read, Write},
+    io::Read,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -429,31 +429,16 @@ fn acquire_lock(parent: &fs::File) -> Result<fs::File, VaultError> {
     Ok(file)
 }
 
+/// The vault's durable write. One primitive with the config writer
+/// (`secure_path::write_private_at`): private 0600 staging, fsync, atomic
+/// rename, fsync of the parent — never a second implementation of the same
+/// obligation.
 fn atomic_private_write(
     parent: &fs::File,
     leaf: &std::ffi::OsStr,
     bytes: &[u8],
 ) -> Result<(), VaultError> {
-    let mut random = [0u8; 12];
-    OsRng
-        .try_fill_bytes(&mut random)
-        .map_err(|_| VaultError::Random)?;
-    let temp = OsString::from(format!(
-        ".vault-{}-{}.tmp",
-        std::process::id(),
-        hex(&random)
-    ));
-    let result = (|| {
-        let mut file = secure_path::create_new_at(parent, &temp).map_err(|_| VaultError::Io)?;
-        file.write_all(bytes).map_err(|_| VaultError::Io)?;
-        file.sync_all().map_err(|_| VaultError::Io)?;
-        secure_path::rename_at(parent, &temp, leaf).map_err(|_| VaultError::Io)?;
-        parent.sync_all().map_err(|_| VaultError::Io)
-    })();
-    if result.is_err() {
-        let _ = secure_path::unlink_at(parent, &temp);
-    }
-    result
+    secure_path::write_private_at(parent, leaf, bytes).map_err(|_| VaultError::Io)
 }
 
 fn set_private_permissions(file: &fs::File) -> Result<(), VaultError> {

@@ -1,16 +1,57 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
+
+use super::ConfigError;
 
 pub const COMPANION_BASE_URL_ENV: &str = "MOOSHIK_COMPANION_BASE_URL";
 pub const COMPANION_MODEL_ENV: &str = "MOOSHIK_COMPANION_MODEL";
 pub const COMPANION_API_KEY_ENV: &str = "MOOSHIK_COMPANION_API_KEY";
 pub const COMPANION_CONTEXT_WINDOW_ENV: &str = "MOOSHIK_COMPANION_CONTEXT_WINDOW";
 pub const COMPANION_TEMPERATURE_ENV: &str = "MOOSHIK_COMPANION_TEMPERATURE";
+pub const COMPANION_AUTH_ENV: &str = "MOOSHIK_COMPANION_AUTH";
+pub const COMPANION_GOOGLE_PROJECT_ENV: &str = "MOOSHIK_COMPANION_GOOGLE_PROJECT";
+pub const COMPANION_GOOGLE_LOCATION_ENV: &str = "MOOSHIK_COMPANION_GOOGLE_LOCATION";
 
 const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8080/v1";
 const DEFAULT_MODEL: &str = "local-model";
 const DEFAULT_CONTEXT_WINDOW: u32 = 32768;
 const DEFAULT_TEMPERATURE: f64 = 0.2;
+/// Vertex region used when the Google posture names a project but no location.
+/// Same default the embedder already carries, so one identity, one region.
+pub const DEFAULT_GOOGLE_LOCATION: &str = "us-central1";
+
+/// How the companion authenticates to its `/v1` endpoint.
+///
+/// The two postures are genuinely different in kind, which is why this is an
+/// enum rather than "an api_key that happens to be a Google token": a static
+/// key is minted once by a human and lives until they rotate it, while a
+/// Google access token expires in about an hour and has to be re-minted for
+/// every request that outlives it.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompanionAuth {
+    /// A fixed `Authorization: Bearer <api_key>` header, or no header at all
+    /// when no key is configured. The local and generic OpenAI-compatible
+    /// posture, and the default.
+    #[default]
+    Static,
+    /// A Google OAuth access token minted from the credential file and
+    /// refreshed ahead of expiry (`lambo::gcp_auth`).
+    Google,
+}
+
+/// The OpenAI-compatible base URL Vertex serves, derived rather than pasted.
+///
+/// It is a pure function of project and location, so an operator supplies
+/// those two facts and never a URL — one fewer thing to get subtly wrong in a
+/// hand-edited file. `chat_completions_url` appends `/chat/completions`.
+pub fn vertex_base_url(project: &str, location: &str) -> String {
+    format!(
+        "https://{location}-aiplatform.googleapis.com/v1beta1/projects/{project}/locations/{location}/endpoints/openapi"
+    )
+}
 
 /// Optional companion credential. Debug and Display never print the value.
 #[derive(Clone, Deserialize, Serialize)]
@@ -54,6 +95,21 @@ pub struct CompanionConfig {
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<ApiKey>,
+    /// The *name* of a vault secret holding the API key — never the key. The
+    /// same reference shape `[mcp_servers.*.env]` already uses, so the CLI
+    /// write path has somewhere to put a credential that is not this file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_secret: Option<String>,
+    #[serde(default)]
+    pub auth: CompanionAuth,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub google_project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub google_location: Option<String>,
+    /// Credential file for the Google posture. Unset falls back to lambo's own
+    /// chain (`GCP_LAMBO_CREDENTIALS`, then `GOOGLE_APPLICATION_CREDENTIALS`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub google_credentials: Option<PathBuf>,
     #[serde(default = "default_context_window")]
     pub context_window: u32,
     #[serde(default = "default_temperature")]
@@ -66,9 +122,58 @@ impl Default for CompanionConfig {
             base_url: default_base_url(),
             model: default_model(),
             api_key: None,
+            api_key_secret: None,
+            auth: CompanionAuth::Static,
+            google_project: None,
+            google_location: None,
+            google_credentials: None,
             context_window: default_context_window(),
             temperature: default_temperature(),
         }
+    }
+}
+
+impl CompanionConfig {
+    /// The Vertex region for the Google posture: what was configured, or the
+    /// product default.
+    pub fn resolved_google_location(&self) -> &str {
+        self.google_location
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(DEFAULT_GOOGLE_LOCATION)
+    }
+
+    /// The base URL actually used. Under the Google posture it is derived from
+    /// project and location; otherwise it is the configured `base_url`, which
+    /// keeps the local default (`http://127.0.0.1:8080/v1`) working untouched.
+    pub fn resolved_base_url(&self) -> String {
+        match (self.auth, self.google_project.as_deref()) {
+            (CompanionAuth::Google, Some(project)) if !project.trim().is_empty() => {
+                vertex_base_url(project.trim(), self.resolved_google_location())
+            }
+            _ => self.base_url.clone(),
+        }
+    }
+
+    /// Fail closed on a Google posture that cannot produce an endpoint: the
+    /// URL is derived from the project, so a missing project is not a runtime
+    /// 404 to discover mid-chat, it is a configuration error to name now.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.auth == CompanionAuth::Google
+            && !self
+                .google_project
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+        {
+            return Err(ConfigError::MissingGoogleProject);
+        }
+        if let Some(name) = &self.api_key_secret {
+            if !crate::vault::is_valid_name(name) {
+                return Err(ConfigError::InvalidApiKeySecret);
+            }
+        }
+        Ok(())
     }
 }
 
