@@ -17,7 +17,7 @@ use ratatui::text::Span;
 
 use crate::{
     text,
-    tui::{grid::Grid, model::Health, theme::Role},
+    tui::{grid::Grid, model::Health, theme::Role, widget::marks},
 };
 
 /// Which view is showing, and therefore which nav item is lit.
@@ -28,6 +28,13 @@ pub enum View {
     /// Seven days, and the threads that run across them.
     Week,
     /// Settings, opened twice a year behind `^,`.
+    ///
+    /// Nothing reaches it yet — no key is bound to it and no screen draws it;
+    /// [`crate::tui::app::App::draw`] falls through to the Today screen. It is
+    /// kept because it is the third view the design has, and because the nav's
+    /// behaviour for it is already decided and already pinned: settings is a
+    /// layer over whatever was showing, so it lights no nav item. See
+    /// `settings_lights_no_nav_item`.
     Settings,
 }
 
@@ -54,12 +61,22 @@ impl Margins {
     }
 }
 
-/// Draw the title rule: `Mooshik  ·  Thursday 27 August  ·  14:22` and the nav.
+/// Draw the whole title rule: the brand and `subject` at the left margin, the
+/// wide nav right-aligned opposite.
 ///
 /// `subject` is what Mooshik is showing — a date on the Today screen, "Your
 /// week  ·  21-27 August" on the week screen — and is drawn as furniture beside
 /// the brand, which is the only bright thing on the rule.
 pub fn title(grid: &mut Grid<'_>, margins: Margins, subject: &str, view: View) {
+    brand(grid, margins, subject);
+    nav(grid, margins, text::get("tui.nav_gap"), &wide_items(view));
+}
+
+/// Draw the left half of the title rule: `Mooshik  ·  Thursday 27 August`.
+///
+/// Split out from [`title`] because the narrow screen writes the same run with
+/// its own subject and its own nav — `1h` abbreviates the nav but not the brand.
+pub fn brand(grid: &mut Grid<'_>, margins: Margins, subject: &str) {
     let separator = text::get("tui.separator");
     grid.run(
         margins.left,
@@ -69,43 +86,53 @@ pub fn title(grid: &mut Grid<'_>, margins: Margins, subject: &str, view: View) {
             Span::styled(format!("{separator}{subject}"), Role::Furniture.style()),
         ],
     );
-    nav(grid, margins, view);
 }
 
-/// Draw the nav, right-aligned: `Today   The week   ^, settings   ? keys`.
+/// The wide nav's items: `Today   The week`.
 ///
-/// Settings has no lit nav item of its own — it is a layer over whatever was
+/// The design's rule also printed `^, settings` and `? keys`, and both are gone:
+/// neither key is bound, and a nav item is a promise the same way a key hint is.
+/// They come back with the screens that answer them.
+///
+/// Settings has no lit item of its own — it is a layer over whatever was
 /// showing, and its own rule says `Esc back   ^, close` — so [`View::Settings`]
-/// lights nothing here and the screen draws its own rule instead.
-fn nav(grid: &mut Grid<'_>, margins: Margins, view: View) {
-    let gap = text::get("tui.nav_gap");
-    let items = [
-        (text::get("tui.nav_today"), Some(View::Today)),
-        (text::get("tui.nav_week"), Some(View::Week)),
-        (text::get("tui.nav_settings"), None),
-        (text::get("tui.nav_keys"), None),
-    ];
+/// lights nothing and the screen draws its own rule instead.
+fn wide_items(view: View) -> [(&'static str, Role); 2] {
+    let role_for = |owner: View| {
+        if owner == view {
+            Role::Accent
+        } else {
+            Role::Furniture
+        }
+    };
+    [
+        (text::get("tui.nav_today"), role_for(View::Today)),
+        (text::get("tui.nav_week"), role_for(View::Week)),
+    ]
+}
 
+/// Draw a nav, right-aligned, its items separated by `gap`.
+///
+/// The items and the gap are parameters because they are the *only* thing the
+/// two navs differ in: `1h`'s is `Today  Week` where `1a`'s is `Today   The
+/// week`, and the width sum, the right-edge offset and the span loop were
+/// duplicated verbatim in the narrow screen until they were not.
+pub fn nav(grid: &mut Grid<'_>, margins: Margins, gap: &str, items: &[(&str, Role)]) {
     let width: usize = items
         .iter()
         .map(|(label, _)| label.chars().count())
         .sum::<usize>()
-        + gap.chars().count() * (items.len() - 1);
+        + gap.chars().count() * items.len().saturating_sub(1);
     let start = margins
         .right_edge(grid.width())
         .saturating_sub(u16::try_from(width).unwrap_or(u16::MAX));
 
     let mut spans = Vec::with_capacity(items.len() * 2);
-    for (index, (label, owner)) in items.into_iter().enumerate() {
+    for (index, (label, role)) in items.iter().enumerate() {
         if index > 0 {
             spans.push(Span::styled(gap, Role::Furniture.style()));
         }
-        let role = if owner == Some(view) {
-            Role::Accent
-        } else {
-            Role::Furniture
-        };
-        spans.push(Span::styled(label, role.style()));
+        spans.push(Span::styled(*label, role.style()));
     }
     grid.run(start, 0, spans);
 }
@@ -134,9 +161,9 @@ pub fn health_rule(
     // a refused credential and for leaving a database behind, and being behind
     // on a queue is neither.
     let (mark, mark_role) = if health.well {
-        (text::get("tui.health_mark"), Role::Affirm)
+        (marks::HEALTH_MARK, Role::Affirm)
     } else {
-        (text::get("tui.health_behind"), Role::Furniture)
+        (marks::HEALTH_BEHIND, Role::Furniture)
     };
     grid.run(
         margins.left,
@@ -213,23 +240,43 @@ mod tests {
         assert_eq!(style_at(&buf, 11, 0), Role::Furniture.style());
     }
 
+    /// The character column `needle` starts at on `row`.
+    ///
+    /// `str::find` returns a byte offset, and this rule carries `·` — two bytes
+    /// — so the byte offset is one more than the column by the time the nav is
+    /// reached, and the assertion below was checking the cell to the right of
+    /// the label. Counting characters up to the match is the column.
+    fn col_of(buf: &Buffer, row: u16, needle: &str) -> u16 {
+        let line = row_text(buf, row);
+        let byte = line
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} is not on row {row}"));
+        u16::try_from(line[..byte].chars().count()).expect("within the grid")
+    }
+
     /// One nav item is lit at a time, and it is the view being shown.
     #[test]
     fn the_nav_lights_the_view_being_shown() {
         for (view, lit) in [(View::Today, "Today"), (View::Week, "The week")] {
             let buf = drawn(120, 1, |grid| title(grid, Margins::WIDE, "x", view));
-            let row = row_text(&buf, 0);
-            let at = row.find(lit).expect("the nav item is drawn");
-            let col = u16::try_from(at).expect("within the grid");
+            let col = col_of(&buf, 0, lit);
             assert_eq!(
                 style_at(&buf, col, 0),
                 Role::Accent.style(),
                 "{lit} is not lit for {view:?}"
             );
+            // And the cell one column right of the label's start — where the
+            // byte offset used to land — is still part of the same label.
+            assert_eq!(style_at(&buf, col + 1, 0), Role::Accent.style());
         }
     }
 
     /// Settings is a layer over whatever was showing, so it lights nothing.
+    ///
+    /// Nothing reaches [`View::Settings`] today — no key opens it and no screen
+    /// draws it. This pins the behaviour for a view that becomes reachable only
+    /// once the settings screen lands, so the decision is recorded in a test
+    /// rather than rediscovered then.
     #[test]
     fn settings_lights_no_nav_item() {
         let buf = drawn(120, 1, |grid| {
@@ -284,6 +331,18 @@ mod tests {
         });
         assert_eq!(style_at(&buf, 2, 0), Role::Affirm.style());
         assert_eq!(row_text(&buf, 0).trim_start().chars().next(), Some('✓'));
+    }
+
+    /// Only bound keys reach the nav. `^, settings` and `? keys` were drawn by
+    /// the artboards and bound to nothing, so they are not drawn here.
+    #[test]
+    fn the_nav_advertises_no_unbound_key() {
+        let buf = drawn(120, 1, |grid| title(grid, Margins::WIDE, "x", View::Today));
+        let row = row_text(&buf, 0);
+        assert!(row.contains("Today"), "{row:?}");
+        assert!(row.contains("The week"), "{row:?}");
+        assert!(!row.contains("settings"), "{row:?}");
+        assert!(!row.contains("keys"), "{row:?}");
     }
 
     /// The narrow layout pulls the left margin in by one, as artboard `1h` does.

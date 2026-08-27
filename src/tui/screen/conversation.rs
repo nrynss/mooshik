@@ -13,6 +13,10 @@
 //! with no attribution — the recall card would lose the very thing that makes it
 //! trustworthy. So [`fit`] drops complete turns from the front, which is also
 //! what the artboard shows.
+//!
+//! The one exception is a turn taller than the whole panel: dropping *that*
+//! left the panel empty behind its frame, with nothing to scroll it back. See
+//! [`Block::clip_to`].
 
 use ratatui::text::Span;
 
@@ -27,6 +31,16 @@ use crate::{
     },
 };
 
+use super::RIGHT_MARGIN;
+
+/// The composer's prompt and its cursor.
+///
+/// Glyphs, so they live in Rust rather than in `en.toml` — they are `1i`'s
+/// notation and mean the same in every locale. The rule is stated in full in
+/// [`crate::tui::widget::marks`], where the rest of the glyphs are.
+const PROMPT: &str = "▌";
+const CURSOR: &str = "█";
+
 /// The column continuation lines and speaker names sit at, inside the panel's
 /// interior. The design's `--cw * 10` against a panel at column 0.
 const INDENT: u16 = 9;
@@ -35,6 +49,8 @@ const GUTTER: u16 = 1;
 
 /// Where a recall card sits and how wide it is, inside the panel's interior.
 /// The design's `col=10 w=54` against a panel at column 0.
+///
+/// The width is a *maximum*, not a fixed size — see [`card_width`].
 const RECALL: (u16, u16) = (INDENT, 54);
 /// The same for a caution, which sits two columns further left and four wider —
 /// it is the more serious of the two and reads that way.
@@ -69,17 +85,70 @@ enum Block {
 
 impl Block {
     /// How many rows this block occupies.
+    ///
+    /// Saturating throughout, because [`rows`] saturates: a plain `1 + rows(..)`
+    /// panicked in debug on a turn of `u16::MAX` lines and, worse, wrapped to 0
+    /// in release — a block of height 0 "fits" any panel, [`fit`] then keeps
+    /// every block there is, and the draw loop stops advancing.
     fn height(&self) -> u16 {
         match self {
             Self::Gap => 1,
             // The speaker's row, then the words.
-            Self::Said { lines, .. } => 1 + rows(lines.len()),
+            Self::Said { lines, .. } => rows(lines.len()).saturating_add(1),
             // Two rules, and the quote between them.
-            Self::Recalled { quote, .. } => 2 + rows(quote.len()),
+            Self::Recalled { quote, .. } => rows(quote.len()).saturating_add(2),
             // Two rules, the lead, a blank, the list, and a blank before the
             // badge — the shape artboard `1d` draws.
-            Self::Cautioned { card, lead } => {
-                2 + rows(lead.len()) + 1 + rows(card.leaning.len()) + 1
+            Self::Cautioned { card, lead } => rows(lead.len())
+                .saturating_add(rows(card.leaning.len()))
+                .saturating_add(CAUTION_CHROME),
+        }
+    }
+
+    /// Trim this block from the front so it fits in `height` rows.
+    ///
+    /// Only reached when the newest block *alone* is taller than the panel — a
+    /// long reply into a short terminal; about 1900 characters into a 31-row
+    /// interior does it. [`fit`] used to drop it like any other block that did
+    /// not fit, which left `kept` empty and the panel showing nothing but its
+    /// own frame, with no key that scrolls it back. Keeping the block and
+    /// letting the panel clip it is what the design asks for: the panel "shows
+    /// the tail that fits".
+    ///
+    /// The *tail* is what survives, so the lines dropped are the ones at the
+    /// front — the newest words are the ones the reader is waiting for, and they
+    /// are the ones that would otherwise fall off the bottom. What is never
+    /// dropped is the chrome that makes the rest legible: the speaker's row, and
+    /// a card's two rules with its badge. A quotation without its attribution is
+    /// the one thing this module refuses to draw.
+    fn clip_to(self, height: u16) -> Self {
+        match self {
+            Self::Gap => Self::Gap,
+            Self::Said {
+                time,
+                name,
+                name_role,
+                text_role,
+                lines,
+            } => Self::Said {
+                time,
+                name,
+                name_role,
+                text_role,
+                lines: keep_tail(lines, height.saturating_sub(1)),
+            },
+            Self::Recalled { card, quote } => Self::Recalled {
+                card,
+                quote: keep_tail(quote, height.saturating_sub(2)),
+            },
+            Self::Cautioned { mut card, lead } => {
+                // The lead is the statement, so it is trimmed last: the list of
+                // what leans on the commitment goes first.
+                let room = height.saturating_sub(CAUTION_CHROME);
+                let lead = keep_tail(lead, room);
+                let left = room.saturating_sub(rows(lead.len()));
+                card.leaning.truncate(usize::from(left));
+                Self::Cautioned { card, lead }
             }
         }
     }
@@ -100,17 +169,19 @@ impl Block {
                 // name — the furniture column stays a clean gutter.
                 grid.put(GUTTER, row, &format!(" {time}"), Role::Furniture.style());
                 grid.put(INDENT, row, name, name_role.style());
-                grid.lines(INDENT, row + 1, lines, text_role.style());
+                grid.lines(INDENT, row.saturating_add(1), lines, text_role.style());
             }
             Self::Recalled { card, quote } => {
-                let (col, width) = RECALL;
+                let (col, design) = RECALL;
+                let width = card_width(design, grid.width().saturating_sub(col));
                 let mut inner = Panel::new(&card.source, Kind::Returned)
                     .badge(&card.because)
                     .draw(grid, Place::new(col, row, width, self.height()));
                 inner.lines(1, 0, quote, Role::Strongest.style());
             }
             Self::Cautioned { card, lead } => {
-                let (col, width) = CAUTION;
+                let (col, design) = CAUTION;
+                let width = card_width(design, grid.width().saturating_sub(col));
                 let mut inner = Panel::new(&card.title, Kind::Caution)
                     .badge(&card.because)
                     .draw(grid, Place::new(col, row, width, self.height()));
@@ -131,10 +202,35 @@ impl Block {
     }
 }
 
+/// Rows a caution card spends on chrome: two rules, the blank before the list
+/// of what leans on it, and the blank before the badge — artboard `1d`'s shape.
+const CAUTION_CHROME: u16 = 4;
+
 /// A row count as a `u16`, saturating rather than wrapping on a pathological
 /// input — a turn with 70 000 lines still measures sanely.
 fn rows(count: usize) -> u16 {
     u16::try_from(count).unwrap_or(u16::MAX)
+}
+
+/// The last `room` of `lines`, dropping from the front. See [`Block::clip_to`].
+fn keep_tail(mut lines: Vec<String>, room: u16) -> Vec<String> {
+    let room = usize::from(room);
+    if lines.len() > room {
+        lines.drain(..lines.len() - room);
+    }
+    lines
+}
+
+/// How wide a card may be inside a panel `available` columns across.
+///
+/// The artboards' `w=54` and `w=58` are the widths at 120 columns and were being
+/// used unconditionally, so on a 60-column terminal the card was drawn wider
+/// than the panel: the quote clipped mid-word with no ellipsis and the frame lost
+/// its right edge, because the grid clipped the rule away. Taking the smaller of
+/// the two keeps the design's width where there is room for it and a whole frame
+/// where there is not.
+fn card_width(design: u16, available: u16) -> u16 {
+    design.min(available)
 }
 
 /// Split a line into ordinary text and quoted text, brightening the quotation.
@@ -194,30 +290,55 @@ fn blocks(conversation: &Conversation, person: &str, width: u16) -> Vec<Block> {
                     lines: wrap(text, width),
                 }
             }
-            Turn::Recalled(card) => Block::Recalled {
-                card: card.clone(),
-                quote: wrap(&card.quote, RECALL.1.saturating_sub(CARD_CHROME)),
-            },
-            Turn::Cautioned(card) => Block::Cautioned {
-                card: card.clone(),
-                lead: wrap(&card.lead, CAUTION.1.saturating_sub(CARD_CHROME)),
-            },
+            // The cards are wrapped to the width they will actually be drawn
+            // at, which is the design's width only while the panel has room
+            // for it — `width` here is the panel's own text width, so
+            // `width + INDENT` recovers the interior it came from.
+            Turn::Recalled(card) => {
+                let interior = width.saturating_add(INDENT).saturating_add(RIGHT_MARGIN);
+                let drawn = card_width(RECALL.1, interior.saturating_sub(RECALL.0));
+                Block::Recalled {
+                    card: card.clone(),
+                    quote: wrap(&card.quote, drawn.saturating_sub(CARD_CHROME)),
+                }
+            }
+            Turn::Cautioned(card) => {
+                let interior = width.saturating_add(INDENT).saturating_add(RIGHT_MARGIN);
+                let drawn = card_width(CAUTION.1, interior.saturating_sub(CAUTION.0));
+                Block::Cautioned {
+                    card: card.clone(),
+                    lead: wrap(&card.lead, drawn.saturating_sub(CARD_CHROME)),
+                }
+            }
         });
     }
     blocks
 }
 
 /// Keep the last whole blocks that fit in `height` rows.
+///
+/// The newest block is kept even when it does not fit, clipped to the panel —
+/// otherwise a single long reply produced an empty panel behind its frame, and
+/// nothing in the app scrolls it back. See [`Block::clip_to`].
 fn fit(blocks: Vec<Block>, height: u16) -> Vec<Block> {
     let mut kept = Vec::new();
     let mut used = 0u16;
+    let mut oversized = None;
     for block in blocks.into_iter().rev() {
         let next = used.saturating_add(block.height());
         if next > height {
+            // The first block seen in reverse is the newest one. If *it* is
+            // what did not fit, there is nothing else to fall back on.
+            if kept.is_empty() {
+                oversized = Some(block);
+            }
             break;
         }
         used = next;
         kept.push(block);
+    }
+    if let Some(block) = oversized {
+        kept.push(block.clip_to(height));
     }
     kept.reverse();
     // A leading gap reads as a stray blank row at the top of the panel.
@@ -253,7 +374,10 @@ pub fn panel(
         0
     };
 
-    let text_width = inner.width().saturating_sub(INDENT);
+    let text_width = inner
+        .width()
+        .saturating_sub(INDENT)
+        .saturating_sub(RIGHT_MARGIN);
     let available = inner.height().saturating_sub(top);
     let blocks = fit(blocks(conversation, person, text_width), available);
 
@@ -284,11 +408,11 @@ pub fn composer(grid: &mut Grid<'_>, conversation: &Conversation, focused: bool,
         Panel::new(text::get("tui.panel_composer"), Kind::focused_if(focused)).draw(grid, at);
 
     let draft = &conversation.composer.draft;
-    let mut spans = vec![Span::styled("▌", Role::Accent.style())];
+    let mut spans = vec![Span::styled(PROMPT, Role::Accent.style())];
     if !draft.is_empty() {
         spans.push(Span::styled(format!(" {draft}"), Role::Strongest.style()));
     }
-    spans.push(Span::styled("█", Role::Accent.style()));
+    spans.push(Span::styled(CURSOR, Role::Accent.style()));
     inner.run(1, 0, spans);
 
     // The hint takes the panel's last interior row, and only when there is one
@@ -300,337 +424,5 @@ pub fn composer(grid: &mut Grid<'_>, conversation: &Conversation, focused: bool,
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use ratatui::{buffer::Buffer, layout::Rect, style::Style};
-
-    use crate::tui::model::Composer;
-
-    fn conversation_of(turns: Vec<Turn>) -> Conversation {
-        Conversation {
-            earlier: None,
-            turns,
-            composer: Composer::default(),
-        }
-    }
-
-    fn said(time: &str, speaker: Speaker, text: &str) -> Turn {
-        Turn::Said {
-            time: time.to_owned(),
-            speaker,
-            text: text.to_owned(),
-        }
-    }
-
-    fn drawn(w: u16, h: u16, draw: impl FnOnce(&mut Grid<'_>)) -> Buffer {
-        let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
-        let area = buf.area;
-        let mut grid = Grid::new(&mut buf, area);
-        draw(&mut grid);
-        buf
-    }
-
-    fn row_text(buf: &Buffer, row: u16) -> String {
-        (0..buf.area.width)
-            .map(|x| buf[(x, row)].symbol().chars().next().unwrap_or(' '))
-            .collect()
-    }
-
-    fn style_at(buf: &Buffer, col: u16, row: u16) -> Style {
-        let cell = &buf[(col, row)];
-        Style::default().fg(cell.fg).add_modifier(cell.modifier)
-    }
-
-    /// The row `needle` appears on. The panel fills from the bottom, so tests
-    /// locate content rather than assuming which row it landed on.
-    fn find_row(buf: &Buffer, needle: &str) -> u16 {
-        (0..buf.area.height)
-            .find(|r| row_text(buf, *r).contains(needle))
-            .unwrap_or_else(|| panic!("{needle:?} is not on screen"))
-    }
-
-    fn text_of(spans: &[Span<'_>]) -> String {
-        spans.iter().map(|s| s.content.as_ref()).collect()
-    }
-
-    /// The gutter and the text column, exactly as artboard `1a` places them:
-    /// the time from column 1 of the interior, the name from column 9.
-    #[test]
-    fn the_time_gutter_and_text_column_match_the_artboard() {
-        let conversation =
-            conversation_of(vec![said("09:04", Speaker::Person, "Postmortem's done.")]);
-        let buf = drawn(72, 8, |grid| {
-            panel(grid, "Neom", &conversation, false, Place::new(0, 0, 72, 8));
-        });
-        // Interior column 1 is buffer column 2, whichever row the turn lands on —
-        // the panel fills from the bottom.
-        let speaker = find_row(&buf, "Neom");
-        assert!(
-            row_text(&buf, speaker).starts_with("│  09:04  Neom"),
-            "{:?}",
-            row_text(&buf, speaker)
-        );
-        assert!(row_text(&buf, speaker + 1).starts_with("│         Postmortem's done."));
-    }
-
-    /// A short or missing time never shifts the name out of its column.
-    #[test]
-    fn an_odd_time_does_not_move_the_name() {
-        for time in ["", "9:04", "09:04", "09:04:33"] {
-            let conversation = conversation_of(vec![said(time, Speaker::Person, "x")]);
-            let buf = drawn(72, 6, |grid| {
-                panel(grid, "Neom", &conversation, false, Place::new(0, 0, 72, 6));
-            });
-            let row = row_text(&buf, find_row(&buf, "Neom"));
-            assert_eq!(
-                row.chars().nth(10),
-                Some('N'),
-                "time {time:?} moved the name: {row:?}"
-            );
-        }
-    }
-
-    /// The person's words are the brightest thing in the panel; Mooshik's are
-    /// body text under an accent name.
-    #[test]
-    fn the_two_speakers_are_coloured_apart() {
-        let conversation = conversation_of(vec![
-            said("09:04", Speaker::Person, "Mine"),
-            said("09:05", Speaker::Mooshik, "Theirs"),
-        ]);
-        let buf = drawn(72, 10, |grid| {
-            panel(grid, "Neom", &conversation, false, Place::new(0, 0, 72, 10));
-        });
-        let mine = find_row(&buf, "Mine") - 1;
-        assert_eq!(style_at(&buf, 10, mine), Role::Strongest.style());
-        assert_eq!(style_at(&buf, 10, mine + 1), Role::Strongest.style());
-        // A blank row, then Mooshik's turn: an accent name over body text.
-        let theirs = find_row(&buf, "Theirs") - 1;
-        assert_eq!(theirs, mine + 3, "the gap between turns is missing");
-        assert_eq!(style_at(&buf, 10, theirs), Role::Accent.style());
-        assert_eq!(style_at(&buf, 10, theirs + 1), Role::Body.style());
-    }
-
-    /// Whole turns are dropped from the front, never half a turn — a quotation
-    /// must never lose the attribution that makes it trustworthy.
-    #[test]
-    fn trimming_drops_whole_turns() {
-        let turns: Vec<Turn> = (0..10)
-            .map(|n| said("09:04", Speaker::Person, &format!("Line number {n}")))
-            .collect();
-        let conversation = conversation_of(turns);
-        let buf = drawn(72, 8, |grid| {
-            panel(grid, "Neom", &conversation, false, Place::new(0, 0, 72, 8));
-        });
-        // Every speaker row drawn has its words on the row below it, so no turn
-        // was cut in half.
-        for row in 1..7u16 {
-            if row_text(&buf, row).contains("Neom") {
-                assert!(
-                    row_text(&buf, row + 1).contains("Line number"),
-                    "a turn lost its words at row {row}"
-                );
-            }
-        }
-        // The newest turn survives; the oldest does not.
-        let all: String = (0..8).map(|r| row_text(&buf, r)).collect();
-        assert!(all.contains("Line number 9"));
-        assert!(!all.contains("Line number 0"));
-    }
-
-    /// The elision marker takes the top of the panel and the turns start below
-    /// the blank row under it.
-    #[test]
-    fn the_elision_marker_sits_above_the_turns() {
-        let mut conversation = conversation_of(vec![said("14:20", Speaker::Person, "Right.")]);
-        conversation.earlier = Some("... earlier today".to_owned());
-        let buf = drawn(72, 8, |grid| {
-            panel(grid, "Neom", &conversation, false, Place::new(0, 0, 72, 8));
-        });
-        // The marker takes the panel's first interior row whatever the turns do.
-        assert!(row_text(&buf, 1).contains("... earlier today"));
-        assert_eq!(style_at(&buf, 10, 1), Role::Furniture.style());
-        let interior: String = row_text(&buf, 2).chars().skip(1).take(70).collect();
-        assert!(interior.trim().is_empty(), "{interior:?}");
-        // And the turn is below it, not above.
-        assert!(find_row(&buf, "Neom") > 1);
-    }
-
-    /// The newest turn sits on the panel's bottom rule, so there is never a gap
-    /// between the last thing said and the composer under it.
-    #[test]
-    fn the_newest_turn_sits_on_the_bottom_rule() {
-        // Nine short turns into a panel that cannot hold them all: whole turns
-        // are dropped, so the kept ones will not fill it exactly.
-        let turns: Vec<Turn> = (0..9)
-            .map(|n| said("09:04", Speaker::Person, &format!("Line {n}")))
-            .collect();
-        let conversation = conversation_of(turns);
-        let buf = drawn(72, 12, |grid| {
-            panel(grid, "Neom", &conversation, false, Place::new(0, 0, 72, 12));
-        });
-        // Interior row 9 is the last one; buffer row 10 sits on it.
-        assert!(
-            row_text(&buf, 10).contains("Line 8"),
-            "the newest turn is not on the bottom rule: {:?}",
-            row_text(&buf, 10)
-        );
-    }
-
-    /// With an elision marker, the slack opens up under it rather than at the
-    /// bottom — the marker stays on the top row either way.
-    #[test]
-    fn slack_opens_up_under_the_elision_marker() {
-        let turns: Vec<Turn> = (0..9)
-            .map(|n| said("09:04", Speaker::Person, &format!("Line {n}")))
-            .collect();
-        let mut conversation = conversation_of(turns);
-        conversation.earlier = Some("... earlier today".to_owned());
-        let buf = drawn(72, 12, |grid| {
-            panel(grid, "Neom", &conversation, false, Place::new(0, 0, 72, 12));
-        });
-        assert!(row_text(&buf, 1).contains("... earlier today"));
-        assert!(row_text(&buf, 10).contains("Line 8"));
-    }
-
-    /// A conversation that fits leaves the panel filled from the bottom without
-    /// pushing anything off the top.
-    #[test]
-    fn a_short_conversation_is_not_clipped() {
-        let conversation = conversation_of(vec![said("09:04", Speaker::Person, "Only turn")]);
-        let buf = drawn(72, 12, |grid| {
-            panel(grid, "Neom", &conversation, false, Place::new(0, 0, 72, 12));
-        });
-        let all: String = (0..12).map(|r| row_text(&buf, r)).collect();
-        assert!(all.contains("Only turn"));
-        assert!(all.contains("Neom"));
-    }
-
-    /// A recall card is framed in the returning colour with its reason punched
-    /// through the bottom rule — and it is inline in the scroll, not an overlay.
-    #[test]
-    fn a_recall_card_is_framed_and_inline() {
-        let conversation = conversation_of(vec![Turn::Recalled(Recall {
-            source: "From Monday 24 August".to_owned(),
-            quote: "Blocking the writer is honest.".to_owned(),
-            because: "You've come back to this every day this week".to_owned(),
-        })]);
-        let buf = drawn(72, 8, |grid| {
-            panel(grid, "Neom", &conversation, false, Place::new(0, 0, 72, 8));
-        });
-        let top = find_row(&buf, "From Monday 24 August");
-        // The card sits at the text indent, so its frame starts at interior
-        // column 9 — buffer column 10.
-        assert_eq!(buf[(10, top)].symbol(), "┌");
-        assert_eq!(style_at(&buf, 10, top), Role::Returned.style());
-        assert!(row_text(&buf, top + 2).contains("come back to this every day"));
-    }
-
-    /// A caution is a yellow frame in the conversation, with its reassurance on
-    /// the bottom rule and what leans on it listed inside.
-    #[test]
-    fn a_caution_is_a_yellow_frame_in_the_scroll() {
-        let conversation = conversation_of(vec![Turn::Cautioned(Caution {
-            title: "One thing before you do".to_owned(),
-            lead: "You've held to \"block, never drop\" every day this week.".to_owned(),
-            leaning: vec![
-                "The short postmortem".to_owned(),
-                "... and five more".to_owned(),
-            ],
-            because: "Nothing's changed — say the word and I'll follow".to_owned(),
-        })]);
-        let buf = drawn(72, 14, |grid| {
-            panel(grid, "Neom", &conversation, false, Place::new(0, 0, 72, 14));
-        });
-        // The caution sits two columns left of the text indent — buffer 8.
-        let top = find_row(&buf, "One thing before you do");
-        assert_eq!(buf[(8, top)].symbol(), "┌");
-        assert_eq!(style_at(&buf, 8, top), Role::Caution.style());
-        let all: String = (0..14).map(|r| row_text(&buf, r)).collect();
-        assert!(all.contains("One thing before you do"));
-        assert!(all.contains("The short postmortem"));
-        assert!(all.contains("say the word and I'll follow"));
-    }
-
-    /// The quoted commitment inside a caution is brightened, and nothing is
-    /// dropped in the process.
-    #[test]
-    fn a_quotation_is_emphasised_without_losing_characters() {
-        let line = "You've held to \"block, never drop\" every day";
-        let spans = emphasise_quoted(line);
-        assert_eq!(text_of(&spans), line);
-        let quoted: String = spans
-            .iter()
-            .filter(|s| s.style == Role::Strongest.style())
-            .map(|s| s.content.as_ref())
-            .collect();
-        assert_eq!(quoted, "\"block, never drop\"");
-    }
-
-    /// An unclosed quotation mark emphasises the remainder rather than dropping
-    /// it or panicking.
-    #[test]
-    fn an_unclosed_quotation_keeps_every_character() {
-        for line in [
-            "no quotes here",
-            "\"opens only",
-            "closes only\"",
-            "\"\"",
-            "\"a\"b\"c",
-        ] {
-            let spans = emphasise_quoted(line);
-            assert_eq!(text_of(&spans), line, "characters lost in {line:?}");
-        }
-    }
-
-    /// The composer shows a prompt and a cursor with an empty draft, and both
-    /// with a draft — and the reassurance takes its own row when there is one.
-    #[test]
-    fn the_composer_draws_a_cursor_with_or_without_a_draft() {
-        let empty = conversation_of(Vec::new());
-        let buf = drawn(72, 4, |grid| {
-            composer(grid, &empty, false, Place::new(0, 0, 72, 4))
-        });
-        assert!(
-            row_text(&buf, 1).starts_with("│ ▌█"),
-            "{:?}",
-            row_text(&buf, 1)
-        );
-        assert!(row_text(&buf, 2).contains("Nothing here needs saving"));
-
-        let mut typed = conversation_of(Vec::new());
-        typed.composer.draft = "Called Mum.".to_owned();
-        let buf = drawn(72, 4, |grid| {
-            composer(grid, &typed, false, Place::new(0, 0, 72, 4))
-        });
-        assert!(
-            row_text(&buf, 1).starts_with("│ ▌ Called Mum.█"),
-            "{:?}",
-            row_text(&buf, 1)
-        );
-    }
-
-    /// A three-row composer has no room for the reassurance and simply omits it
-    /// rather than writing over its own rule.
-    #[test]
-    fn a_narrow_composer_omits_the_reassurance() {
-        let empty = conversation_of(Vec::new());
-        let buf = drawn(80, 3, |grid| {
-            composer(grid, &empty, false, Place::new(0, 0, 80, 3))
-        });
-        let all: String = (0..3).map(|r| row_text(&buf, r)).collect();
-        assert!(!all.contains("Nothing here needs saving"));
-        assert!(all.contains("▌█"));
-    }
-
-    /// A panel with no interior draws nothing and does not panic.
-    #[test]
-    fn a_panel_with_no_interior_draws_nothing() {
-        let conversation = conversation_of(vec![said("09:04", Speaker::Person, "x")]);
-        let buf = drawn(4, 2, |grid| {
-            panel(grid, "Neom", &conversation, false, Place::new(0, 0, 2, 2));
-            composer(grid, &conversation, false, Place::new(2, 0, 2, 2));
-        });
-        assert_eq!(buf.area.width, 4);
-    }
-}
+#[path = "conversation_tests.rs"]
+mod tests;

@@ -5,10 +5,15 @@
 //! All three artboards are this one function. `1c` differs only in that the
 //! conversation contains a [`Turn::Recalled`], and `1d` only in that it contains
 //! a [`Turn::Cautioned`]; the screen reads the tail of the conversation to
-//! decide which key hint to offer and whether the middle panel shows the thread
-//! list or what leans on the thing about to change. There is no mode flag,
-//! because there is no mode: a caution is a turn, and the user can keep typing
-//! straight past it.
+//! decide whether the middle panel shows the thread list or what leans on the
+//! thing about to change. There is no mode flag, because there is no mode: a
+//! caution is a turn, and the user can keep typing straight past it.
+//!
+//! The artboards also change the *key hint* between the three, and this does
+//! not. `1c` offers "Enter open the source" and `1d` "Enter show what leans on
+//! it", and neither key is bound: `Enter` sends. A hint is a promise, so the one
+//! rule the three states share is the one that is drawn, and the state-specific
+//! hints come back with the keys that answer them.
 
 use crate::{
     text,
@@ -22,8 +27,12 @@ use super::{aside, chrome, conversation, Band, Focus};
 
 /// The column the right-hand column starts at on a 120-column screen, and the
 /// proportion that keeps when the terminal is a different width.
-const SPLIT_NUMERATOR: u16 = 72;
-const SPLIT_DENOMINATOR: u16 = 120;
+///
+/// `u32`, because the product is what overflows: `width * 72` passes `u16::MAX`
+/// at 911 columns, and a *saturating* multiply there inverted the whole layout
+/// — at 2000 columns the conversation got 546 and the aside 1454.
+const SPLIT_NUMERATOR: u32 = 72;
+const SPLIT_DENOMINATOR: u32 = 120;
 /// Rows the composer takes: two rules, the draft, and the reassurance.
 const COMPOSER_ROWS: u16 = 4;
 /// Rows the Today panel takes.
@@ -53,7 +62,9 @@ impl Split {
     /// too short — at which point the trickle is dropped whole rather than
     /// squeezed to a row or two, because a two-line trickle reads as an error.
     fn new(width: u16, band: Band) -> Self {
-        let left = (width.saturating_mul(SPLIT_NUMERATOR) / SPLIT_DENOMINATOR).max(1);
+        let left = u16::try_from(u32::from(width) * SPLIT_NUMERATOR / SPLIT_DENOMINATOR)
+            .unwrap_or(u16::MAX)
+            .max(1);
         let rows = band.rows();
         let trickle_rows = if rows >= TRICKLE_FLOOR {
             TRICKLE_ROWS
@@ -73,13 +84,16 @@ impl Split {
 }
 
 /// What the tail of the conversation is asking of the user, which decides the
-/// middle panel and the key hint.
+/// middle panel.
+///
+/// Two states, not three. A recall in the tail used to be its own variant, and
+/// the only thing it changed was a key hint naming a key nothing bound — so a
+/// recall now reshapes nothing, which is also what the artboards show: `1c` is
+/// the ordinary screen with a card in the scroll.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tail {
-    /// Nothing special — the thread list, and the ordinary key hints.
+    /// Nothing standing — the thread list.
     Ordinary,
-    /// Something came back, so the hints offer to open its source.
-    Recalled,
     /// A caution is standing, so the middle panel shows what leans on it.
     Cautioned,
 }
@@ -93,23 +107,16 @@ impl Tail {
     fn of(workspace: &Workspace) -> Self {
         match workspace.conversation.turns.last() {
             Some(Turn::Cautioned(_)) => Self::Cautioned,
-            Some(Turn::Recalled(_)) => Self::Recalled,
             _ => Self::Ordinary,
-        }
-    }
-
-    /// The key hint this tail offers.
-    fn hint(self) -> &'static str {
-        match self {
-            Self::Ordinary => text::get("tui.hint_today"),
-            Self::Recalled => text::get("tui.hint_recall"),
-            Self::Cautioned => text::get("tui.hint_caution"),
         }
     }
 }
 
 /// Draw the Today screen over the whole of `grid`.
-pub fn draw(grid: &mut Grid<'_>, workspace: &Workspace, focus: Focus) {
+///
+/// `thread_cursor` is where `J`/`K` have moved the highlight in the thread list.
+/// It is drawn only while that panel holds focus — see [`aside::threads`].
+pub fn draw(grid: &mut Grid<'_>, workspace: &Workspace, focus: Focus, thread_cursor: usize) {
     let band = Band::new(grid.height(), chrome::Margins::WIDE);
     let split = Split::new(grid.width(), band);
     let tail = Tail::of(workspace);
@@ -165,6 +172,7 @@ pub fn draw(grid: &mut Grid<'_>, workspace: &Workspace, focus: Focus) {
             grid,
             &workspace.threads,
             focus == Focus::Threads,
+            thread_cursor,
             Place::new(split.left, middle_row, split.right, split.threads_rows),
         ),
     }
@@ -189,7 +197,7 @@ pub fn draw(grid: &mut Grid<'_>, workspace: &Workspace, focus: Focus) {
         band.status,
         &workspace.health,
         &workspace.health.scope,
-        tail.hint(),
+        text::get("tui.hint_today"),
     );
 }
 
@@ -238,10 +246,20 @@ mod tests {
     }
 
     fn drawn(w: u16, h: u16, workspace: &Workspace, focus: Focus) -> Buffer {
+        drawn_with_cursor(w, h, workspace, focus, 0)
+    }
+
+    fn drawn_with_cursor(
+        w: u16,
+        h: u16,
+        workspace: &Workspace,
+        focus: Focus,
+        cursor: usize,
+    ) -> Buffer {
         let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
         let area = buf.area;
         let mut grid = Grid::new(&mut buf, area);
-        draw(&mut grid, workspace, focus);
+        draw(&mut grid, workspace, focus, cursor);
         buf
     }
 
@@ -284,6 +302,23 @@ mod tests {
                 "a column vanished at {width}"
             );
             assert_eq!(split.left + split.right, width);
+            assert!(
+                split.left > split.right,
+                "the split inverted at {width}: {} left, {} right",
+                split.left,
+                split.right
+            );
+        }
+        // Past 910 columns `width * 72` leaves `u16`. It used to saturate, and
+        // the split inverted: 546 for the conversation, 1454 for the aside.
+        for width in [911u16, 1200, 2000, u16::MAX] {
+            let split = Split::new(width, Band::new(40, chrome::Margins::WIDE));
+            assert_eq!(split.left + split.right, width);
+            assert_eq!(
+                split.left,
+                u16::try_from(u32::from(width) * 72 / 120).unwrap(),
+                "the proportion broke at {width}"
+            );
         }
     }
 
@@ -331,8 +366,8 @@ mod tests {
         assert!(text.contains("Tab panel"));
     }
 
-    /// A standing caution swaps the middle panel and the key hint — and it is
-    /// still the same screen, with the conversation and composer in place.
+    /// A standing caution swaps the middle panel — and it is still the same
+    /// screen, with the conversation and composer in place.
     #[test]
     fn a_standing_caution_swaps_the_middle_panel() {
         let mut workspace = workspace();
@@ -345,24 +380,29 @@ mod tests {
         let text = all_text(&drawn(120, 40, &workspace, Focus::Conversation));
         assert!(text.contains("What leans on this"));
         assert!(!text.contains("What keeps coming back"));
-        assert!(text.contains("show what leans on it"));
         // Still the Today screen, not a modal over it.
         assert!(text.contains("The conversation"));
         assert!(text.contains("Just remembered"));
     }
 
-    /// A recall in the tail keeps the thread list but offers to open the source.
+    /// A recall in the tail reshapes nothing: it is a card in the scroll, and
+    /// the screen around it is the ordinary one.
     #[test]
-    fn a_recall_in_the_tail_changes_only_the_hint() {
+    fn a_recall_in_the_tail_reshapes_nothing() {
         let mut workspace = workspace();
         workspace.conversation.turns = vec![Turn::Recalled(Recall {
             source: "From Monday 24 August".to_owned(),
             quote: "Blocking is honest.".to_owned(),
             because: "Every day this week".to_owned(),
         })];
+        assert_eq!(Tail::of(&workspace), Tail::Ordinary);
         let text = all_text(&drawn(120, 40, &workspace, Focus::Conversation));
         assert!(text.contains("What keeps coming back"));
-        assert!(text.contains("open the source"));
+        assert!(
+            text.contains("From Monday 24 August"),
+            "the card is missing"
+        );
+        assert!(text.contains("Tab panel"), "the ordinary hint is missing");
     }
 
     /// A caution earlier in the conversation has been answered and no longer
@@ -432,6 +472,37 @@ mod tests {
             0,
             "an empty week does not underflow"
         );
+    }
+
+    /// The thread cursor is drawn on this screen, and only while the panel it
+    /// belongs to holds focus — otherwise a bright row would claim a cursor the
+    /// keys are not driving.
+    #[test]
+    fn the_thread_cursor_shows_only_on_the_focused_panel() {
+        use crate::tui::theme::{Role, Strength};
+
+        let mut workspace = workspace();
+        workspace.threads = (0..3)
+            .map(|n| Thread {
+                summary: format!("Thought {n}"),
+                days: [true; 7],
+                ..Thread::default()
+            })
+            .collect();
+
+        // The thread panel's interior starts at column 73, row 18; text sits at
+        // `aside`'s own thread column past the marks.
+        let text_col = 73 + aside::THREAD_TEXT;
+        let second = 19;
+
+        let focused = drawn_with_cursor(120, 40, &workspace, Focus::Threads, 1);
+        let cell = &focused[(text_col, second)];
+        assert_eq!(cell.fg, Role::Strongest.color(), "the cursor is not drawn");
+
+        // Unfocused, row 1 keeps its ranking colour — the second step.
+        let idle = drawn_with_cursor(120, 40, &workspace, Focus::Today, 1);
+        let cell = &idle[(text_col, second)];
+        assert_eq!(cell.fg, Strength::from_rank(1).role().color());
     }
 
     /// Focus accents exactly the panel that holds it, and no other.

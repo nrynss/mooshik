@@ -67,8 +67,20 @@ pub enum Role {
     Affirm,
     /// Colour 1. Reserved. Two uses in the whole app: a refused credential,
     /// and leaving a database behind.
+    ///
+    /// Nothing draws it yet — both uses live on artboard `1f`, which has not
+    /// been ported. It is kept because it is the enforcement point: this
+    /// variant plus [`Kind::Danger`](crate::tui::widget::Kind::Danger) is what
+    /// makes `1i`'s reserved-red rule checkable, and
+    /// `the_reserved_red_is_unspent_on_these_screens` proves the ported
+    /// screens do not spend it.
     Danger,
     /// Colour 13. A key being pressed. Nothing else.
+    ///
+    /// Nothing draws it yet either — no screen animates a keypress. It is kept
+    /// to reserve ANSI 13 so nothing else spends it; `no_colour_escapes_the_sixteen`
+    /// pins the held-back brights, and this variant keeps 13 from quietly
+    /// becoming a second accent.
     Keypress,
 }
 
@@ -113,9 +125,14 @@ impl Role {
     /// This role as a *background*, for the one thing the design paints: a
     /// panel title or an inline badge punched through the rule it overlaps.
     ///
-    /// Only [`Role::Ground`] is legitimate here — anything else would be the
-    /// flood the design spends its whole argument avoiding — so this is
-    /// deliberately an inherent method on `Ground` alone rather than on `Role`.
+    /// What is enforced is the *background*, not the caller: the only colour
+    /// this API can put behind anything is colour 0, because the background is
+    /// hard-coded and no argument reaches it. Any role may be the foreground —
+    /// the accent for a focused panel's title, the returning blue for a recall
+    /// card's badge — but a filled rectangle in some other colour, the flood
+    /// the design spends its whole argument avoiding, is unreachable from here.
+    /// `nothing_paints_a_background_but_the_ground` holds the other half: no
+    /// screen reaches a background by any other route.
     pub fn on_ground(self) -> Style {
         self.style().bg(Self::Ground.color())
     }
@@ -142,19 +159,23 @@ pub enum Strength {
 }
 
 impl Strength {
-    /// The ramp, brightest first. Index into this with a list position.
-    pub const RAMP: [Self; 4] = [Self::Strongest, Self::Strong, Self::Fading, Self::Faintest];
-
     /// The step for a zero-based list position, saturating at the faintest.
     ///
-    /// Saturating is the point: the list is "always ordered by how often you
-    /// return to something", so position *is* the encoding, and a sixth item
-    /// should look like the fifth rather than wrap back to brightest.
+    /// **The third step is doubled**, which is the artboards' own arithmetic
+    /// rather than an off-by-one: `1a` draws five threads over four steps, and
+    /// the one it spends twice is the fading step — ranks 2 and 3 are both
+    /// `var(--t2)` there, and only the fifth thread drops to furniture. Four
+    /// steps for five rows has to double one of them somewhere, and the design
+    /// doubles the one where a reader is least able to tell two rows apart.
+    ///
+    /// Saturating past that is the other half: the list is "always ordered by
+    /// how often you return to something", so position *is* the encoding, and a
+    /// sixth item should look like the fifth rather than wrap back to brightest.
     pub const fn from_rank(rank: usize) -> Self {
         match rank {
             0 => Self::Strongest,
             1 => Self::Strong,
-            2 => Self::Fading,
+            2 | 3 => Self::Fading,
             _ => Self::Faintest,
         }
     }
@@ -251,21 +272,34 @@ mod tests {
         assert_eq!(Role::Accent.on_ground().bg, Some(Color::Black));
     }
 
-    /// The ramp is four distinct steps, and `from_rank` saturates on the last
-    /// rather than wrapping round to brightest.
+    /// The ramp is four distinct steps; the ranks it maps them onto are the
+    /// artboards', which spend the *third* step twice — five threads over four
+    /// steps — and saturate on the last rather than wrapping to brightest.
     #[test]
     fn the_ramp_is_four_steps_and_saturates() {
-        let styles: Vec<_> = Strength::RAMP.iter().map(|s| s.style()).collect();
+        let steps = [
+            Strength::Strongest,
+            Strength::Strong,
+            Strength::Fading,
+            Strength::Faintest,
+        ];
+        let styles: Vec<_> = steps.iter().map(|s| s.style()).collect();
         for (i, a) in styles.iter().enumerate() {
             for b in &styles[i + 1..] {
                 assert_ne!(a, b, "two steps of the ramp look the same");
             }
         }
-        assert_eq!(Strength::from_rank(3), Strength::Faintest);
+        // `1a`'s thread panel, rank by rank.
+        assert_eq!(Strength::from_rank(0), Strength::Strongest);
+        assert_eq!(Strength::from_rank(1), Strength::Strong);
+        assert_eq!(Strength::from_rank(2), Strength::Fading);
+        assert_eq!(
+            Strength::from_rank(3),
+            Strength::Fading,
+            "the design spends the third step twice, not the fourth"
+        );
+        assert_eq!(Strength::from_rank(4), Strength::Faintest);
         assert_eq!(Strength::from_rank(99), Strength::Faintest);
-        for (rank, expected) in Strength::RAMP.iter().enumerate() {
-            assert_eq!(Strength::from_rank(rank), *expected);
-        }
     }
 
     /// The trickle fades further than the thread list: it ends in absence,

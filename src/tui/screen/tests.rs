@@ -165,18 +165,53 @@ fn the_bottom_rule_is_always_the_last_row() {
     }
 }
 
-/// Nothing scrolls sideways: no row on any screen is wider than the terminal,
-/// which the grid guarantees by clipping rather than wrapping.
+/// Nothing scrolls sideways: no screen writes a single cell outside the grid it
+/// was handed, at any size — which is what makes a 120x40 layout safe to draw in
+/// an 80-column terminal.
+///
+/// This used to assert `buf.content.len() == width * height`, which
+/// `Buffer::empty` guarantees and no drawing can change: cells are written
+/// through indexing, so the vector's length is fixed and the assertion could not
+/// fail. The invariant that *can* fail is escaping the area, so it is checked the
+/// way `grid.rs`'s `overflow_clips_instead_of_wrapping` checks it — write into
+/// the edges and look at the neighbours. The grid is handed a sub-rectangle of a
+/// larger buffer whose every cell starts as a sentinel; a run that ran past the
+/// right edge, or a panel placed past the bottom, would leave a mark in the
+/// margin around it.
 #[test]
-fn nothing_wraps_onto_the_next_row() {
+fn nothing_is_written_outside_the_grid() {
+    /// A symbol no screen draws, so any survivor in the margin is untouched and
+    /// any casualty is a write that escaped.
+    const SENTINEL: &str = "\u{2591}";
+    /// Cells of margin on each side. Two, so a one-column overrun and a
+    /// two-column one are both visible.
+    const MARGIN: u16 = 2;
+
     for (name, app) in apps() {
         for (width, height) in SIZES {
-            let buf = draw(&app, width, height);
-            assert_eq!(
-                buf.content.len(),
-                usize::from(width) * usize::from(height),
-                "{name} at {width}x{height} wrote outside its buffer"
-            );
+            let mut buf = Buffer::empty(Rect::new(0, 0, width + MARGIN * 2, height + MARGIN * 2));
+            for cell in buf.content.iter_mut() {
+                cell.set_symbol(SENTINEL);
+            }
+            let area = Rect::new(MARGIN, MARGIN, width, height);
+            app.draw(&mut Grid::new(&mut buf, area));
+
+            for y in 0..buf.area.height {
+                for x in 0..buf.area.width {
+                    let inside = (MARGIN..MARGIN + width).contains(&x)
+                        && (MARGIN..MARGIN + height).contains(&y);
+                    if inside {
+                        continue;
+                    }
+                    assert_eq!(
+                        buf[(x, y)].symbol(),
+                        SENTINEL,
+                        "{name} at {width}x{height} wrote {:?} outside its grid, \
+                         at ({x}, {y})",
+                        buf[(x, y)].symbol()
+                    );
+                }
+            }
         }
     }
 }
@@ -239,5 +274,19 @@ fn eyeball() {
             .map(|col| buf[(col, row)].symbol().chars().next().unwrap_or(' '))
             .collect();
         println!("|{}|", line.trim_end());
+    }
+    // The week's bottom rule is the one that used to overwrite itself, and it
+    // did so only below 108 columns — so the narrow widths get a look too.
+    let mut week = App::new(crate::tui::demo());
+    week.view = View::Week;
+    for (w, h) in [(80u16, 24u16), (90, 30), (100, 30)] {
+        let buf = draw(&week, w, h);
+        println!("\n=== week {w}x{h} ===");
+        for row in 0..h {
+            let line: String = (0..w)
+                .map(|col| buf[(col, row)].symbol().chars().next().unwrap_or(' '))
+                .collect();
+            println!("|{}|", line.trim_end());
+        }
     }
 }

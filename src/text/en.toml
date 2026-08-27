@@ -209,11 +209,13 @@ after_help = "The conversation, what the graph is doing underneath it, and what 
 demo_help = "Draw the design's demo day instead of the live workspace. Reads no configuration and opens no database."
 brand = "Mooshik"
 separator = "  ·  "
+# The same bullet, tight, for body text. The title rule and the bottom rule
+# space it out ("Mooshik  ·  Thursday 27 August"); inside a panel the artboards
+# set it close — `1b`'s detail head is "Rain, 15° · A rough day".
+separator_tight = " · "
 nav_gap = "   "
 nav_today = "Today"
 nav_week = "The week"
-nav_settings = "^, settings"
-nav_keys = "? keys"
 week_title = "Your week"
 
 panel_conversation = "The conversation"
@@ -224,9 +226,8 @@ panel_leans = "What leans on this"
 panel_trickle = "Just remembered"
 panel_caution = "One thing before you do"
 
-# The affirming mark and the one word beside it. Never a sentence.
-health_mark = "✓"
-# The one or two words beside the mark. Never a sentence — `1i`.
+# The one or two words beside the affirming mark. Never a sentence — `1i`. The
+# mark itself is a glyph, so it lives in Rust: see `widget::marks`.
 health_keeping_up = "Keeping up"
 health_catching_up = "Catching up"
 health_degraded = "Not saving"
@@ -234,21 +235,21 @@ scope_live = "{count} things remembered"
 # Until a workspace says whose it is, the conversation needs a name for the
 # person's turns.
 person_unknown = "You"
-# Shown in place of the mark when Mooshik is behind. Furniture, not red — red is
-# reserved for a refused credential and for leaving a database behind.
-health_behind = "·"
-
+# When there is no controlling terminal to take: `mooshik tui` in a pipe, a cron
+# job, or a CI step.
+needs_a_terminal = "The terminal interface needs a terminal to draw on, and this process has none. Run `mooshik tui` from an interactive shell; the recall, stats and chat commands write to a pipe and work anywhere."
 hint_composer = "Enter send  ·  Alt-Enter newline  ·  Nothing here needs saving"
-hint_today = "Tab panel · Alt-H/L resize · ^K a day · ? keys"
-hint_recall = "Enter open the source · J/K scroll · ^2 week · ?"
-hint_caution = "Enter show what leans on it · J/K scroll · ^2 week · ?"
-hint_week = "H/L a day · J/K a thread · Enter open the day · / find · ^1 today"
-hint_narrow = "Tab panel · ^2 week · ?"
-hint_narrow_more = "^3 {count} more"
+# Only keys `tui::input` binds may appear here — a hint is a promise. See the
+# header of that module for the whole keymap.
+hint_today = "Tab panel · J/K a thread · ^2 week · Esc leave"
+hint_week = "H/L a day · J/K a thread · ^1 today · Esc leave"
+hint_narrow = "Tab panel · ^2 week · Esc leave"
+# Not a key hint: how many threads the collapsed line did not have room for.
+narrow_more = "{count} more"
 narrow_trickle_prefix = "· Just remembered: "
 
-# The bullet the trickle hangs from, and the gutter a thread's marks sit in.
-trickle_bullet = " · "
+# The gutter a thread's marks sit in. The trickle's bullet is a glyph, so it
+# lives in Rust: see `widget::marks`.
 week_day_header = "  Fri Sat Sun Mon Tue Wed Thu"
 
 # The caution's dependency list gets a generated header and key hint, so the
@@ -262,4 +263,6 @@ header = "{count} things lean on it:"
 [tui.narrow]
 nav_gap = "  "
 nav_week = "Week"
-nav_keys = "?"
+# What joins the collapsed trickle's entries. Punctuation between words is
+# prose, not notation, so a locale that separates lists differently can say so.
+list_separator = ", "

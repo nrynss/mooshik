@@ -1,7 +1,8 @@
 //! The frame every artboard imports, and the five things a frame can mean.
 //!
 //! Port of `scratch_design/Panel.dc.html`: a box-drawing border with the title
-//! inset at **column 2** — over the corner and one cell of rule — punched
+//! inset at **column 2** — so the padded title covers two cells of the top rule
+//! and leaves the corner at column 0 and the rule at column 1 alone — punched
 //! through that rule against the ground. `1i` states what the frames encode:
 //! "A light frame is a panel. Accent frame means focused. Yellow frame is said
 //! once and needs no answer" and "A double frame appears exactly once, on the
@@ -41,6 +42,13 @@ pub enum Kind {
     Returned,
     /// The one action `esc` cannot undo. The only double rule, and one of only
     /// two reds, in the whole app.
+    ///
+    /// Nothing draws it yet: both of `1i`'s two red uses live on artboard `1f`,
+    /// which has not been ported. It is kept because it is the enforcement
+    /// point for two of the design's rules at once — `only_danger_is_double_ruled`
+    /// and `only_danger_is_red` are only meaningful because the double rule and
+    /// the reserved red are reachable *through this variant and no other*, and
+    /// the cross-screen tests then prove the ported screens spend neither.
     Danger,
 }
 
@@ -172,12 +180,19 @@ impl<'a> Panel<'a> {
             .title_role
             .unwrap_or_else(|| self.kind.title())
             .on_ground();
-        grid.put(
-            col.saturating_add(Self::INSET),
-            row,
-            &format!(" {} ", self.title),
-            title_style,
-        );
+        // An untitled panel keeps its rule intact. The padding is the frame's
+        // rather than the call site's, so an empty title would still write
+        // `"  "` on the ground — two black cells punched into an accent rule,
+        // which reads as a rendering fault. The week screen's detail pane draws
+        // exactly this when no day is selected.
+        if !self.title.is_empty() {
+            grid.put(
+                col.saturating_add(Self::INSET),
+                row,
+                &format!(" {} ", self.title),
+                title_style,
+            );
+        }
         if let (Some(badge), Some(last)) = (self.badge, h.checked_sub(1)) {
             grid.put(
                 col.saturating_add(Self::INSET),
@@ -256,6 +271,25 @@ mod tests {
         let mut grid = crate::tui::grid::Grid::new(&mut buf, area);
         Panel::new("You", Kind::Idle).draw(&mut grid, Place::new(0, 0, 14, 3));
         assert_eq!(row_text(&buf, 0), "┌─ You ──────┐          ");
+    }
+
+    /// An untitled panel leaves its top rule whole. A padded empty title would
+    /// punch ground-coloured cells through the rule for no name at all — the
+    /// week screen's detail pane, with no day selected.
+    #[test]
+    fn an_untitled_panel_leaves_its_rule_intact() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 14, 3));
+        let area = buf.area;
+        let mut grid = crate::tui::grid::Grid::new(&mut buf, area);
+        Panel::new("", Kind::Focused).draw(&mut grid, Place::new(0, 0, 14, 3));
+        assert_eq!(row_text(&buf, 0), "┌────────────┐");
+        for col in 0..14u16 {
+            assert_eq!(
+                buf[(col, 0)].bg,
+                ratatui::style::Color::Reset,
+                "column {col} of the rule is painted"
+            );
+        }
     }
 
     /// The badge sits on the bottom rule at the same inset, which is where the

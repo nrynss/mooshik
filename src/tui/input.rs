@@ -1,10 +1,18 @@
-//! Keys to [`Action`]s — nothing but the keymap the artboards print.
+//! Keys to [`Action`]s — the whole keymap, and nothing the screens do not print.
 //!
-//! Every binding here appears on a bottom rule somewhere in the design: `Tab
-//! panel`, `Alt-H/L resize`, `^K a day`, `H/L a day`, `J/K a thread`, `Enter
-//! send`, `Alt-Enter newline`, `^1 today`, `^2 week`, `Esc`. A key the design
-//! never promised has nothing to map to, which is the point of keeping this
-//! separate from [`App`](super::app::App).
+//! Everything bound, in full: `Tab`/`Shift-Tab` cycle panels, `^1` and `^2`
+//! choose the view, `Enter` sends and `Alt-Enter` puts a newline in the draft,
+//! `Backspace` edits it, the arrows and `H`/`J`/`K`/`L` move the two cursors,
+//! and `Esc`, `q` and `^C` leave. That list and the hints in
+//! `src/text/en.toml` are the same list, deliberately: the design's rules also
+//! printed `Alt-H/L resize`, `^K a day`, `? keys`, `/ find`, `^, settings` and
+//! `Enter open the day`, none of which is bound to anything, and a hint that
+//! does nothing is worse than no hint. They come back here and there together,
+//! or not at all.
+//!
+//! Modifiers Mooshik does not use are refused rather than ignored. `Alt-h` used
+//! to fall through the `Char('h')` arm and move the week's day cursor, so a key
+//! the app never claimed did something the user did not ask for.
 //!
 //! **Why the keymap is modal but the app is not.** When the conversation has
 //! focus, `j` is the letter `j`; when the thread list has focus, it moves the
@@ -40,6 +48,15 @@ pub fn action(key: KeyEvent, typing: bool) -> Action {
             KeyCode::Char('2') => Action::ShowWeek,
             _ => Action::Ignore,
         };
+    }
+
+    // Alt is claimed for exactly one binding, `Alt-Enter`, so an Alt-modified
+    // letter is refused here rather than falling through to the plain-letter
+    // arms below — `Alt-h` moved the week's day cursor, which nothing asked
+    // for. Shift is not filtered: crossterm reports a capital as `Char('J')`
+    // with the modifier set, and the design's hints are written `J/K`.
+    if alt && !matches!(key.code, KeyCode::Enter) {
+        return Action::Ignore;
     }
 
     match key.code {
@@ -191,6 +208,29 @@ mod tests {
         assert_eq!(
             action(with(KeyCode::Char('z'), KeyModifiers::CONTROL), false),
             Action::Ignore
+        );
+    }
+
+    /// An Alt-modified letter is refused rather than treated as the bare letter.
+    ///
+    /// `Alt-H/L` was on the artboards' bottom rule as "resize" and is bound to
+    /// nothing; falling through moved the week's day cursor instead, which is a
+    /// key doing something the user did not ask for. `Alt-Enter` is the one
+    /// Alt binding and still works.
+    #[test]
+    fn alt_modified_letters_are_refused() {
+        for letter in ['h', 'l', 'j', 'k', 'q'] {
+            for typing in [true, false] {
+                assert_eq!(
+                    action(with(KeyCode::Char(letter), KeyModifiers::ALT), typing),
+                    Action::Ignore,
+                    "Alt-{letter} did something while typing={typing}"
+                );
+            }
+        }
+        assert_eq!(
+            action(with(KeyCode::Enter, KeyModifiers::ALT), true),
+            Action::Type('\n')
         );
     }
 }

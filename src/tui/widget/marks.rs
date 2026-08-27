@@ -22,6 +22,15 @@
 //! Absent days are drawn, not skipped — `1i` calls the baseline mark "absence,
 //! drawn rather than written". A blank would make the row's shape unreadable
 //! and, worse, make a five-day thread look like a three-day one.
+//!
+//! **Where a glyph lives, and where a word does.** `src/text/en.toml` owns every
+//! string a reader reads; this module owns every glyph a reader *looks at*. The
+//! line is notation versus prose. `▄` is not English — it is `1i`'s legend, it
+//! means the same in every locale, and a translator who changed it would be
+//! editing the design rather than the language. So the marks, the affirming
+//! tick, the behind-bullet and the trickle's bullet are consts here, and the
+//! words beside them ("Keeping up", "Just remembered") are keys there. The
+//! separators *between* words are prose and stay in TOML.
 
 use ratatui::{style::Style, text::Span};
 
@@ -43,6 +52,15 @@ const PRESENT_TALL: &str = "▇";
 /// A day it did not, on the week screen — too narrow for a baseline block.
 const ABSENT_DOT: &str = "·";
 
+/// The affirming mark: `1i`'s green "one mark, one word" on the bottom rule.
+pub const HEALTH_MARK: &str = "✓";
+/// What stands in for it when Mooshik is behind. Furniture, not red — `1i`
+/// reserves red for a refused credential and for leaving a database behind, and
+/// being behind on a queue is neither.
+pub const HEALTH_BEHIND: &str = "·";
+/// The bullet the trickle's entries hang from, spaced as artboard `1a` sets it.
+pub const TRICKLE_BULLET: &str = " · ";
+
 /// Cells between one day column and the next on the week screen: three for
 /// "Fri" plus the space after it.
 const DAY_STRIDE: usize = 4;
@@ -53,18 +71,32 @@ const RIBBON_INSET: u16 = 2;
 
 /// Seven adjacent marks for the Today panel: `▄▄▁▄▄▄▁`.
 ///
-/// Returns two spans at most — present and absent runs coalesce only where
-/// adjacent, so the caller writes whatever comes back left to right.
+/// Adjacent days of the same kind coalesce into one span, so a thread that came
+/// up every day is a single `▄▄▄▄▄▄▄` rather than seven spans the caller writes
+/// one cell at a time. Both colours are fixed here (see this module's header),
+/// which is what makes coalescing safe: neighbouring marks can never disagree
+/// about anything but present-or-absent. Between one and seven spans come back,
+/// and the caller writes them left to right.
 pub fn compact(days: [bool; WEEK]) -> Vec<Span<'static>> {
-    days.iter()
-        .map(|came_up| {
-            if *came_up {
-                Span::styled(PRESENT, Role::Fading.style())
-            } else {
-                Span::styled(ABSENT, Role::Absence.style())
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(WEEK);
+    let mut run: Option<bool> = None;
+    for came_up in days {
+        let (glyph, role) = if came_up {
+            (PRESENT, Role::Fading)
+        } else {
+            (ABSENT, Role::Absence)
+        };
+        match (run, spans.last_mut()) {
+            // Same kind as the mark before it: grow that span instead of
+            // pushing another one.
+            (Some(previous), Some(last)) if previous == came_up => {
+                last.content.to_mut().push_str(glyph);
             }
-        })
-        .collect()
+            _ => spans.push(Span::styled(glyph, role.style())),
+        }
+        run = Some(came_up);
+    }
+    spans
 }
 
 /// Seven marks spaced onto the week screen's day columns: `▇   ▇   ·   ▇`.
@@ -73,11 +105,17 @@ pub fn compact(days: [bool; WEEK]) -> Vec<Span<'static>> {
 /// them read as one line. Absent days ignore it and stay absence — a faint row's
 /// gaps must still be distinguishable from its marks.
 pub fn aligned(days: [bool; WEEK], present: Style) -> Vec<Span<'static>> {
-    let gap = " ".repeat(DAY_STRIDE - 1);
+    // A `&'static str` rather than `" ".repeat(DAY_STRIDE - 1)`: this runs once
+    // per thread per frame, and the gap is a compile-time constant of the
+    // stride. `GAP_CELLS` keeps the two from drifting apart silently.
+    const GAP: &str = "   ";
+    const GAP_CELLS: usize = DAY_STRIDE - 1;
+    const _: () = assert!(GAP.len() == GAP_CELLS);
+
     let mut spans = Vec::with_capacity(WEEK * 2);
     for (index, came_up) in days.iter().enumerate() {
         if index > 0 {
-            spans.push(Span::raw(gap.clone()));
+            spans.push(Span::raw(GAP));
         }
         spans.push(if *came_up {
             Span::styled(PRESENT_TALL, present)
@@ -91,10 +129,14 @@ pub fn aligned(days: [bool; WEEK], present: Style) -> Vec<Span<'static>> {
 /// The column a day's mark or date sits at in the Today panel's ribbon,
 /// relative to the ribbon's origin.
 pub fn ribbon_column(day: usize) -> u16 {
-    RIBBON_INSET
-        + u16::try_from(day)
+    // Saturating on both operations, not just the multiply: a saturated product
+    // is `u16::MAX`, and adding the inset to that wrapped to 1 — a bar for day
+    // 11 000 landing beside the bar for day 0.
+    RIBBON_INSET.saturating_add(
+        u16::try_from(day)
             .unwrap_or(u16::MAX)
-            .saturating_mul(RIBBON_STRIDE)
+            .saturating_mul(RIBBON_STRIDE),
+    )
 }
 
 /// The two rows of the Today panel's ribbon: the dates, and a bar a day.
@@ -189,11 +231,31 @@ mod tests {
         assert_eq!(text_of(&compact(five)), "▄▄▁▄▄▄▁");
     }
 
+    /// Adjacent days of the same kind come back as one span, which is what the
+    /// fixed colours buy: a full week is one span, not seven.
+    #[test]
+    fn compact_marks_coalesce_into_runs() {
+        assert_eq!(compact([true; 7]).len(), 1);
+        assert_eq!(compact([false; 7]).len(), 1);
+        // `▄▄▁▄▄▄▁` — present, absent, present, absent.
+        let five = [true, true, false, true, true, true, false];
+        let spans = compact(five);
+        assert_eq!(spans.len(), 4);
+        let texts: Vec<&str> = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(texts, ["▄▄", "▁", "▄▄▄", "▁"]);
+        // Alternating days cannot coalesce at all, and must not lose a mark.
+        let alternating = [true, false, true, false, true, false, true];
+        assert_eq!(compact(alternating).len(), WEEK);
+        assert_eq!(text_of(&compact(alternating)), "▄▁▄▁▄▁▄");
+    }
+
     /// On the Today panel the marks' colours are fixed, so ranking is carried
     /// once — by the text beside them — rather than encoded twice.
     #[test]
     fn compact_marks_do_not_take_a_ranking_colour() {
+        // One present mark, one absent, then a five-day run: three spans.
         let spans = compact([true, false, true, true, true, true, true]);
+        assert_eq!(spans.len(), 3);
         assert_eq!(spans[0].style, Role::Fading.style());
         assert_eq!(spans[1].style, Role::Absence.style());
         assert_eq!(spans[2].style, Role::Fading.style());
@@ -247,6 +309,10 @@ mod tests {
     fn the_ribbon_columns_line_dates_up_with_bars() {
         assert_eq!(ribbon_column(0), 2);
         assert_eq!(ribbon_column(6), 2 + 6 * 6);
+        // A day index no week could hold saturates rather than wrapping back
+        // into the ribbon: the inset must not overflow a saturated product.
+        assert_eq!(ribbon_column(usize::MAX), u16::MAX);
+        assert!(ribbon_column(60_000) >= ribbon_column(6));
         let days = [day(3, Tone::Plain, "21"), day(4, Tone::Plain, "22")];
         let ribbon = Ribbon::new(&days, 1);
         let dates = ribbon.dates();

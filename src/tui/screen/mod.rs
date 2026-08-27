@@ -28,6 +28,16 @@ mod tests;
 
 use chrome::Margins;
 
+/// Cells kept clear between wrapped text and the panel rule on its right.
+///
+/// Every artboard leaves space there, and it is not slack: `1a`'s thread panel
+/// has 35 columns available and its longest line is 29, and its conversation has
+/// 61 available for a longest line of 52. Wrapping to the full available width
+/// instead put a word or a comma against the rule, which reads as text running
+/// into the frame. Two cells is the smallest gap that still reads as a margin,
+/// and it is small enough that no artboard line reflows because of it.
+pub const RIGHT_MARGIN: u16 = 2;
+
 /// Which panel holds focus, and therefore which rule is the accent.
 ///
 /// The variants are the design's own prop list for the Today screen. Focus is
@@ -98,7 +108,7 @@ impl Band {
         let bottom = height.saturating_sub(2).max(1);
         Self {
             top: 1,
-            bottom: bottom.max(1),
+            bottom,
             status,
             margins,
         }

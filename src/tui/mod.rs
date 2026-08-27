@@ -97,11 +97,19 @@ pub async fn live(config: &Config) -> Result<Workspace, MemoryError> {
 
 /// Run the TUI until the user leaves.
 ///
-/// `ratatui::init` takes the terminal into raw mode and the alternate screen and
+/// `try_init` rather than `init`, which is `try_init().expect(..)`: `mooshik tui`
+/// in a pipe, a cron job or a CI step has no controlling terminal, and the
+/// `expect` aborted with a bare panic and a backtrace — past
+/// [`Failure::report`](crate::cli::Failure::report), which `crate::cli`'s header
+/// states is the only way an error reaches the terminal. The error is returned
+/// instead, and [`tui_cmd`](crate::cli) gives it the sentence that explains what
+/// a terminal is needed for.
+///
+/// Either way it takes the terminal into raw mode and the alternate screen and
 /// installs a panic hook that puts it back, so a panic inside the loop cannot
 /// leave the user's shell without an echo.
 pub fn run(workspace: Workspace) -> io::Result<()> {
-    let mut terminal = ratatui::init();
+    let mut terminal = ratatui::try_init()?;
     let result = event_loop(&mut terminal, workspace);
     ratatui::restore();
     result

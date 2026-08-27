@@ -70,12 +70,6 @@ impl<'a> Grid<'a> {
         self.area.height
     }
 
-    /// The rectangle this grid covers, in frame coordinates. Needed when
-    /// handing a region to a ratatui widget that renders itself.
-    pub fn area(&self) -> Rect {
-        self.area
-    }
-
     /// A sub-rectangle of this grid, in frame coordinates, clipped to the grid.
     ///
     /// Clipping rather than panicking is deliberate: the same screen code runs
@@ -142,12 +136,20 @@ impl<'a> Grid<'a> {
         at
     }
 
-    /// Write `text` right-aligned so it *ends* at column `end`.
+    /// Write `text` right-aligned so its last **character** lands at `end - 1`.
     ///
     /// The design right-aligns the second half of several rules — the status
     /// bar's key hints, the week screen's scope — against the grid's own edge
     /// rather than the text's, so this takes the ending column rather than
     /// computing an offset at the call site.
+    ///
+    /// The offset is a character count, not a column count, and the two differ
+    /// for a double-width glyph: a run containing one would start a column too
+    /// far right and so end a column past `end`. Measuring properly needs a
+    /// width table, which is a dependency this crate does not take, and every
+    /// call site is a key hint or a date — ASCII and the `·`, all single-width
+    /// — so the limitation is stated rather than fixed. [`Grid::put`] has no
+    /// such limitation: its advance comes from the buffer.
     pub fn put_ending_at(&mut self, end: u16, row: u16, text: &str, style: Style) -> u16 {
         let width = u16::try_from(text.chars().count()).unwrap_or(u16::MAX);
         self.put(end.saturating_sub(width), row, text, style)
@@ -173,13 +175,6 @@ impl<'a> Grid<'a> {
         at
     }
 
-    /// Repeat `glyph` for `width` cells from `(col, row)` — a rule, or the
-    /// filled side of a hand-drawn frame.
-    pub fn fill(&mut self, col: u16, row: u16, width: u16, glyph: char, style: Style) {
-        let run: String = std::iter::repeat_n(glyph, usize::from(width)).collect();
-        self.put(col, row, &run, style);
-    }
-
     /// Render a ratatui widget over `(col, row)`..`+(w, h)` of this grid.
     ///
     /// The buffer stays private — the grid's whole job is to make callers
@@ -190,15 +185,6 @@ impl<'a> Grid<'a> {
         let area = self.rect(col, row, w, h);
         if !area.is_empty() {
             widget.render(area, self.buf);
-        }
-    }
-
-    /// Repeat `glyph` down `height` cells from `(col, row)`.
-    pub fn fill_down(&mut self, col: u16, row: u16, height: u16, glyph: char, style: Style) {
-        let mut buffer = [0u8; 4];
-        let glyph = glyph.encode_utf8(&mut buffer);
-        for offset in 0..height {
-            self.put(col, row.saturating_add(offset), glyph, style);
         }
     }
 }
@@ -303,18 +289,5 @@ mod tests {
         assert_eq!(next, 2);
         assert_eq!(row_text(&buf, 0), "a     ");
         assert_eq!(row_text(&buf, 1), "b     ");
-    }
-
-    /// Rules are drawn by repetition in both directions, for the frames the
-    /// design draws by hand rather than through a block.
-    #[test]
-    fn rules_fill_across_and_down() {
-        let mut buf = grid_of(6, 3);
-        let area = buf.area;
-        let mut grid = Grid::new(&mut buf, area);
-        grid.fill(1, 0, 4, '═', Style::default());
-        grid.fill_down(0, 0, 3, '║', Style::default());
-        assert_eq!(row_text(&buf, 0), "║════ ");
-        assert_eq!(row_text(&buf, 2), "║     ");
     }
 }

@@ -58,7 +58,7 @@ M11 is last on purpose and is allowed to fail; see M11.
 | **M8** | Built 2026-08-26, `ingester/` subdirectory, commits through `df8d779`. Review round 2 **APPROVE**, zero residue (`m8-round2.md`). J2 proxy path + Vertex Flash extraction proven live; deployed to Cloud Run as a batch Job (IAM + deploy sequence in `ingester/README.md`). Every write now carries the document's historical `event_time` — see the event-time note under M9. |
 | **M9** | Built 2026-08-26, `measurement/` subpackage, commits through `1f3217e`. Review round 2 **APPROVE**, zero residue (`m9-round2.md`). Live on the M8 graph: coverage 59.3% gated, raw precision 10/10, canonization promoted nothing (the predicted pathology, now measured). |
 | **M10** | Built 2026-08-26, `2bc5665` → `f50765f`. Review round 2 **APPROVE**, zero residue (`m10-round2.md`). MCP host: configured servers, vault-ref env, `mcp.<server>.<tool>` naming, gate+redaction integrated, live-verified against real `lambo serve`. |
-| **M11** | Not started. Allowed to fail. |
+| **M11** | Built 2026-08-27, `m11-tui`. The surface is built; the data behind it is not — Today, the week and an 80x24 narrow layout draw from one view model, the `1i` palette rules are enforced in code and held by cross-screen tests, and `--demo` opens no database. Still allowed to fail: no capability lives only here. See M11 below. |
 
 Lambo pin: `nrynss/lambo` git `rev = 71334f0` (`lambo-for-mooshik`). E1/E2 (path dep, then rev pin) were done as the rev pin directly; bump the SHA after a Lambo fix.
 
@@ -646,7 +646,7 @@ What is **not** wired: the status bar is live (from `memory::stats`), and the re
 workspace is empty, because the data the artboards show has no source behind Mooshik yet — a day's
 weather and mood have none at all, and per-day thread marks need recalled nodes grouped by event
 date. Sending from the composer needs the M3 chat loop restructured into something a redraw loop can
-drive; today it clears the draft. The screens read the view model and never a store, so filling any
+drive; until that lands `Enter` is deliberately inert and the draft stays where it was typed. The screens read the view model and never a store, so filling any
 of this in is a change to `tui::live` and nothing else.
 
 **Still allowed to fail.** No capability lives only here.

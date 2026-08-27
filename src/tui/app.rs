@@ -27,13 +27,22 @@ pub const NARROW_BELOW: u16 = 100;
 
 /// One thing a keypress can ask for.
 ///
-/// Deliberately coarse: `Action` is the vocabulary of the *design's* key hints,
-/// not of crossterm. `Tab panel · Alt-H/L resize · ^K a day · ? keys` maps onto
-/// these and nothing else, so a key that does something the design never
-/// promised has nowhere to be expressed.
+/// Deliberately coarse: `Action` is the vocabulary of *what the app does*, not
+/// of crossterm. The whole vocabulary is the whole keymap — cycle a panel,
+/// choose a view, move a cursor, edit the draft, leave — so a key that does
+/// something the app has no verb for has nowhere to be expressed, and the hints
+/// on the bottom rules name these variants and nothing else. The design also
+/// printed `Alt-H/L resize`, `^K a day` and `? keys`; there is deliberately no
+/// variant for them, which is why those hints are not drawn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    /// Leave.
+    /// Leave. Reached by `Esc`, `q` and `^C`.
+    ///
+    /// `Esc` quits from anywhere, including mid-draft, and takes the draft with
+    /// it — the design gives `Esc` "back" only on the settings and first-run
+    /// screens, and from Today and the week there is nothing to go back to. It
+    /// is the one key that discards typing, which is the usual terminal
+    /// convention; the draft is not persisted anywhere, so leaving is leaving.
     Quit,
     /// Move focus to the next panel.
     NextPanel,
@@ -109,10 +118,14 @@ impl App {
                 // accented letter must not be left holding half a code point.
                 self.workspace.conversation.composer.draft.pop();
             }
-            // Sending is where the companion loop attaches. Until it does, the
-            // draft is cleared so the key is not silently inert — see the note on
-            // `tui::live`.
-            Action::Send => self.workspace.conversation.composer.draft.clear(),
+            // Sending is where the companion loop attaches (it needs M3's chat
+            // restructured into something a redraw loop can drive). Until it
+            // does, `Enter` deliberately does *nothing*: it used to clear the
+            // draft, which looked like sending and was data loss — the words
+            // went, no turn appeared, and no message was sent anywhere. An
+            // inert key the user can press again is the honest version, and it
+            // leaves the draft where the composer can still draw it.
+            Action::Send => {}
             Action::Ignore => {}
         }
     }
@@ -144,7 +157,9 @@ impl App {
             View::Today | View::Settings if grid.width() < NARROW_BELOW => {
                 screen::narrow::draw(grid, &self.workspace, self.focus)
             }
-            View::Today | View::Settings => screen::today::draw(grid, &self.workspace, self.focus),
+            View::Today | View::Settings => {
+                screen::today::draw(grid, &self.workspace, self.focus, self.thread_cursor)
+            }
         }
     }
 
@@ -294,6 +309,24 @@ mod tests {
         assert!(app.workspace.conversation.composer.draft.is_empty());
     }
 
+    /// `Enter` does not destroy the draft. It cleared it, which read as a send
+    /// that never happened: the words vanished, no turn was added, and nothing
+    /// was sent. Until the chat loop is wired the key is inert.
+    #[test]
+    fn sending_does_not_discard_the_draft() {
+        let mut app = app();
+        for character in "Called Mum. No answer.".chars() {
+            app.apply(Action::Type(character));
+        }
+        app.apply(Action::Send);
+        assert_eq!(
+            app.workspace.conversation.composer.draft, "Called Mum. No answer.",
+            "the draft was destroyed by a key that sent nothing"
+        );
+        // And no turn appeared, because nothing was sent.
+        assert!(app.workspace.conversation.turns.is_empty());
+    }
+
     /// Quitting stops the loop.
     #[test]
     fn quitting_stops_the_loop() {
@@ -332,32 +365,75 @@ mod tests {
         assert!(!app.is_typing());
     }
 
-    /// The width boundary picks a different screen rather than shrinking one, and
-    /// both draw without panicking on either side of it.
+    /// Every cell of `buf`, row by row, as the terminal would show it.
+    fn screen_text(buf: &Buffer) -> String {
+        (0..buf.area.height)
+            .map(|row| {
+                (0..buf.area.width)
+                    .map(|col| buf[(col, row)].symbol().chars().next().unwrap_or(' '))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn screen(app: &App, width: u16, height: u16) -> String {
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+        let area = buf.area;
+        let mut grid = Grid::new(&mut buf, area);
+        app.draw(&mut grid);
+        screen_text(&buf)
+    }
+
+    /// The width boundary picks a different screen rather than shrinking one.
+    ///
+    /// Told apart by a marker only one of them draws: the narrow screen's nav
+    /// abbreviates "The week" to "Week", and only the wide screen has room for
+    /// the three right-hand panels.
     #[test]
     fn the_narrow_boundary_switches_screens() {
         let app = app();
-        for width in [80u16, NARROW_BELOW - 1, NARROW_BELOW, 120] {
-            let mut buf = Buffer::empty(Rect::new(0, 0, width, 24));
-            let area = buf.area;
-            let mut grid = Grid::new(&mut buf, area);
-            app.draw(&mut grid);
-            assert_eq!(buf.area.width, width);
+        for width in [80u16, NARROW_BELOW - 1] {
+            let text = screen(&app, width, 24);
+            assert!(
+                text.contains("Today  Week"),
+                "the narrow nav is missing at {width}"
+            );
+            assert!(
+                !text.contains("What keeps coming back"),
+                "a wide panel survived at {width}"
+            );
+        }
+        for width in [NARROW_BELOW, 120] {
+            let text = screen(&app, width, 30);
+            assert!(
+                text.contains("Today   The week"),
+                "the wide nav is missing at {width}"
+            );
+            assert!(
+                text.contains("What keeps coming back"),
+                "the thread panel is missing at {width}"
+            );
         }
     }
 
     /// The week screen is drawn at its own layout whatever the width, because it
-    /// has no narrow variant in the design.
+    /// has no narrow variant in the design: the day header is there at 60
+    /// columns as it is at 120.
     #[test]
     fn the_week_screen_has_no_narrow_variant() {
         let mut app = app();
         app.apply(Action::ShowWeek);
         for width in [60u16, 80, 120] {
-            let mut buf = Buffer::empty(Rect::new(0, 0, width, 30));
-            let area = buf.area;
-            let mut grid = Grid::new(&mut buf, area);
-            app.draw(&mut grid);
-            assert_eq!(buf.area.width, width);
+            let text = screen(&app, width, 30);
+            assert!(
+                text.contains("Fri Sat Sun"),
+                "the week's day header is missing at {width}"
+            );
+            assert!(
+                !text.contains("Just remembered"),
+                "the narrow screen was drawn at {width}"
+            );
         }
     }
 }

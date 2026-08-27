@@ -20,7 +20,17 @@
 //! and leaves the indent to the caller's column arithmetic, which is how the
 //! artboards place it.
 
-/// Wrap `text` to `width` columns, breaking on spaces.
+/// Wrap `text` to `width` **characters**, breaking on spaces.
+///
+/// Characters, not columns: every line this returns is at most `width` `char`s
+/// long, which is the same thing only while the text is single-width. A
+/// double-width glyph — CJK, or an emoji — advances two cells and would push
+/// its line one column past `width`, and a combining mark would leave it a
+/// column short. Measuring properly needs a width table, which is a dependency
+/// this crate does not take; the artboards' prose is Latin text and the model's
+/// content is the user's own writing, so the trade is stated rather than made
+/// silently. The grid clips either way, so the failure is a clipped glyph and
+/// never a wrapped row.
 ///
 /// A word longer than `width` is hard-broken rather than allowed to overflow —
 /// clipping is the design's rule ("Nothing scrolls sideways") and a 60-character

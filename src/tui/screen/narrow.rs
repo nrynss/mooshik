@@ -15,8 +15,16 @@
 //! carried in the model: a thread's own sentence and the trickle's own entries
 //! are what they are, and how much of them fits on one 80-column row is a
 //! property of this layout.
-
-use ratatui::text::Span;
+//!
+//! **One deliberate divergence from `1h`.** The artboard places the nav
+//! right-aligned but sets the two tail hints — the thread line's "four more" and
+//! the bottom rule's keys — at fixed columns, padded there with spaces inside a
+//! left-aligned run. That lines them up at exactly 80 columns and nowhere else:
+//! at 100 the nav would sit against the right margin with the two hints stranded
+//! twenty columns short of it. This right-aligns all three against the same
+//! margin, so the vertical alignment the artboard is drawing survives a terminal
+//! that is not exactly 80 columns — the same argument
+//! [`chrome`](super::chrome)'s header makes about the wide layout's two rules.
 
 use crate::{
     text,
@@ -37,8 +45,14 @@ const COMPOSER_ROWS: u16 = 3;
 /// Rows kept below the panels: the thread line, the trickle line, a blank, and
 /// the bottom rule.
 const TAIL_ROWS: u16 = 4;
-/// Column the collapsed thread line's text starts at: seven marks and a space.
-const THREAD_TEXT: u16 = marks::WEEK as u16 + 2;
+/// Column the collapsed thread line's text starts at, past the left margin:
+/// seven marks and a space.
+///
+/// `1h` row 20 starts at column 1 — the narrow left margin — so the marks take
+/// columns 1 to 7, the space takes 8, and `The 512 cap` starts at 9. Against
+/// `margins.left` of 1 that is an offset of 8, not 9: the extra cell put every
+/// narrow thread line a column right of the artboard.
+const THREAD_TEXT: u16 = marks::WEEK as u16 + 1;
 
 /// Draw the narrow screen over the whole of `grid`.
 pub fn draw(grid: &mut Grid<'_>, workspace: &Workspace, focus: Focus) {
@@ -52,18 +66,8 @@ pub fn draw(grid: &mut Grid<'_>, workspace: &Workspace, focus: Focus) {
         text::get("tui.separator"),
         workspace.now.time
     );
-    grid.run(
-        margins.left,
-        0,
-        [
-            Span::styled(text::get("tui.brand"), Role::Strongest.style()),
-            Span::styled(
-                format!("{}{subject}", text::get("tui.separator")),
-                Role::Furniture.style(),
-            ),
-        ],
-    );
-    nav(grid, margins);
+    chrome::brand(grid, margins, &subject);
+    chrome::nav(grid, margins, text::get("tui.narrow.nav_gap"), &nav_items());
 
     let status_row = height.saturating_sub(1);
     let trickle_row = height.saturating_sub(3);
@@ -103,34 +107,30 @@ pub fn draw(grid: &mut Grid<'_>, workspace: &Workspace, focus: Focus) {
     );
 }
 
-/// The abbreviated nav: `Today  Week  ?`.
-fn nav(grid: &mut Grid<'_>, margins: chrome::Margins) {
-    let gap = text::get("tui.narrow.nav_gap");
-    let items = [
+/// The abbreviated nav's items: `Today  Week`.
+///
+/// Only the labels and the gap differ from the wide nav, so
+/// [`chrome::nav`](super::chrome::nav) draws it — the width sum, the right-edge
+/// offset and the span loop used to be copied here verbatim.
+///
+/// Today is always the lit one: this screen *is* Today, and `^2` leaves it for
+/// the week's own full-screen layout. `1h` also printed a `?`, which is gone
+/// along with the wide rule's `? keys` — no key opens it.
+fn nav_items() -> [(&'static str, Role); 2] {
+    [
         (text::get("tui.nav_today"), Role::Accent),
         (text::get("tui.narrow.nav_week"), Role::Furniture),
-        (text::get("tui.narrow.nav_keys"), Role::Furniture),
-    ];
-    let width: usize = items.iter().map(|(l, _)| l.chars().count()).sum::<usize>()
-        + gap.chars().count() * (items.len() - 1);
-    let start = margins
-        .right_edge(grid.width())
-        .saturating_sub(u16::try_from(width).unwrap_or(u16::MAX));
-
-    let mut spans = Vec::with_capacity(items.len() * 2);
-    for (index, (label, role)) in items.into_iter().enumerate() {
-        if index > 0 {
-            spans.push(Span::styled(gap, Role::Furniture.style()));
-        }
-        spans.push(Span::styled(label, role.style()));
-    }
-    grid.run(start, 0, spans);
+    ]
 }
 
-/// The strongest thread, on one row, with the count of the rest offered as a key.
+/// The strongest thread, on one row, with the count of the rest beside it.
 ///
 /// The marks stay: they are seven cells and they carry the whole "every day this
 /// week" claim without a word, which is exactly what a single row needs.
+///
+/// The count is a plain "4 more", not `1h`'s `^3 four more`: `^3` is bound to
+/// nothing, and the number is worth saying without pretending there is a key
+/// that shows it.
 fn thread_line(grid: &mut Grid<'_>, threads: &[Thread], margins: chrome::Margins, row: u16) {
     let Some(thread) = threads.first() else {
         return;
@@ -138,7 +138,7 @@ fn thread_line(grid: &mut Grid<'_>, threads: &[Thread], margins: chrome::Margins
 
     let more = threads.len().saturating_sub(1);
     let hint = if more > 0 {
-        text::get("tui.hint_narrow_more").replace("{count}", &more.to_string())
+        text::get("tui.narrow_more").replace("{count}", &more.to_string())
     } else {
         String::new()
     };
@@ -158,7 +158,7 @@ fn thread_line(grid: &mut Grid<'_>, threads: &[Thread], margins: chrome::Margins
         format!(
             "{}{}{}",
             thread.summary,
-            text::get("tui.trickle_bullet"),
+            marks::TRICKLE_BULLET,
             thread.because.text
         )
     };
@@ -192,7 +192,11 @@ fn trickle_line(grid: &mut Grid<'_>, trickle: &[Trickle], margins: chrome::Margi
     let mut line = String::from(prefix);
     let mut width = u16::try_from(prefix.chars().count()).unwrap_or(u16::MAX);
     for (index, item) in trickle.iter().enumerate() {
-        let separator = if index == 0 { "" } else { ", " };
+        let separator = if index == 0 {
+            ""
+        } else {
+            text::get("tui.narrow.list_separator")
+        };
         let addition = format!("{separator}{}", item.text);
         let addition_width = u16::try_from(addition.chars().count()).unwrap_or(u16::MAX);
         if width.saturating_add(addition_width) > available {
@@ -327,7 +331,12 @@ mod tests {
         let buf = drawn(80, 24, &workspace());
         let row = row_text(&buf, 20);
         assert!(row.starts_with(" ▄▄▄▄▄▄▄"), "{row:?}");
+        // `1h` row 20 puts the thread's text at column 9, right after the seven
+        // marks and one space. It was drawn at 10.
+        assert_eq!(row.chars().nth(9), Some('T'), "{row:?}");
+        // The count, with no key attached: `^3` is bound to nothing.
         assert!(row.contains("4 more"), "{row:?}");
+        assert!(!row.contains("^3"), "an unbound key is advertised: {row:?}");
     }
 
     /// A clipped thread line says so, rather than ending on a word that reads as
@@ -397,23 +406,51 @@ mod tests {
     fn the_nav_abbreviates() {
         let buf = drawn(80, 24, &workspace());
         let row = row_text(&buf, 0);
-        assert!(row.contains("Today  Week  ?"), "{row:?}");
+        assert!(row.contains("Today  Week"), "{row:?}");
         assert!(!row.contains("The week"));
-        assert!(!row.contains("settings"));
+        // Neither `^, settings` nor `1h`'s bare `?` is bound to anything, so
+        // neither is drawn.
+        assert!(!row.contains("settings"), "{row:?}");
+        assert!(!row.contains('?'), "{row:?}");
     }
 
-    /// Nothing scrolls sideways: no row is longer than the grid.
+    /// Nothing scrolls sideways: a run that overflows a row is clipped at the
+    /// right edge and never continues on the next one.
+    ///
+    /// This used to assert `row_text(..).chars().count() == width`, which
+    /// `row_text` returns by construction — it walks `0..buf.area.width` — so it
+    /// could not fail. The invariant that *can* fail is wrapping, so it is checked
+    /// the way `grid.rs`'s `overflow_clips_instead_of_wrapping` checks it: the row
+    /// under a clipped run must be untouched by it.
     #[test]
     fn nothing_runs_past_the_right_edge() {
         for width in [40u16, 60, 80, 100] {
-            let buf = drawn(width, 24, &workspace());
-            for row in 0..24u16 {
-                assert_eq!(
-                    row_text(&buf, row).chars().count(),
-                    usize::from(width),
-                    "row {row} is the wrong width at {width}"
-                );
-            }
+            // A draft long enough to overrun the composer at every width tested.
+            let mut workspace = workspace();
+            workspace.conversation.composer.draft = "x".repeat(usize::from(width) + 40);
+            let buf = drawn(width, 24, &workspace);
+
+            // The draft fills the composer's interior to its last column...
+            let draft_row = 18;
+            assert_eq!(
+                buf[(width - 2, draft_row)].symbol(),
+                "x",
+                "the draft did not reach the interior's last column at {width}"
+            );
+            // ...stops at the panel's right rule rather than writing over it...
+            assert_eq!(
+                buf[(width - 1, draft_row)].symbol(),
+                "│",
+                "the draft overwrote the panel's right rule at {width}"
+            );
+            // ...and the row under it holds only what the narrow layout draws
+            // there — the composer's bottom rule — with no spill from above.
+            let below = row_text(&buf, draft_row + 1);
+            assert!(
+                below.chars().all(|c| "└┘─".contains(c)),
+                "row {} is not a bare rule at {width}: {below:?}",
+                draft_row + 1
+            );
         }
     }
 
