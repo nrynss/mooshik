@@ -22,8 +22,13 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates git \
  && rm -rf /var/lib/apt/lists/*
 
+# MUST match the rev in the repo root Cargo.toml. This binary is the `lambo
+# serve` child the writer speaks MCP to, and its params are
+# `deny_unknown_fields`: a rev older than 71334f0 has no `event_time` on
+# lambo_derive / lambo_record_action and rejects every historical write the
+# ingester now sends.
 RUN cargo install --git https://github.com/nrynss/lambo \
-      --rev f90a66227b9bff52bdff23bfcffe38b2a1bf7541 \
+      --rev 71334f0bfb38e68c6071537a5eba1d587f07acea \
       lambo \
       --no-default-features --features store-postgres,embed-gemini
 

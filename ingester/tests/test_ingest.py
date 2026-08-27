@@ -534,6 +534,28 @@ def test_writer_sends_event_time_only_when_the_document_has_one():
     assert sent[3][1]["event_time"] == "2020-05-06T07:08:09+00:00"
 
 
+def test_dockerfile_lambo_rev_matches_the_workspace_pin():
+    """The image's `lambo serve` child must be the rev Mooshik pins.
+
+    Its wire params are deny_unknown_fields, so a child older than the
+    event_time rev rejects every historical write — the whole ingest fails,
+    not just its dates. Drift here is invisible until a live run.
+    """
+    import re
+
+    root = Path(__file__).resolve().parents[2]
+    cargo = (root / "Cargo.toml").read_text()
+    dockerfile = (root / "ingester" / "Dockerfile").read_text()
+
+    pinned = re.search(r'lambo = \{ git = "[^"]+", rev = "([0-9a-f]{40})"', cargo)
+    baked = re.search(r"--rev ([0-9a-f]{40})", dockerfile)
+    assert pinned and baked, "both pins must be readable"
+    assert baked.group(1) == pinned.group(1), (
+        f"Dockerfile bakes lambo {baked.group(1)[:7]} but Cargo.toml pins "
+        f"{pinned.group(1)[:7]} — the serve child will reject writes"
+    )
+
+
 # ---------------------------------------------------------------- writer ----
 
 
