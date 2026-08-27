@@ -105,3 +105,86 @@ clean.
   puts it on the live path too.
 * **No `macos-latest` CI job.** Three macOS-only defects were found this
   session; without one the platform silently un-verifies.
+
+---
+
+# The repair run, 2026-08-27
+
+## Before, measured (session `mooshik`, the graph M9 reported on)
+
+```
+44 concepts   |  None 38, Candidate 6, Venerable 0, Canonical 0
+event_time    |  0 of 16 interactions stamped
+embedded      |  26/44 = 59.1%      (M9 reported 59.3% — same graph)
+```
+
+Every interaction NULL is the first root cause rendered in SQL.
+
+## After the event-time fix (session `mooshik-v2`, partial run)
+
+```
+531 concepts  |  None 500, Candidate 31, Venerable 0, Canonical 0
+event_time    |  62 of 62 interactions stamped — 100%
+embedded      |  341/531 = 64.2%
+```
+
+Event time is carried end to end, and canonization is genuinely running:
+real `None → Candidate` transitions in the logs. That half is closed.
+
+## The third root cause, found by the live run
+
+Nothing exceeds Candidate, and the reason is neither of the first two:
+
+```
+CanonizationCycleFailed: canonization cycle failed after 3 committed
+transition(s): error occurred while decoding column "coverage": mismatched
+types; Rust type `f64` (as SQL type `FLOAT8`) is not compatible with SQL
+type `NUMERIC`
+```
+
+Stage 1 commits, then the cycle dies reading `coverage` — the Stage-2
+(`Candidate → Venerable`) gate. **Stage 2 has never once succeeded on the
+Postgres adapter**, which is also why the *old* graph capped at Candidate.
+
+Cause, verified against the live instance rather than inferred:
+`INTERACTION_SPAN_SQL` computes coverage with `extract(epoch FROM ...)`, and
+**PostgreSQL 14 changed `extract` to return `numeric`** instead of double
+precision. The instance is 16.14. Every arm of the `CASE` is numeric —
+including the bare `0.0` / `1.0` literals — so `try_get::<f64>` fails
+unconditionally.
+
+```
+postgres: 16.14
+extract(epoch FROM interval) -> numeric
+literal 0.0                  -> numeric
+lambo's coverage expression  -> numeric
+```
+
+`distinct_count` and `blast_radius` are `count(*)` → `bigint` → `i64`, and
+are fine. Handed to Lambo as a one-cast fix.
+
+**Why it survived this long, and the lesson.** The offline ladder test climbs
+cleanly to Canonical on **SQLite**, whose type affinity accepts the value as
+a float. The identical corpus caps at Candidate on Postgres. A test that runs
+only against SQLite or the in-memory store cannot catch an adapter-specific
+decode bug — and the product store is the one that was broken.
+
+## Two operational findings
+
+* **The Cloud Run task timeout was 600s.** 54 documents through Gemini Flash
+  needs longer, so the first execution was killed mid-corpus — which is why
+  only 62 interactions landed in `mooshik-v2`. Raised to 3600s.
+* **ADC and the gcloud CLI are different credentials here.** Secret Manager
+  and Cloud Run worked (CLI credential); the Cloud SQL proxy authorizes via
+  ADC and got a 403 that reads like a missing instance permission. Pass
+  `--token "$(gcloud auth print-access-token)"` to use the working one.
+* **`.dockerignore` listed `/src`** — correct while the image shipped only
+  Python, fatal once it compiles Mooshik. And without a `.gcloudignore`,
+  gcloud falls back to `.gitignore`; `target/` alone is 7.1G.
+
+## Where it stands
+
+Two of three root causes closed and verified in production. The third is a
+one-line cast in Lambo. Once it lands, canonization climbs the rest of the
+ladder on the **existing** graph — the daemon re-evaluates every cycle, so it
+needs a rebuild and a short run, not another full Gemini pass.
