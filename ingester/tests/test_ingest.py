@@ -534,6 +534,105 @@ def test_writer_sends_event_time_only_when_the_document_has_one():
     assert sent[3][1]["event_time"] == "2020-05-06T07:08:09+00:00"
 
 
+#: The workspace corpus is built so canonization has something to earn: each
+#: fact recurs on a planned set of days, and `solo_score = sessions x
+#: eviction_resistance` puts it in a chosen band (bars 3 / 6 / 10). Editing a
+#: fixture and breaking one of these sentences would silently flatten the
+#: ladder — the graph would look fine and promote less, which is exactly the
+#: failure this corpus exists to detect.
+LADDER = [
+    (
+        "The Windpipe ring never holds more than 512 in-flight messages;"
+        " overflow writers block instead of dropping.",
+        [21, 22, 23, 24, 25, 26, 27],
+        1.5,
+        "Canonical",
+    ),
+    (
+        "Secrets never enter the graph: the vault is the only place a"
+        " credential value lives.",
+        [21, 22, 24, 26, 27],
+        1.5,
+        "Venerable",
+    ),
+    (
+        "The Quillstone build cache lives on the shared NAS under /srv/quillstone.",
+        [21, 23, 24, 25, 27],
+        1.2,
+        "Venerable",
+    ),
+    (
+        "The Zephyr scheduler assigns every task a fairness quantum of exactly"
+        " 40 milliseconds.",
+        [22, 23, 26],
+        1.2,
+        "Candidate",
+    ),
+    (
+        "Cobalt Lantern retries failed fetches three times with jitter.",
+        [23, 25],
+        1.5,
+        "Candidate",
+    ),
+]
+
+
+def _band(score: float) -> str:
+    if score >= 10.0:
+        return "Canonical"
+    if score >= 6.0:
+        return "Venerable"
+    if score >= 3.0:
+        return "Candidate"
+    return "None"
+
+
+def _corpus_files():
+    root = Path(__file__).resolve().parents[2] / "ingest-fixtures" / "workspace"
+    return sorted(root.glob("*.md"))
+
+
+def test_workspace_corpus_recurrence_earns_the_planned_canonization_ladder():
+    files = _corpus_files()
+    assert len(files) >= 40, f"corpus looks truncated: {len(files)} documents"
+
+    texts = {path.name: path.read_text() for path in files}
+    for sentence, want_days, resistance, want_band in LADDER:
+        days = sorted({int(name[8:10]) for name, body in texts.items() if sentence in body})
+        assert days == sorted(want_days), (
+            f"recurrence changed for {sentence[:40]!r}: on days {days}, "
+            f"planned {sorted(want_days)}. A line-wrapped or reworded copy "
+            f"does not count — the sentence must appear whole."
+        )
+        score = len(days) * resistance
+        assert _band(score) == want_band, (
+            f"{sentence[:40]!r} scores {score} -> {_band(score)}, planned {want_band}"
+        )
+
+
+def test_every_workspace_document_is_dated_in_its_filename():
+    """`backdate.py` replays these dates onto mtimes, which is the only reason
+    the corpus has any event-time spread. An undated file silently ingests as
+    a live fact."""
+    import re
+
+    undated = [p.name for p in _corpus_files() if not re.match(r"^\d{4}-\d{2}-\d{2}-", p.name)]
+    assert not undated, f"undated corpus documents: {undated}"
+
+    days = {p.name[:10] for p in _corpus_files()}
+    assert len(days) == 7, f"expected a 7-day spread, got {sorted(days)}"
+
+
+def test_workspace_corpus_carries_no_secret_that_would_drop_a_document():
+    """The scanner drops a whole document on a hit. A fixture that trips it
+    would remove its day's recurrence without any other signal."""
+    from ingester.secretscan import find_secret
+
+    hits = [(p.name, find_secret(p.read_text(), ())) for p in _corpus_files()]
+    dropped = [(name, hit) for name, hit in hits if hit]
+    assert not dropped, f"documents would be dropped: {dropped}"
+
+
 def test_dockerfile_lambo_rev_matches_the_workspace_pin():
     """The image's `lambo serve` child must be the rev Mooshik pins.
 

@@ -50,6 +50,12 @@ COPY ingester/README.md ./
 COPY ingester/ingester ./ingester
 COPY ingest-fixtures /corpus
 
+# Replay each document's date from its filename onto its mtime. The build
+# context arrives with every mtime set to checkout time, and the walker reads
+# a file's historical event_time from its mtime — so without this the whole
+# week collapses into one instant and no concept can ever recur.
+RUN python3 /corpus/backdate.py /corpus
+
 RUN pip install --no-cache-dir .
 
 COPY ingester/deploy/entrypoint.sh /entrypoint.sh
