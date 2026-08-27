@@ -32,6 +32,7 @@ pub mod memory;
 mod secure_path;
 pub mod text;
 pub mod tools;
+pub mod tui;
 pub mod vault;
 
 /// Run one CLI invocation and return the process exit code:

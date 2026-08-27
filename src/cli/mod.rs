@@ -1,7 +1,7 @@
 //! The command-line surface: parse argv, dispatch, classify what went wrong.
 //!
 //! The tree itself lives in [`command`]; each command's body lives beside the
-//! subsystem it drives ([`memory_cmd`], [`chat_cmd`], [`configure`],
+//! subsystem it drives ([`memory_cmd`], [`chat_cmd`], [`tui_cmd`], [`configure`],
 //! [`secret`]), and [`render`] holds the terminal output. This file stays the
 //! map: what exists, and where argv goes.
 //!
@@ -27,6 +27,7 @@ mod memory_cmd;
 mod render;
 mod resolve;
 mod secret;
+mod tui_cmd;
 
 #[cfg(test)]
 mod tests;
@@ -51,6 +52,7 @@ fn dispatch(matches: &clap::ArgMatches) -> anyhow::Result<()> {
         Some(("init", _)) => memory_cmd::initialize(&layout),
         Some(("serve", _)) => memory_cmd::serve(&layout),
         Some(("chat", _)) => chat_cmd::chat(&layout),
+        Some(("tui", args)) => tui_cmd::tui(&layout, args),
         Some(("recall", args)) => memory_cmd::recall(&layout, args),
         Some(("stats", _)) => memory_cmd::stats(&layout),
         Some(("config", sub)) => match sub.subcommand() {

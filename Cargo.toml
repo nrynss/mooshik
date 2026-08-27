@@ -22,7 +22,7 @@ zeroize = { version = "1", features = ["serde"] }
 # which does not carry the hosted adapters. Bump the SHA after a Lambo fix.
 # default-features = false so embed-bge (llama.cpp) does not come along.
 # embed-fixture is the test double; the product path is Vertex + Cloud SQL.
-lambo = { git = "https://github.com/nrynss/lambo", rev = "b829099a0f59c37594ce98847f8a9d51f9b19259", default-features = false, features = ["store-postgres", "store-sqlite", "store-memory", "embed-gemini", "embed-bge", "embed-fixture"] }
+lambo = { git = "https://github.com/nrynss/lambo", rev = "6f004a1359196a7a03438fcc720bcaf4a83fece7", default-features = false, features = ["store-postgres", "store-sqlite", "store-memory", "embed-gemini", "embed-bge", "embed-fixture"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "io-util", "sync", "signal", "net"] }
 # Pin 0.12 so M10's rmcp (optional reqwest ^0.13.2) does not compile reqwest twice.
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
@@ -31,6 +31,13 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 # 0.12; default features would compile reqwest twice.
 rmcp = { version = "3.1.2", default-features = false, features = ["client", "transport-child-process"] }
 parking_lot = "0.12"
+# M11's TUI. ratatui 0.29 is the last release before the 0.30 split into
+# ratatui-core/ratatui-crossterm, so one crate carries both the widgets and the
+# backend, and `ratatui::init`/`restore` own the raw-mode and alternate-screen
+# handshake. crossterm comes through ratatui's own re-export
+# (`ratatui::crossterm`) rather than a second direct pin, so the event types the
+# TUI matches on can never be a different crossterm than the backend reads from.
+ratatui = "0.29"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", default-features = false, features = ["linux-native-sync-persistent", "crypto-rust"] }

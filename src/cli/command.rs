@@ -25,6 +25,17 @@ pub fn command() -> Command {
                 .after_help(text::get("companion.chat_after_help")),
         )
         .subcommand(
+            Command::new("tui")
+                .about(text::get("tui.help"))
+                .after_help(text::get("tui.after_help"))
+                .arg(
+                    Arg::new("demo")
+                        .long("demo")
+                        .action(ArgAction::SetTrue)
+                        .help(text::get("tui.demo_help")),
+                ),
+        )
+        .subcommand(
             Command::new("recall")
                 .about(text::get("memory.recall_help"))
                 .after_help(text::get("memory.recall_after_help"))

@@ -1,0 +1,196 @@
+//! Keys to [`Action`]s — nothing but the keymap the artboards print.
+//!
+//! Every binding here appears on a bottom rule somewhere in the design: `Tab
+//! panel`, `Alt-H/L resize`, `^K a day`, `H/L a day`, `J/K a thread`, `Enter
+//! send`, `Alt-Enter newline`, `^1 today`, `^2 week`, `Esc`. A key the design
+//! never promised has nothing to map to, which is the point of keeping this
+//! separate from [`App`](super::app::App).
+//!
+//! **Why the keymap is modal but the app is not.** When the conversation has
+//! focus, `j` is the letter `j`; when the thread list has focus, it moves the
+//! cursor. That is unavoidable in a keyboard-only app with a text field in it,
+//! and it is why [`Action`] carries `Type(char)` rather than the app inspecting
+//! key events: the decision about what a letter means is made once, here, and
+//! the app only ever receives the resolved intent.
+
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+use super::app::Action;
+
+/// Resolve `key` into an action.
+///
+/// `typing` says whether keystrokes should reach the draft — see
+/// [`App::is_typing`](super::app::App::is_typing).
+pub fn action(key: KeyEvent, typing: bool) -> Action {
+    // Windows terminals report both press and release; acting on both would
+    // double every keystroke.
+    if key.kind == KeyEventKind::Release {
+        return Action::Ignore;
+    }
+
+    let control = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+
+    // Chords first: they mean the same thing wherever focus is, so a `^2` in the
+    // middle of typing still shows the week rather than inserting a `2`.
+    if control {
+        return match key.code {
+            KeyCode::Char('c') | KeyCode::Char('q') => Action::Quit,
+            KeyCode::Char('1') => Action::ShowToday,
+            KeyCode::Char('2') => Action::ShowWeek,
+            _ => Action::Ignore,
+        };
+    }
+
+    match key.code {
+        KeyCode::Tab => Action::NextPanel,
+        KeyCode::BackTab => Action::PreviousPanel,
+        // Alt-Enter is a newline in the draft, so it must not send.
+        KeyCode::Enter if alt && typing => Action::Type('\n'),
+        KeyCode::Enter if typing => Action::Send,
+        KeyCode::Backspace if typing => Action::Backspace,
+
+        // The arrows work wherever focus is: they are unambiguous, and the
+        // design's `H/L` and `J/K` are the letter equivalents for a hand already
+        // on the home row.
+        KeyCode::Down => Action::Next,
+        KeyCode::Up => Action::Previous,
+        KeyCode::Left => Action::Left,
+        KeyCode::Right => Action::Right,
+
+        // Esc leaves the app from a plain screen. The design gives it "back" on
+        // the settings and first-run screens, which will claim it when those
+        // land; from Today and the week there is nothing to go back to.
+        KeyCode::Esc => Action::Quit,
+
+        // A letter is a letter while typing, and a movement otherwise.
+        KeyCode::Char(character) if typing => Action::Type(character),
+        KeyCode::Char('j') => Action::Next,
+        KeyCode::Char('k') => Action::Previous,
+        KeyCode::Char('h') => Action::Left,
+        KeyCode::Char('l') => Action::Right,
+        KeyCode::Char('q') => Action::Quit,
+        _ => Action::Ignore,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::crossterm::event::KeyEvent;
+
+    fn plain(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn with(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
+    }
+
+    /// A letter is a letter while typing, and a movement when it is not.
+    #[test]
+    fn letters_are_modal() {
+        assert_eq!(action(plain(KeyCode::Char('j')), true), Action::Type('j'));
+        assert_eq!(action(plain(KeyCode::Char('j')), false), Action::Next);
+        assert_eq!(action(plain(KeyCode::Char('k')), false), Action::Previous);
+        assert_eq!(action(plain(KeyCode::Char('h')), false), Action::Left);
+        assert_eq!(action(plain(KeyCode::Char('l')), false), Action::Right);
+    }
+
+    /// Enter sends; Alt-Enter puts a newline in the draft instead, so a
+    /// multi-line message is possible without a send key that sometimes doesn't.
+    #[test]
+    fn alt_enter_is_a_newline_and_enter_sends() {
+        assert_eq!(action(plain(KeyCode::Enter), true), Action::Send);
+        assert_eq!(
+            action(with(KeyCode::Enter, KeyModifiers::ALT), true),
+            Action::Type('\n')
+        );
+    }
+
+    /// A chord means the same thing mid-sentence as it does anywhere else.
+    #[test]
+    fn chords_survive_typing() {
+        for typing in [true, false] {
+            assert_eq!(
+                action(with(KeyCode::Char('2'), KeyModifiers::CONTROL), typing),
+                Action::ShowWeek
+            );
+            assert_eq!(
+                action(with(KeyCode::Char('1'), KeyModifiers::CONTROL), typing),
+                Action::ShowToday
+            );
+            assert_eq!(
+                action(with(KeyCode::Char('c'), KeyModifiers::CONTROL), typing),
+                Action::Quit
+            );
+        }
+        // And a digit on its own is still a digit in the draft.
+        assert_eq!(action(plain(KeyCode::Char('2')), true), Action::Type('2'));
+    }
+
+    /// Tab cycles panels from either mode — it is the design's own binding and
+    /// there is no tab character in a draft.
+    #[test]
+    fn tab_cycles_from_either_mode() {
+        for typing in [true, false] {
+            assert_eq!(action(plain(KeyCode::Tab), typing), Action::NextPanel);
+            assert_eq!(
+                action(plain(KeyCode::BackTab), typing),
+                Action::PreviousPanel
+            );
+        }
+    }
+
+    /// The arrows move the cursor whatever has focus.
+    #[test]
+    fn the_arrows_work_in_either_mode() {
+        for typing in [true, false] {
+            assert_eq!(action(plain(KeyCode::Down), typing), Action::Next);
+            assert_eq!(action(plain(KeyCode::Up), typing), Action::Previous);
+            assert_eq!(action(plain(KeyCode::Left), typing), Action::Left);
+            assert_eq!(action(plain(KeyCode::Right), typing), Action::Right);
+        }
+    }
+
+    /// Backspace edits the draft while typing and does nothing otherwise, so it
+    /// cannot silently delete something on a navigation screen.
+    #[test]
+    fn backspace_only_edits_the_draft() {
+        assert_eq!(action(plain(KeyCode::Backspace), true), Action::Backspace);
+        assert_eq!(action(plain(KeyCode::Backspace), false), Action::Ignore);
+    }
+
+    /// `q` quits when it is not a letter being typed — and types when it is.
+    #[test]
+    fn q_quits_only_outside_the_draft() {
+        assert_eq!(action(plain(KeyCode::Char('q')), false), Action::Quit);
+        assert_eq!(action(plain(KeyCode::Char('q')), true), Action::Type('q'));
+    }
+
+    /// A key release is ignored, so terminals that report both press and release
+    /// do not double every keystroke.
+    #[test]
+    fn releases_are_ignored() {
+        let release = KeyEvent::new_with_kind(
+            KeyCode::Char('a'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
+        assert_eq!(action(release, true), Action::Ignore);
+        let press =
+            KeyEvent::new_with_kind(KeyCode::Char('a'), KeyModifiers::NONE, KeyEventKind::Press);
+        assert_eq!(action(press, true), Action::Type('a'));
+    }
+
+    /// An unmapped key does nothing rather than falling through to something.
+    #[test]
+    fn unmapped_keys_do_nothing() {
+        assert_eq!(action(plain(KeyCode::F(7)), true), Action::Ignore);
+        assert_eq!(action(plain(KeyCode::Insert), false), Action::Ignore);
+        assert_eq!(
+            action(with(KeyCode::Char('z'), KeyModifiers::CONTROL), false),
+            Action::Ignore
+        );
+    }
+}

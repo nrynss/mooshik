@@ -629,7 +629,27 @@ can fail.
 **Depends on:** everything shipped. **Done when:** the demo runs in the TUI — or the demo runs in
 the CLI and this is cut, which is a decision rather than a failure.
 
-**Status: not started.** Allowed to fail.
+**Status: the surface is built; the data behind it is not.** `mooshik tui` opens a `ratatui`
+interface ported from a nine-artboard design (kept in `scratch_design/` while the port is in
+progress). What landed:
+
+* **Today** (the default), **the week**, and an 80x24 narrow layout, all drawing from one plain-data
+  view model, plus the two states the design makes the argument with — a thing the user said on
+  another day quoted back inline, and one careful sentence before they contradict themselves. Both
+  are turns in the same conversation rather than modals, which is the design's own point.
+* The 16-colour palette with its rules enforced in code: no hex, no background but the ground, five
+  bright slots deliberately unspent, red reserved to two uses, one double-ruled frame in the whole
+  app. Cross-screen tests hold all of those at every terminal size.
+* `--demo` draws the design's own day, reading no configuration and opening no database.
+
+What is **not** wired: the status bar is live (from `memory::stats`), and the rest of the live
+workspace is empty, because the data the artboards show has no source behind Mooshik yet — a day's
+weather and mood have none at all, and per-day thread marks need recalled nodes grouped by event
+date. Sending from the composer needs the M3 chat loop restructured into something a redraw loop can
+drive; today it clears the draft. The screens read the view model and never a store, so filling any
+of this in is a change to `tui::live` and nothing else.
+
+**Still allowed to fail.** No capability lives only here.
 
 ---
 

@@ -1,0 +1,315 @@
+# The artboards' own content, as a Workspace.
+#
+# This is the design's demo day, transcribed from `scratch_design/Mooshik
+# TUI.dc.html` — a Thursday with a postmortem, a novel finished on the train and
+# an unreturned call to Mum. It exists so `mooshik tui --demo` draws the
+# artboards exactly, and so the layout tests have something to assert against
+# without a database, a model endpoint or a clock behind them.
+#
+# It lives in TOML rather than in Rust for the reason the whole crate keeps prose
+# out of source (see `src/text/en.toml`): a screenful of someone's week is text,
+# it would swamp the file-size budget, and it should be editable without
+# recompiling the renderer.
+#
+# Prose here is UNWRAPPED. Panels break it themselves — the same sentence renders
+# at three widths — so do not hand-wrap these strings.
+
+person = "Neom"
+
+[now]
+long_date = "Thursday 27 August"
+short_date = "Thu 27 Aug"
+time = "14:22"
+
+[health]
+state = "Keeping up"
+scope = "214 things remembered, back to 21 August"
+short_scope = "214 remembered"
+well = true
+
+# ── Today ────────────────────────────────────────────────────────────────────
+
+[today]
+short_label = "Thu 27"
+long_label = "Thursday 27 August"
+day_of_month = "27"
+weather = "Clear, 19°"
+notes = ""
+
+[today.load]
+level = 4
+tone = "notable"
+
+[today.mood]
+text = "A good day so far"
+tone = "plain"
+
+[[today.entries]]
+time = "08:10"
+text = "Rode in, 12km"
+
+[[today.entries]]
+time = "09:04"
+text = "Postmortem — the 512 cap holds"
+
+[[today.entries]]
+time = "11:52"
+text = "Finished the novel"
+
+[[today.entries]]
+time = "13:38"
+text = "Quillstone cache cold on runners"
+
+[[today.entries]]
+time = "14:20"
+text = "Call Mum back"
+
+# ── The conversation ─────────────────────────────────────────────────────────
+
+[conversation]
+earlier = "... earlier today"
+
+[conversation.composer]
+draft = "Called Mum. No answer. Try again once the doc is out"
+
+[[conversation.turns]]
+kind = "said"
+time = "08:12"
+speaker = "person"
+text = "Rode in before standup. 12km, first since the incident."
+
+[[conversation.turns]]
+kind = "said"
+time = "08:12"
+speaker = "mooshik"
+text = "Good — that's three days back on the bike this week."
+
+[[conversation.turns]]
+kind = "said"
+time = "09:04"
+speaker = "person"
+text = "Postmortem's basically done. The fix is the 512 cap — writers block, we don't drop. Shipping the doc after lunch."
+
+[[conversation.turns]]
+kind = "said"
+time = "09:05"
+speaker = "mooshik"
+text = "Almost word for word what you wrote on Monday. Fifth day running that the cap has come up."
+
+[[conversation.turns]]
+kind = "said"
+time = "11:52"
+speaker = "person"
+text = "Finished the novel on the train. First one since June."
+
+[[conversation.turns]]
+kind = "said"
+time = "13:38"
+speaker = "person"
+text = "Quillstone cache is cold on the new runners — is the NAS path still right?"
+
+[[conversation.turns]]
+kind = "said"
+time = "13:38"
+speaker = "mooshik"
+text = "/srv/quillstone on the shared NAS. That's where you've mounted it five days out of seven."
+
+[[conversation.turns]]
+kind = "said"
+time = "14:20"
+speaker = "person"
+text = "Right. And I still need to call Mum back."
+
+# ── What keeps coming back ───────────────────────────────────────────────────
+#
+# Order is the encoding: the list is always sorted by how often the thought is
+# returned to, and nothing on screen says how often. `days` is Friday first.
+
+[[threads]]
+summary = "The ring holds 512 in flight; overflow blocks, never drops"
+days = [true, true, true, true, true, true, true]
+leaned_on = [
+  "The short postmortem",
+  "The 40ms fairness quantum",
+  "The oncall runbook",
+  "Monday's decision",
+  "Wednesday's incident notes",
+  "The ring size in Windpipe",
+  "Friday's backpressure design",
+  "The NAS throughput ceiling",
+]
+
+[threads.because]
+text = "Every day this week · eight other notes lean on it"
+
+[[threads]]
+summary = "Secrets never get remembered — the vault is the only place a credential lives"
+days = [true, true, false, true, true, true, false]
+
+[threads.because]
+text = "Five days this week"
+
+[[threads]]
+summary = "The Quillstone cache lives on the NAS at /srv/quillstone"
+days = [true, true, false, false, true, true, true]
+
+[threads.because]
+text = "Five days · you checked it again today"
+
+[[threads]]
+summary = "Zephyr gives every task 40ms"
+days = [false, false, false, true, true, false, true]
+
+[threads.because]
+text = "Three days · Monday, Tuesday, Thursday"
+
+[[threads]]
+summary = "Cobalt Lantern retries three times, with jitter"
+days = [false, false, false, false, true, true, false]
+
+[threads.because]
+text = "Twice this week"
+
+# ── Just remembered ──────────────────────────────────────────────────────────
+#
+# Freshest first, fading to the oldest end.
+
+[[trickle]]
+text = "The 512 cap, again — fifth day"
+
+[[trickle]]
+text = "12km before standup"
+
+[[trickle]]
+text = "\"First novel since June\""
+
+[[trickle]]
+text = "Call Mum back"
+
+[[trickle]]
+text = "Clear, 19°"
+
+# ── The week ─────────────────────────────────────────────────────────────────
+
+[week]
+label = "21-27 August"
+selected = 5
+
+[[week.days]]
+short_label = "Fri 21"
+long_label = "Friday 21 August"
+day_of_month = "21"
+weather = "Clear · 21°"
+highlights = [
+  { text = "Designed the backpressure behaviour" },
+  { text = "Rode in" },
+]
+notes = ""
+load = { level = 3, tone = "plain" }
+mood = { text = "A good day", tone = "plain" }
+
+[[week.days]]
+short_label = "Sat 22"
+long_label = "Saturday 22 August"
+day_of_month = "22"
+weather = "Showers · 17°"
+highlights = [{ text = "Moved the Quillstone cache to the NAS" }]
+notes = ""
+load = { level = 4, tone = "plain" }
+mood = { text = "Quiet", tone = "plain" }
+
+[[week.days]]
+short_label = "Sun 23"
+long_label = "Sunday 23 August"
+day_of_month = "23"
+weather = "Warm · 24°"
+highlights = [
+  { text = "58km ride" },
+  { text = "Cooked" },
+  { text = "A hard call with Mum, unresolved" },
+]
+notes = ""
+load = { level = 5, tone = "plain" }
+mood = { text = "Mixed", tone = "plain" }
+
+[[week.days]]
+short_label = "Mon 24"
+long_label = "Monday 24 August"
+day_of_month = "24"
+weather = "Clear · 20°"
+highlights = [
+  { text = "\"Blocking is honest, dropping is a lie\"" },
+  { text = "40ms quantum" },
+]
+notes = ""
+load = { level = 4, tone = "plain" }
+mood = { text = "Steady", tone = "plain" }
+
+[[week.days]]
+short_label = "Tue 25"
+long_label = "Tuesday 25 August"
+day_of_month = "25"
+weather = "Grey · 18°"
+highlights = [
+  { text = "Cobalt Lantern retries, jitter" },
+  { text = "Late finish" },
+]
+notes = ""
+load = { level = 3, tone = "plain" }
+mood = { text = "Flat", tone = "plain" }
+
+[[week.days]]
+short_label = "Wed 26"
+long_label = "Wednesday 26 August"
+day_of_month = "26"
+weather = "Rain · 15°"
+notes = """
+You came back to the 512 cap four times on this day.
+
+You still haven't called him back — it's come up on two days since."""
+load = { level = 7, tone = "hard" }
+mood = { text = "A rough day", tone = "hard" }
+highlights = [
+  { text = "Incident 09:42-11:40", tone = "hard" },
+  { text = "Drinks off" },
+  { text = "Mum called mid-incident — not called back" },
+]
+
+[[week.days.entries]]
+time = "09:42"
+text = "The ring overflowed in production"
+tone = "hard"
+
+[[week.days.entries]]
+time = "10:12"
+text = "Nothing was dropped — writers waited. That's the whole postmortem, in one line"
+
+[[week.days.entries]]
+time = "11:40"
+text = "Clear"
+
+[[week.days.entries]]
+time = "12:30"
+text = "Cancelled drinks with friends"
+
+[[week.days.entries]]
+time = "12:41"
+text = "Mum called during it"
+
+[[week.days.entries]]
+time = "18:20"
+text = "Wrote the incident notes"
+
+[[week.days]]
+short_label = "Thu 27"
+long_label = "Thursday 27 August"
+day_of_month = "27"
+weather = "Clear · 19°"
+highlights = [
+  { text = "Postmortem done" },
+  { text = "Novel finished" },
+  { text = "Back on the bike" },
+]
+notes = ""
+load = { level = 4, tone = "notable" }
+mood = { text = "Better", tone = "notable" }
