@@ -21,6 +21,16 @@ pub trait RecallInjector: Send + Sync {
     fn inject(&self, dropped: &[Message], current_user: &str) -> Option<Message>;
 }
 
+/// Blanket impl mirroring the one for `Arc<dyn ToolExecutor>`: production hands
+/// `run_chat` an `Arc<dyn RecallInjector>` (built in `crate::tools`, so the
+/// chat loop keeps no reference to `crate::memory`), and `Session<E, R>` must
+/// accept it as its `R`.
+impl RecallInjector for std::sync::Arc<dyn RecallInjector> {
+    fn inject(&self, dropped: &[Message], current_user: &str) -> Option<Message> {
+        (**self).inject(dropped, current_user)
+    }
+}
+
 pub struct NoopRecall;
 
 impl RecallInjector for NoopRecall {
@@ -219,6 +229,43 @@ mod tests {
             assert!(!dropped.is_empty());
             Some(Message::system("RECALL_MARKER"))
         }
+    }
+
+    struct HugeRecall;
+
+    impl RecallInjector for HugeRecall {
+        fn inject(&self, _dropped: &[Message], _current_user: &str) -> Option<Message> {
+            Some(Message::system("OVERSIZED_RECALL_".repeat(4_000)))
+        }
+    }
+
+    #[test]
+    fn an_oversized_injection_is_discarded_rather_than_evicting_the_current_turn() {
+        // The injection lands in a window that is already under pressure. The
+        // budget is re-checked AFTER injection, and an injection that does not
+        // fit is dropped whole — the current user turn is never the thing that
+        // gets pushed out to make room for recalled memory.
+        let history = vec![
+            Message::system("s"),
+            // Long enough that the old group cannot share the window with the
+            // current turn: the drop, and so the injection, actually happen.
+            Message::user(format!("UNIQUE_OLD_TURN_xyz {}", "z".repeat(400))),
+            Message::assistant("old-reply", Vec::new()),
+            Message::user("current-turn"),
+        ];
+        let window = (message_tokens(&history[0]) + message_tokens(&history[3]) + 64) as u32;
+        let packed = pack_messages(&history, window, &HugeRecall).unwrap();
+        assert!(
+            !packed.dropped.is_empty(),
+            "the fixture must actually put the window under pressure"
+        );
+        let contents: Vec<&str> = packed.messages.iter().map(|m| m.content.as_str()).collect();
+        assert!(contents.contains(&"current-turn"), "{contents:?}");
+        assert!(
+            !contents.iter().any(|c| c.contains("OVERSIZED_RECALL_")),
+            "an injection that does not fit must be discarded"
+        );
+        assert!(total_tokens(&packed.messages) <= window as usize);
     }
 
     #[test]

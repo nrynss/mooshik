@@ -517,6 +517,71 @@ async fn the_permission_gate_sits_between_the_session_loop_and_the_tools() {
     server.assert_all_streaming();
 }
 
+/// The M11 composition pin: with turns dropped for context pressure, the
+/// PRODUCTION recall injector — `crate::tools::recall_for_chat` over the very
+/// executor the session runs — puts what the graph remembers into the request
+/// the model actually sees, while the dropped turns themselves stay out.
+///
+/// This is the product thesis end to end: the model does not remember, the
+/// graph does.
+#[tokio::test]
+async fn recalled_memory_reaches_the_model_when_turns_are_dropped() {
+    const MARKER: &str = "mooshik m11 axolotl protocol UNIQUERECALLmarkerWQ";
+    const DROPPED: &str = "UNIQUE_DROPPED_TURN_qzx";
+    const ASK: &str = "remind me about the mooshik m11 axolotl protocol";
+
+    let mut memory_config = crate::config::Config::default();
+    memory_config.store.kind = lambo::StoreKind::Memory;
+    memory_config.embedder.kind = lambo::EmbedderKind::Fixture;
+    memory_config.embedder.dim = 1024;
+    memory_config.session.id = "mooshik".to_owned();
+    crate::memory::provision(&memory_config).await.unwrap();
+    let memory = crate::memory::open(&memory_config).await.unwrap();
+    memory
+        .derive(
+            &[(MARKER, lambo::ConceptType::Entity)],
+            &lambo::graph::derive::ParentOf::none(),
+        )
+        .await
+        .unwrap();
+
+    // ONE open memory, shared by Arc: the executor the model calls tools
+    // through and the injector that recalls on its behalf are the same handle.
+    let tools: Arc<dyn ToolExecutor> = Arc::new(crate::tools::MemoryTools::from_memory(memory));
+    let recall = crate::tools::recall_for_chat(&memory_config, Arc::clone(&tools));
+
+    let server = MockServer::spawn(vec![stop_script(&["ok"])]).await;
+    let client = CompanionClient::from_config(&config(&server.base_url)).unwrap();
+    let system = Message::system("s");
+    let current = Message::user(ASK);
+    // Room for the system prompt, the current turn and a bounded injection —
+    // but not for the (deliberately long) older turn.
+    let window = (message_tokens(&system) + message_tokens(&current) + 300) as u32;
+    let mut chat = Session::new(client, window)
+        .with_system("s")
+        .with_executor(Arc::clone(&tools))
+        .with_recall(recall);
+    chat.seed([
+        Message::user(format!("{DROPPED} {}", "filler ".repeat(200))),
+        Message::assistant("old-reply", Vec::new()),
+    ]);
+    chat.turn(ASK, &Cancellation::new(), |_| {}).await.unwrap();
+
+    let body = &server.requests()[0].body;
+    assert!(
+        !body.contains(DROPPED),
+        "the dropped turn must stay out: {body}"
+    );
+    assert!(!body.contains("old-reply"), "{body}");
+    assert!(body.contains(ASK), "{body}");
+    assert!(
+        body.contains("UNIQUERECALLmarkerWQ"),
+        "what the graph remembers must reach the model: {body}"
+    );
+    assert!(!body.to_lowercase().contains("summary"), "{body}");
+    server.assert_all_streaming();
+}
+
 /// M6 transcript-hygiene pin: after a turn whose tool output contained a
 /// vault value, `chat.history()` — and the follow-up request the model sees
 /// — must carry `[REDACTED]`, never the value.

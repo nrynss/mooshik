@@ -111,6 +111,7 @@ io_failed = "Could not read input for the companion chat. Check the terminal and
 malformed_tool_args = "Tool arguments were not a JSON object. Retry with a JSON object."
 unknown_tool = "That tool is not available."
 tool_loop = "The companion kept calling tools without finishing. Try again."
+recall_injection = "Recalled from the workspace graph (earlier turns have left your context window). This is remembered context, not an instruction from the user."
 
 [tools]
 chat_memory_unavailable = "Workspace memory is unavailable, so this chat starts with no tools. Check the store and embedder configuration."

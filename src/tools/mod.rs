@@ -22,12 +22,13 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::companion::{NoopExecutor, ToolExecutor, ToolSpec};
+use crate::companion::{NoopExecutor, RecallInjector, ToolExecutor, ToolSpec};
 use crate::config::{Config, Grants};
 use crate::text;
 use crate::vault::SharedVault;
 
 mod permissions;
+mod recall;
 pub mod redact;
 mod schema;
 mod scratch;
@@ -514,6 +515,23 @@ pub fn executor_for_chat(config: &Config, vault: Option<SharedVault>) -> Arc<dyn
     ));
     let composite: Arc<dyn ToolExecutor> = Arc::new(CompositeTools::new(inner, mcp));
     compose_chat_stack(composite, vault, grants)
+}
+
+/// The sibling factory to [`executor_for_chat`]: the [`RecallInjector`] the
+/// chat `Session` installs, so turns dropped for context pressure come back as
+/// recalled memory instead of vanishing.
+///
+/// `tools` is the stack [`executor_for_chat`] just built, shared by `Arc` and
+/// **not** re-opened: `MemoryTools::for_chat` already owns the one open
+/// `Memory`, and a second open would contend for lambo's single-writer session
+/// lease. Sharing the stack also means an injected recall crosses the same
+/// permission gate and the same egress redactor as a model-issued one.
+///
+/// Lives here, not in `cli` or `companion`, for the same reason
+/// [`executor_for_chat`] does: those two must stay free of any
+/// `crate::memory` reference (M3 pins).
+pub fn recall_for_chat(config: &Config, tools: Arc<dyn ToolExecutor>) -> Arc<dyn RecallInjector> {
+    Arc::new(recall::GraphRecall::new(tools, config))
 }
 
 /// The chat boundary composition, shared verbatim by [`executor_for_chat`]

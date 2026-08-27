@@ -434,7 +434,10 @@ fn chat(layout: &HomeLayout) -> anyhow::Result<()> {
     // tool boundary prints one notice and continues unredacted).
     let executor =
         crate::tools::executor_for_chat(&config, open_vault_for_chat(layout, &config, &root));
-    crate::companion::run_chat(&config, executor).map_err(anyhow::Error::new)
+    // The injector shares the executor's Arc — one open Memory, one lease —
+    // so turns dropped for context pressure come back as recalled memory.
+    let recall = crate::tools::recall_for_chat(&config, Arc::clone(&executor));
+    crate::companion::run_chat(&config, executor, recall).map_err(anyhow::Error::new)
 }
 
 /// Open the shared vault handle for chat. `None` on any failure — provider
