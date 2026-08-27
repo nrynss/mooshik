@@ -188,3 +188,83 @@ Two of three root causes closed and verified in production. The third is a
 one-line cast in Lambo. Once it lands, canonization climbs the rest of the
 ladder on the **existing** graph — the daemon re-evaluates every cycle, so it
 needs a rebuild and a short run, not another full Gemini pass.
+
+---
+
+# Outcome, and a fourth cause behind the other three
+
+## What the repair achieved
+
+```
+                        before (mooshik)   after (mooshik-v3)
+concepts                      44                 325+
+event_time stamped          0 / 16            120 / 120
+distinct corpus days           -              7 (21-27 Aug)
+Venerable                      0                  2
+Candidate                      6                 42
+```
+
+Three causes closed and verified in production:
+
+1. historical `event_time` reaches the graph (lambo `71334f0` + this repo),
+2. the bootstrap writer runs Solo, not Swarm (lambo `9aa8939`; and the image
+   now ships one binary so the serve child cannot drift),
+3. **Stage 2 decodes `coverage` and promoted to Venerable on Postgres for
+   the first time** (lambo `b829099`).
+
+Plus two of our own: a failed MCP write read as success, and a durability
+gate that first never fired and then watched the wrong depth.
+
+## The fourth cause: an LLM extractor does not repeat itself
+
+The corpus facts still do not reach Canonical, and no further bug is
+responsible. The corpus was built on the assumption that a **verbatim** source
+sentence yields an identical extracted concept. It does not. One sentence,
+repeated across the week, entered the graph as three separate nodes:
+
+```
+"The Windpipe ring never holds more than 512 in-flight messages."
+"The Windpipe ring has a maximum capacity of 512 in-flight messages."
+"The Windpipe ring has a maximum capacity of 512 in-flight messages;
+ overflow writers block instead of dropping messages."
+```
+
+Each carries one supporting interaction on one day. No merge, so no
+recurrence, so nothing can climb — independent of every fix above.
+
+The tell is in what *did* earn standing: both Venerable concepts are
+`document:file:...` resources. Those have deterministic, machine-generated
+names, so they match exactly, merge, and accumulate. The only part of the
+corpus with stable identity is the only part that climbed.
+
+All three copies are embedded, so this is not simply missing vectors. Either
+the concept had no embedding **at derive time** — writes ack before the
+embedder runs, which is J3's design — leaving exact-text matching as the only
+fallback, or the semantic threshold is stricter than these paraphrases.
+Unconfirmed; worth settling before prescribing a fix.
+
+**The general shape, if it holds:** a bulk ingest may be structurally unable
+to merge semantically, because concepts are created before their embeddings
+exist. Then a bootstrap can only merge on exact text, and an LLM extractor
+will not give you exact text. Recurrence — and therefore earned memory —
+would depend on the extractor emitting stable identity for a repeated fact.
+
+## Decision
+
+Accepted as-is: Mooshik does not lean on canonization. Recall runs off
+embeddings and the keyword leg, not canonization status.
+
+The residue is a **recall** concern rather than a canonization one: three
+paraphrases of one fact can occupy three slots of a `top_k` of 5, so
+duplicates crowd the window. Worth weighing when recall quality is measured,
+not before.
+
+## Each defect this session was a false green
+
+Not one of the six was a crash. A wire silently dropping a field; a policy
+defaulting to one that cannot work for a single writer; a decode that fails
+only on the store the product actually uses; a write error read as success; a
+durability gate reporting durable over an incomplete graph; and a corpus whose
+recurrence was an assumption nobody had measured. Each looked healthy, and
+each masked the next — which is why they could only be found one at a time,
+in that order, against the live store.
