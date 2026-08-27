@@ -141,10 +141,13 @@ class LamboMcpWriter:
         agent_id: str,
         concepts: list[dict[str, str]],
         parent_of: list[dict[str, str]] | None = None,
+        event_time: str | None = None,
     ) -> Any:
         args: dict[str, Any] = {"agent_id": agent_id, "concepts": concepts}
         if parent_of:
             args["parent_of"] = parent_of
+        if event_time:
+            args["event_time"] = event_time
         return await self._call("lambo_derive", args)
 
     async def record_action(
@@ -154,6 +157,7 @@ class LamboMcpWriter:
         produces: list[str] | None = None,
         modifies: list[str] | None = None,
         depends_on: list[str] | None = None,
+        event_time: str | None = None,
     ) -> Any:
         args: dict[str, Any] = {"agent_id": agent_id, "action": action}
         for field, value in (
@@ -163,6 +167,8 @@ class LamboMcpWriter:
         ):
             if value:
                 args[field] = value
+        if event_time:
+            args["event_time"] = event_time
         return await self._call("lambo_record_action", args)
 
     async def recall(

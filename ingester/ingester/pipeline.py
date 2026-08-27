@@ -13,6 +13,11 @@ The agent stays thin; this module owns every non-model decision:
   Note: `lambo_derive` itself has no `produces` field on the wire (that is
   `lambo_record_action`'s); the brief's "derive produces resources" is
   realized as the pair of these two calls, which keeps the schema honest.
+* historical about-time: every write carries the document's `event_time`
+  (commit author date, or file mtime — see `walker`). Lambo's solo promotion
+  policy counts recurrence over event time, never flush stamps, so without
+  this a decade of history collapses into one afternoon and canonization
+  promotes nothing — the pathology M9 measured before this was carried.
 
 Delivery semantics are **at-least-once**: the checkpoint for a document is
 marked only after its concepts are written, so a crash between the last
@@ -141,13 +146,16 @@ async def ingest(
             for c in concepts
         ]
         for batch in _split_batches(payload):
-            await writer.derive(settings.agent_id, batch, parent_of)
+            await writer.derive(
+                settings.agent_id, batch, parent_of, event_time=doc.event_time
+            )
             report.derive_calls += 1
         await writer.record_action(
             settings.agent_id,
             f"Ingested {doc.kind} {doc.source}: "
             f"{len(concepts)} concepts extracted by {settings.model}",
             produces=[parent],
+            event_time=doc.event_time,
         )
         report.action_calls += 1
         report.concepts += len(concepts)

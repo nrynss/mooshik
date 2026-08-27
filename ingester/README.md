@@ -63,8 +63,21 @@ session holder when one exists (Mooshik chat holding the lease), and become
 the hub otherwise — either way exactly one graph gets written and the
 companion stays up while the corpus loads.
 
-Tools called: `lambo_derive`, `lambo_record_action`, `lambo_recall`, with the
-same parameter shapes as `src/tools/schema.rs`.
+Tools called: `lambo_derive`, `lambo_record_action`, `lambo_recall`.
+
+**Every write carries the document's historical `event_time`** — the commit
+author date, or a file's mtime. Lambo's solo promotion policy counts
+recurrence over event time and never over flush stamps, so without this a
+decade of history arrives as one afternoon, no concept ever clears the
+Candidate bar, and canonization promotes nothing. That was measured, not
+predicted: M9's first run over this graph found an empty canonical pool.
+`created_at` stays server-stamped; `event_time` is the only client-supplied
+time Lambo accepts, and omitting it means "a live fact, about now".
+
+Note the surface split: Mooshik's in-process companion tools
+(`src/tools/schema.rs`) deliberately have **no** `event_time` — a chat
+deriving a fact is asserting it about now. Historical evidence enters only
+through this ingester.
 
 Client choice: the official **`mcp` package** (`stdio_client` +
 `ClientSession`). It matched lambo's wire shapes with zero friction, so no

@@ -55,12 +55,41 @@ M11 is last on purpose and is allowed to fail; see M11.
 | **M5** | Built 2026-08-26, `75cda1a` → `88abf81`. Review round 2 **APPROVE**, zero residue (`m5-round2.md`). Default grants: Decision 6 settled — lambo memory tools allowed, scratch prompt, rest deny. |
 | **M6** | Built 2026-08-26, `071c10d` → `4613aea`. Review round 2 **APPROVE**, zero residue (`m6-round2.md`). Scratch env injection + egress redaction at the tool boundary. |
 | **M7** | Built 2026-08-26, `caa8962` → `958564f`. Review round 2 **APPROVE**, zero residue (`m7-round2.md`). `recall` / `stats` commands; exit codes 0/2/1; live-verified against Cloud SQL + Vertex. |
-| **M8** | Built 2026-08-26, `ingester/` subdirectory, commits through `df8d779`. Review round 2 **APPROVE**, zero residue (`m8-round2.md`). J2 proxy path + Vertex Flash extraction proven live; Cloud Run deploy docs pending IAM. |
+| **M8** | Built 2026-08-26, `ingester/` subdirectory, commits through `df8d779`. Review round 2 **APPROVE**, zero residue (`m8-round2.md`). J2 proxy path + Vertex Flash extraction proven live; deployed to Cloud Run as a batch Job (IAM + deploy sequence in `ingester/README.md`). Every write now carries the document's historical `event_time` — see the event-time note under M9. |
 | **M9** | Built 2026-08-26, `measurement/` subpackage, commits through `1f3217e`. Review round 2 **APPROVE**, zero residue (`m9-round2.md`). Live on the M8 graph: coverage 59.3% gated, raw precision 10/10, canonization promoted nothing (the predicted pathology, now measured). |
 | **M10** | Built 2026-08-26, `2bc5665` → `f50765f`. Review round 2 **APPROVE**, zero residue (`m10-round2.md`). MCP host: configured servers, vault-ref env, `mcp.<server>.<tool>` naming, gate+redaction integrated, live-verified against real `lambo serve`. |
 | **M11** | Not started. Allowed to fail. |
 
-Lambo pin: `nrynss/lambo` git `rev = f90a662` (`lambo-for-mooshik`). E1/E2 (path dep, then rev pin) were done as the rev pin directly; bump the SHA after a Lambo fix.
+Lambo pin: `nrynss/lambo` git `rev = 71334f0` (`lambo-for-mooshik`). E1/E2 (path dep, then rev pin) were done as the rev pin directly; bump the SHA after a Lambo fix.
+
+### The event-time fix (2026-08-27)
+
+M9 measured an **empty canonical pool** — canonization promoted nothing. The
+cause was not the Solo policy but a dropped input: Lambo's solo score counts
+recurrence over `Interaction::about_time`, and the MCP wire had no field to
+carry it, so every historical write landed stamped with the flush clock. A
+decade of commit dates collapsed into one afternoon, every concept scored ~1
+session against a Candidate bar of 3, and nothing *could* promote however
+well-attested it was.
+
+Fixed across both repos:
+
+* **Lambo `71334f0`** — optional RFC3339 `event_time` on `DeriveParams` and
+  `RecordActionParams`, threaded to the existing `derive_async_as` /
+  `ActionRecord` paths that always supported it. `created_at` stays
+  server-stamped, so F18's backdating guard is untouched.
+* **Mooshik** — the ingester stamps every derive and record_action with the
+  document's date (commit author date; file mtime as the weaker fallback).
+
+Deliberately **not** exposed on Mooshik's in-process companion tools: a chat
+deriving a fact asserts it about now. Historical evidence enters only through
+the ingester.
+
+**Open:** the existing M8 graph still holds NULL `event_time` rows, and the
+checkpoint (keyed on content hash) will skip re-sent documents — so re-running
+the ingester alone will not repair it. Re-ingest into a fresh session or
+SQL-backfill; that decision is unmade. Re-running M9 afterwards is the proof:
+the wrongly-rejected rate should fall from 100%.
 
 ---
 

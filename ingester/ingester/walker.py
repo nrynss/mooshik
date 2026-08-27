@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -50,6 +51,46 @@ class Document:
     path: Path | None
     kind: str  # "file" | "commit"
     text: str
+    #: RFC3339 historical about-time of this evidence, or None for "about now".
+    #: Lambo's solo promotion policy counts recurrence over event time, so a
+    #: bulk ingest only recurs if this is carried. Commits use the author date
+    #: (`_parse_git_date`); files use mtime (`_file_event_time`).
+    event_time: str | None = None
+
+
+def _rfc3339(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).isoformat()
+
+
+def _parse_git_date(raw: str) -> str | None:
+    """Normalize git's `%aI` to RFC3339 UTC; None when unparseable.
+
+    A malformed date degrades the document to a live fact rather than
+    failing it: the extraction is still worth having, only its recurrence
+    evidence is lost.
+    """
+    if not raw:
+        return None
+    try:
+        return _rfc3339(datetime.fromisoformat(raw.replace("Z", "+00:00")))
+    except ValueError:
+        log.warning("unparseable commit date %r; ingesting as a live fact", raw)
+        return None
+
+
+def _file_event_time(path: Path) -> str | None:
+    """A file's modification time as RFC3339 UTC.
+
+    Weaker evidence than a commit date, and deliberately so: a fresh clone
+    or copy rewrites every mtime to the copy date, which collapses the
+    recurrence spread this feeds. Files that genuinely aged in place on the
+    machine carry a real date; the git corpus is the strong signal.
+    """
+    try:
+        return _rfc3339(datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc))
+    except OSError as error:
+        log.warning("no mtime for %s: %s", path, error)
+        return None
 
 
 def iter_files(root: Path, extensions: tuple[str, ...]) -> list[Path]:
@@ -153,6 +194,7 @@ def iter_commits(repo: Path) -> list[Document]:
                 path=repo,
                 kind="commit",
                 text=f"commit {sha}\nauthor-date {author_date}\n{body}",
+                event_time=_parse_git_date(author_date),
             )
         )
     return docs
@@ -173,6 +215,7 @@ def collect_documents(root: Path, extensions: tuple[str, ...]) -> list[Document]
                 path=path,
                 kind="file",
                 text=text,
+                event_time=_file_event_time(path),
             )
         )
     for repo in iter_repos(root):

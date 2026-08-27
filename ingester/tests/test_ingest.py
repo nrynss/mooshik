@@ -298,6 +298,8 @@ class FakeWriter:
     def __init__(self):
         self.derives = []
         self.actions = []
+        self.derive_event_times = []
+        self.action_event_times = []
         self.stats_responses = [{"log_depth": 0}]
         self.stats_calls = 0
 
@@ -310,11 +312,21 @@ class FakeWriter:
         self.stats_calls += 1
         return response
 
-    async def derive(self, agent_id, concepts, parent_of=None):
+    async def derive(self, agent_id, concepts, parent_of=None, event_time=None):
         self.derives.append((agent_id, concepts, parent_of))
+        self.derive_event_times.append(event_time)
 
-    async def record_action(self, agent_id, action, produces=None, modifies=None, depends_on=None):
+    async def record_action(
+        self,
+        agent_id,
+        action,
+        produces=None,
+        modifies=None,
+        depends_on=None,
+        event_time=None,
+    ):
         self.actions.append((agent_id, action, produces))
+        self.action_event_times.append(event_time)
 
 
 def _make_settings(tmp_path, **kw):
@@ -394,6 +406,132 @@ def test_report_defaults_shape():
     report = Report()
     assert report.documents == [] and isinstance(report.documents, list)
     assert DocumentReport("s", "written").concepts == 0
+
+
+# ------------------------------------------------------------ event time ----
+#
+# Lambo's solo promotion policy counts recurrence over event time, never flush
+# stamps. Before these pins a decade of history landed as one afternoon and
+# canonization promoted nothing — the pathology M9 measured.
+
+
+@pytest.fixture()
+def dated_repo(tmp_path):
+    """Two commits authored a year apart, so recurrence has real spread."""
+    repo = tmp_path / "dated"
+    repo.mkdir()
+    base = {
+        "GIT_AUTHOR_NAME": "Ingester Test",
+        "GIT_AUTHOR_EMAIL": "ingest@example.com",
+        "GIT_COMMITTER_NAME": "Ingester Test",
+        "GIT_COMMITTER_EMAIL": "ingest@example.com",
+        "HOME": str(tmp_path),
+    }
+
+    def git(*args, when=None):
+        env = dict(base)
+        if when:
+            # Author date is the historical claim; committer date is not.
+            env["GIT_AUTHOR_DATE"] = when
+            env["GIT_COMMITTER_DATE"] = when
+        subprocess.run(
+            ["git", "-C", str(repo), *args], check=True, capture_output=True, env=env
+        )
+
+    git("init", "-q")
+    (repo / "a.md").write_text("first\n")
+    git("add", ".")
+    git("commit", "-qm", "first commit", when="2021-03-04T05:06:07+00:00")
+    (repo / "b.md").write_text("second\n")
+    git("add", ".")
+    git("commit", "-qm", "second commit", when="2022-03-04T05:06:07+00:00")
+    return repo
+
+
+def test_commit_documents_carry_the_author_date_as_event_time(dated_repo):
+    docs = walker.iter_commits(dated_repo)
+    stamps = sorted(d.event_time for d in docs)
+    assert stamps == [
+        "2021-03-04T05:06:07+00:00",
+        "2022-03-04T05:06:07+00:00",
+    ], f"author dates must survive as RFC3339 UTC, got {stamps}"
+
+
+def test_an_unparseable_commit_date_degrades_to_a_live_fact():
+    # Never fail the document over its date: the extraction is still worth
+    # having, only its recurrence evidence is lost.
+    assert walker._parse_git_date("not-a-date") is None
+    assert walker._parse_git_date("") is None
+    assert walker._parse_git_date("2021-03-04T05:06:07Z") == "2021-03-04T05:06:07+00:00"
+
+
+def test_file_documents_carry_mtime_as_event_time(tmp_path):
+    import os
+    from datetime import datetime, timezone
+
+    note = tmp_path / "note.md"
+    note.write_text("a durable fact\n")
+    when = datetime(2019, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
+    os.utime(note, (when.timestamp(), when.timestamp()))
+
+    docs = walker.collect_documents(tmp_path, (".md",))
+    assert [d.event_time for d in docs] == ["2019-07-01T12:00:00+00:00"]
+
+
+def test_every_write_carries_the_documents_event_time(tmp_path):
+    """The load-bearing pin: a write that drops event_time silently reverts
+    the graph to flush-time recurrence, and nothing ever promotes again."""
+    import os
+    from datetime import datetime, timezone
+
+    note = tmp_path / "note.md"
+    note.write_text("# Note\nsome durable fact about the workspace.\n" * 5)
+    when = datetime(2018, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+    os.utime(note, (when.timestamp(), when.timestamp()))
+
+    settings = _make_settings(tmp_path)
+    writer, _, report = _run(settings, tmp_path)
+
+    assert report.written == 1
+    expected = "2018-01-02T03:04:05+00:00"
+    assert writer.derive_event_times == [expected]
+    assert writer.action_event_times == [expected]
+
+
+def test_writer_sends_event_time_only_when_the_document_has_one():
+    """Absent event_time must not reach the wire as an explicit null — the
+    field is optional and omitting it means 'a live fact, about now'."""
+    import asyncio
+
+    from ingester.writer import LamboMcpWriter
+
+    sent = []
+
+    writer = LamboMcpWriter.__new__(LamboMcpWriter)
+
+    async def fake_call(tool, arguments):
+        sent.append((tool, arguments))
+        return None
+
+    writer._call = fake_call
+
+    asyncio.run(writer.derive("a", [{"content": "c", "concept_type": "entity"}]))
+    asyncio.run(
+        writer.derive(
+            "a",
+            [{"content": "c", "concept_type": "entity"}],
+            event_time="2020-05-06T07:08:09+00:00",
+        )
+    )
+    asyncio.run(writer.record_action("a", "did a thing"))
+    asyncio.run(
+        writer.record_action("a", "did a thing", event_time="2020-05-06T07:08:09+00:00")
+    )
+
+    assert "event_time" not in sent[0][1]
+    assert sent[1][1]["event_time"] == "2020-05-06T07:08:09+00:00"
+    assert "event_time" not in sent[2][1]
+    assert sent[3][1]["event_time"] == "2020-05-06T07:08:09+00:00"
 
 
 # ---------------------------------------------------------------- writer ----
