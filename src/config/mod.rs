@@ -527,7 +527,8 @@ mod tests {
     #[test]
     fn config_load_rejects_symlink_and_repairs_mode() {
         use std::os::unix::fs::{symlink, PermissionsExt};
-        let root = std::env::temp_dir().join(format!("mooshik-config-{}", std::process::id()));
+        let root = crate::secure_path::canonical_temp_dir()
+            .join(format!("mooshik-config-{}", std::process::id()));
         let outside = root.with_extension("outside");
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_file(&outside);
@@ -552,8 +553,8 @@ mod tests {
     #[test]
     fn config_load_rejects_symlinked_parent() {
         use std::os::unix::fs::symlink;
-        let root =
-            std::env::temp_dir().join(format!("mooshik-config-parent-{}", std::process::id()));
+        let root = crate::secure_path::canonical_temp_dir()
+            .join(format!("mooshik-config-parent-{}", std::process::id()));
         let outside = root.with_extension("outside");
         let _ = std::fs::remove_file(&root);
         let _ = std::fs::remove_dir_all(&root);

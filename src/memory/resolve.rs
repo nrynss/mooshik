@@ -54,7 +54,7 @@ mod tests {
     }
 
     fn fake_gemini_credentials() -> (std::path::PathBuf, Config) {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::secure_path::canonical_temp_dir().join(format!(
             "mooshik-gemini-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()

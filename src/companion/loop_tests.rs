@@ -526,14 +526,10 @@ async fn tool_results_are_redacted_before_history_or_the_model() {
     use crate::vault::{PassphraseProvider, Vault};
 
     const VALUE: &str = "history-pin-live-value";
-    let dir = std::env::temp_dir().join(format!(
-        "mooshik-loop-vault-{}-{:x}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .subsec_nanos()
-    ));
+    // One test, one dir — pid-keyed; pre-clean guards against pid reuse.
+    let dir = crate::secure_path::canonical_temp_dir()
+        .join(format!("mooshik-loop-vault-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut vault = Vault::open(
         dir.join("vault"),

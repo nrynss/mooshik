@@ -223,7 +223,8 @@ mod tests {
     }
 
     fn path(label: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("mooshik-home-{label}-{}", std::process::id()))
+        crate::secure_path::canonical_temp_dir()
+            .join(format!("mooshik-home-{label}-{}", std::process::id()))
     }
 
     #[cfg(unix)]

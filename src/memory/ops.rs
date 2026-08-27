@@ -124,7 +124,8 @@ mod tests {
 
     #[tokio::test]
     async fn fixture_memory_provisions_and_opens() {
-        let root = std::env::temp_dir().join(format!("mooshik-memory-{}", std::process::id()));
+        let root = crate::secure_path::canonical_temp_dir()
+            .join(format!("mooshik-memory-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let _home = crate::home::HomeLayout::new(&root);
         #[cfg(unix)]

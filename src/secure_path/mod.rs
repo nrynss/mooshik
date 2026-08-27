@@ -26,6 +26,18 @@ fn invalid_path() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, "unsafe path")
 }
 
+/// The platform temp directory with symlinks resolved, for tests.
+///
+/// The descriptor walk refuses symlinked path components, and macOS's
+/// `std::env::temp_dir()` sits under `/var -> private/var`, so any test
+/// building a home there must hand the walk a symlink-free root.
+#[cfg(test)]
+pub(crate) fn canonical_temp_dir() -> std::path::PathBuf {
+    std::env::temp_dir()
+        .canonicalize()
+        .expect("platform temp dir resolves")
+}
+
 #[cfg(unix)]
 fn component_name(component: Component<'_>) -> io::Result<&OsStr> {
     match component {

@@ -600,7 +600,8 @@ mod tests {
 
     #[test]
     fn chat_prepare_succeeds_on_default_home_without_dsn() {
-        let root = std::env::temp_dir().join(format!("mooshik-chat-prep-{}", std::process::id()));
+        let root = crate::secure_path::canonical_temp_dir()
+            .join(format!("mooshik-chat-prep-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let layout = HomeLayout::new(&root);
         layout.init().unwrap();
@@ -846,8 +847,8 @@ mod tests {
     #[test]
     fn a_vault_value_never_reaches_a_rendered_error() {
         let value_in_play = "s3cret-alpha-value-m7";
-        let root =
-            std::env::temp_dir().join(format!("mooshik-m7-vault-pin-{}", std::process::id()));
+        let root = crate::secure_path::canonical_temp_dir()
+            .join(format!("mooshik-m7-vault-pin-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let layout = HomeLayout::new(&root);
         let file = layout.init().unwrap();

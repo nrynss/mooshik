@@ -156,14 +156,16 @@ mod tests {
     /// Open a throwaway vault preloaded with secrets; the caller drops the
     /// returned path guard after the vault handle.
     fn fixture_vault(secrets: &[(&str, &str)]) -> SharedVault {
-        let dir = std::env::temp_dir().join(format!(
-            "mooshik-redact-{}-{:x}",
+        // A counter, not the clock: macOS's realtime clock ticks in
+        // microseconds, so nanosecond-named dirs collide across parallel
+        // tests and one test's cleanup races another's open.
+        static FIXTURE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = crate::secure_path::canonical_temp_dir().join(format!(
+            "mooshik-redact-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .subsec_nanos()
+            FIXTURE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut vault = crate::vault::Vault::open(
             dir.join("vault"),

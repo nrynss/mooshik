@@ -13,7 +13,12 @@ use mooshik::home::HomeLayout;
 
 #[test]
 fn report_prints_only_the_top_level_message_even_when_the_chain_carries_material() {
-    let root = std::env::temp_dir().join(format!("mooshik-report-pin-{}", std::process::id()));
+    // Canonicalized because the home walk refuses symlinked components and
+    // macOS's temp dir sits under `/var -> private/var`.
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .expect("platform temp dir resolves")
+        .join(format!("mooshik-report-pin-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let layout = HomeLayout::new(&root);
     layout.init().expect("fixture home initializes");

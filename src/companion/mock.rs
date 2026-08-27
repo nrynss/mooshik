@@ -234,7 +234,25 @@ async fn handle_conn(
     }
     for frame in script.frames {
         if !frame.delay.is_zero() {
-            tokio::time::sleep(frame.delay).await;
+            // A cancelling client closes the connection during this pause, but
+            // the later writes can still land in the loopback socket buffer
+            // before the peer's close is processed (reliably so on macOS), so
+            // watch the read half for EOF instead of relying on a failed write.
+            let sleep = tokio::time::sleep(frame.delay);
+            tokio::pin!(sleep);
+            let mut probe = [0u8; 8];
+            loop {
+                tokio::select! {
+                    _ = &mut sleep => break,
+                    read = stream.read(&mut probe) => match read {
+                        Ok(0) | Err(_) => {
+                            aborted.store(true, Ordering::SeqCst);
+                            return;
+                        }
+                        Ok(_) => {}
+                    },
+                }
+            }
         }
         if stream.write_all(frame.data.as_bytes()).await.is_err() || stream.flush().await.is_err() {
             aborted.store(true, Ordering::SeqCst);
