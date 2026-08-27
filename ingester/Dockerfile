@@ -22,13 +22,16 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates git \
  && rm -rf /var/lib/apt/lists/*
 
-# MUST match the rev in the repo root Cargo.toml. This binary is the `lambo
-# serve` child the writer speaks MCP to, and its params are
-# `deny_unknown_fields`: a rev older than 71334f0 has no `event_time` on
-# lambo_derive / lambo_record_action and rejects every historical write the
-# ingester now sends.
+# MUST match the rev in the repo root Cargo.toml (pinned by a test). This
+# binary is the `lambo serve` child the writer speaks MCP to, and it decides
+# two things the bootstrap depends on:
+#   * `deny_unknown_fields` on its write params — a rev without `event_time`
+#     rejects every historical write rather than ignoring the field;
+#   * the canonization policy — a rev that cannot select Solo runs Swarm,
+#     which needs independent agents to converge, so a single-writer ingest
+#     promotes nothing.
 RUN cargo install --git https://github.com/nrynss/lambo \
-      --rev 71334f0bfb38e68c6071537a5eba1d587f07acea \
+      --rev 0aaaba9617efd1a069155db4de2f15e547e37017 \
       lambo \
       --no-default-features --features store-postgres,embed-gemini
 

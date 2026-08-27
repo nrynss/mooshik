@@ -658,6 +658,26 @@ def test_dockerfile_lambo_rev_matches_the_workspace_pin():
 # ---------------------------------------------------------------- writer ----
 
 
+def test_the_promotion_policy_reaches_the_serve_child(monkeypatch):
+    """Without this the child canonizes under lambo's default, Swarm.
+
+    Swarm promotes on independent agents converging, which a single-writer
+    bootstrap never does — so the graph would fill up and promote nothing,
+    exactly the pathology M9 measured. The child env is a strict allowlist,
+    so a variable that is not named there is stripped and the failure is
+    silent: a healthy-looking ingest with an empty canonical pool.
+    """
+    from ingester.writer import LamboMcpWriter
+
+    monkeypatch.setenv("LAMBO_PROMOTION_POLICY", "Solo")
+    env = LamboMcpWriter._build_params(["lambo", "serve"]).env
+    assert env is not None
+    assert env.get("LAMBO_PROMOTION_POLICY") == "Solo", (
+        "the serve child must inherit the promotion policy, or it runs Swarm "
+        "and a single-writer graph can never promote"
+    )
+
+
 def test_writer_child_env_is_an_allowlist_not_wholesale_inheritance(monkeypatch):
     from ingester.writer import LamboMcpWriter
 

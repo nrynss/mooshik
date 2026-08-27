@@ -1428,7 +1428,7 @@ dependencies = [
 [[package]]
 name = "lambo"
 version = "0.2.2"
-source = "git+https://github.com/nrynss/lambo?rev=71334f0bfb38e68c6071537a5eba1d587f07acea#71334f0bfb38e68c6071537a5eba1d587f07acea"
+source = "git+https://github.com/nrynss/lambo?rev=0aaaba9617efd1a069155db4de2f15e547e37017#0aaaba9617efd1a069155db4de2f15e547e37017"
 dependencies = [
  "anyhow",
  "async-trait",

@@ -128,6 +128,13 @@ class LamboMcpWriter:
         "LAMBO_STORE",
         "LAMBO_EMBEDDER",
         "LAMBO_EMBED_DIM",
+        # Canonization policy for the serve child. Without this the child runs
+        # lambo's default (Swarm), which requires independent agents to
+        # converge — so a single-writer bootstrap promotes NOTHING, however
+        # well attested. That was the primary cause of M9's empty canonical
+        # pool. The allowlist strips anything not named here, so omitting it
+        # silently reinstates the bug.
+        "LAMBO_PROMOTION_POLICY",
         # Gemini embedder credentials (lambo adapter reads these names)
         "LAMBO_GEMINI_PROJECT",
         "LAMBO_GEMINI_LOCATION",

@@ -22,6 +22,12 @@ if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]]; then
 fi
 
 
+# Canonization policy for the serve child. lambo defaults to Swarm, which
+# promotes on independent agents converging — a bootstrap has one writer, so
+# under Swarm it fills the graph and promotes nothing. Default to Solo and let
+# an operator override; the writer's env allowlist passes this through.
+export LAMBO_PROMOTION_POLICY="${LAMBO_PROMOTION_POLICY:-Solo}"
+
 # Default serve command carries the ingester's own session id; operators can
 # override with an explicit INGEST_LAMBO_SERVE (e.g. to match a holder).
 if [[ -z "${INGEST_LAMBO_SERVE:-}" ]]; then

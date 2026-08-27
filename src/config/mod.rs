@@ -530,6 +530,11 @@ impl Config {
                 gc_interval: self.daemon.gc_interval,
                 canonization_eval_interval_secs: self.daemon.canonization_eval_interval_secs,
             },
+            // `None` = "leave the product default alone". Mooshik's policy is
+            // Solo and `memory::resolve_product` stamps it after this, so it
+            // stays the single authority; naming it here too would be a second
+            // place to keep in step.
+            promotion_policy: None,
         }
     }
 
