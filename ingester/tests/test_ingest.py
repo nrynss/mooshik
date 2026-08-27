@@ -727,6 +727,33 @@ def test_drain_polls_until_log_depth_reaches_zero():
     asyncio.run(scenario())
 
 
+def test_a_failed_tool_call_is_detected_on_the_real_result_model():
+    """The regression this closes: a failed MCP call read as a success.
+
+    `mcp` names the flag `is_error` and treats `isError` as the wire alias
+    only, so reading the camelCase name off the model raises AttributeError
+    and a getattr default swallowed it. Every failed `lambo_derive` then
+    parsed its own error text as the payload and the document was
+    checkpointed done — a silent write loss on the failure path.
+
+    Built from the real `mcp` model, not a stand-in, because a hand-rolled
+    fake with an `isError` attribute is exactly what hid this.
+    """
+    from mcp.types import CallToolResult, TextContent
+
+    from ingester.writer import tool_failed
+
+    failed = CallToolResult(
+        content=[TextContent(type="text", text="boom: it failed")], isError=True
+    )
+    ok = CallToolResult(content=[TextContent(type="text", text="{}")])
+
+    assert tool_failed(failed) is True, "a real error result must be detected"
+    assert tool_failed(ok) is False
+    # Objects carrying neither spelling must not read as failures.
+    assert tool_failed(object()) is False
+
+
 def test_drain_reads_the_rendered_report_the_server_actually_sends():
     """The regression this closes: `lambo_stats` answers in human-readable
     text, not JSON, so a dict-only reading never matched. The gate then

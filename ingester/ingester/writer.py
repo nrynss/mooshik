@@ -28,6 +28,29 @@ from mcp.client.stdio import stdio_client
 
 log = logging.getLogger(__name__)
 
+def tool_failed(result: Any) -> bool:
+    """Did this MCP tool call come back as an error?
+
+    `mcp` names the field `is_error`; `isError` is only its **wire alias**.
+    Reading the camelCase name off the model raises `AttributeError`, and a
+    `getattr(..., False)` default turns that into "no error" — so every
+    failed call read as a success, its error text was parsed as the payload,
+    and the document was checkpointed done. A silent write loss, and only on
+    the failure path, which is why nothing noticed.
+
+    Both spellings are accepted so this cannot break again in either
+    direction if the field is ever renamed back.
+    """
+    for name in ("is_error", "isError"):
+        try:
+            value = getattr(result, name)
+        except AttributeError:
+            continue
+        if value is not None:
+            return bool(value)
+    return False
+
+
 def log_depth(stats: Any) -> int | None:
     """The write-behind depth out of a `lambo_stats` reply, or None.
 
@@ -146,7 +169,7 @@ class LamboMcpWriter:
         if self.session is None:
             raise RuntimeError("writer not started: use 'async with'")
         result = await self.session.call_tool(tool, arguments)
-        if getattr(result, "isError", False):
+        if tool_failed(result):
             text = result.content[0].text if result.content else ""
             raise RuntimeError(f"{tool} failed: {text}")
         if not result.content:
