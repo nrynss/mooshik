@@ -633,25 +633,35 @@ def test_workspace_corpus_carries_no_secret_that_would_drop_a_document():
     assert not dropped, f"documents would be dropped: {dropped}"
 
 
-def test_dockerfile_lambo_rev_matches_the_workspace_pin():
-    """The image's `lambo serve` child must be the rev Mooshik pins.
+def test_the_image_ships_one_binary_so_the_serve_child_cannot_drift():
+    """The writer speaks MCP to a `serve` child. That child used to be a
+    separately-installed `lambo` pinned by SHA — a second copy of the same
+    code, free to drift from the library Mooshik links. It did drift: the
+    image sat on a rev whose write params predated `event_time`, and since
+    they are deny_unknown_fields it would have rejected every historical
+    write rather than ignoring the field.
 
-    Its wire params are deny_unknown_fields, so a child older than the
-    event_time rev rejects every historical write — the whole ingest fails,
-    not just its dates. Drift here is invisible until a live run.
+    Building `mooshik` from this checkout makes the skew impossible instead
+    of merely tested for, so this asserts the property rather than comparing
+    two revisions that no longer both exist.
     """
-    import re
-
     root = Path(__file__).resolve().parents[2]
-    cargo = (root / "Cargo.toml").read_text()
     dockerfile = (root / "ingester" / "Dockerfile").read_text()
 
-    pinned = re.search(r'lambo = \{ git = "[^"]+", rev = "([0-9a-f]{40})"', cargo)
-    baked = re.search(r"--rev ([0-9a-f]{40})", dockerfile)
-    assert pinned and baked, "both pins must be readable"
-    assert baked.group(1) == pinned.group(1), (
-        f"Dockerfile bakes lambo {baked.group(1)[:7]} but Cargo.toml pins "
-        f"{pinned.group(1)[:7]} — the serve child will reject writes"
+    assert "cargo install" not in dockerfile, (
+        "the image must not install a second copy of lambo; build mooshik "
+        "from this checkout so the serve child is the code we test"
+    )
+    assert "cargo build --release --locked" in dockerfile, (
+        "--locked, or the image can resolve a different lambo than the "
+        "lockfile this repo tests against"
+    )
+    assert "/usr/local/bin/mooshik" in dockerfile
+
+    entrypoint = (root / "ingester" / "deploy" / "entrypoint.sh").read_text()
+    assert "mooshik serve" in entrypoint, "the serve child must be mooshik"
+    assert "mooshik init" in entrypoint, (
+        "`mooshik serve` opens an existing home, so init must run first"
     )
 
 

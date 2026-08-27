@@ -22,16 +22,18 @@ if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]]; then
 fi
 
 
-# Canonization policy for the serve child. lambo defaults to Swarm, which
-# promotes on independent agents converging — a bootstrap has one writer, so
-# under Swarm it fills the graph and promotes nothing. Default to Solo and let
-# an operator override; the writer's env allowlist passes this through.
-export LAMBO_PROMOTION_POLICY="${LAMBO_PROMOTION_POLICY:-Solo}"
+# The serve child is `mooshik serve`, not a separately-installed lambo: one
+# binary, so the library Mooshik links and the server it talks to cannot
+# drift. It also stamps the Solo promotion policy in Rust — a raw lambo would
+# default to Swarm, which promotes on independent agents converging, and a
+# bootstrap has exactly one writer.
+#
+# `mooshik serve` takes its session from configuration, not a flag.
+export MOOSHIK_HOME="${MOOSHIK_HOME:-/tmp/mooshik-home}"
+export MOOSHIK_SESSION="${MOOSHIK_SESSION:-${INGEST_SESSION:-ingest-cloudrun}}"
 
-# Default serve command carries the ingester's own session id; operators can
-# override with an explicit INGEST_LAMBO_SERVE (e.g. to match a holder).
 if [[ -z "${INGEST_LAMBO_SERVE:-}" ]]; then
-  INGEST_LAMBO_SERVE="/usr/local/bin/lambo serve --session ${INGEST_SESSION:-ingest-cloudrun}"
+  INGEST_LAMBO_SERVE="/usr/local/bin/mooshik serve"
   export INGEST_LAMBO_SERVE
 fi
 /usr/local/bin/cloud-sql-proxy mooshik:us-central1:lambo-pg --port 5432 "${CREDS_FLAG[@]}" &
@@ -46,5 +48,19 @@ done
   exit 1
 }
 echo "cloud sql proxy ready"
+
+# `mooshik init` creates the home and provisions the store schema
+# (idempotent). It needs the proxy up, so it runs here rather than at build
+# time. It also creates a vault unconditionally, and there is no OS keyring in
+# a container — so use the passphrase provider with a throwaway value. Nothing
+# is ever stored in this vault: the DSN arrives by environment, and the serve
+# child only opens a vault when configuration *references* one, which it does
+# not. The passphrase is unset before the child is spawned, and the writer's
+# env allowlist excludes it in any case.
+export MOOSHIK_VAULT_PROVIDER=passphrase
+MOOSHIK_VAULT_PASSPHRASE="$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
+export MOOSHIK_VAULT_PASSPHRASE
+/usr/local/bin/mooshik init
+unset MOOSHIK_VAULT_PASSPHRASE
 
 exec python3 -m ingester "$@"

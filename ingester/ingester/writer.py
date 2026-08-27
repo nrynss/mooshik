@@ -124,16 +124,30 @@ class LamboMcpWriter:
         "TMPDIR",
         "LANG",
         "TZ",
-        # store / embedder resolution for the proxy-or-hub serve child
+        # The serve child is `mooshik serve` (see deploy/entrypoint.sh): it
+        # locates its home and session from these. Without them it cannot
+        # start, and without MOOSHIK_SESSION it would silently serve the
+        # DEFAULT session — writing a bootstrap into the wrong graph.
+        "MOOSHIK_HOME",
+        "MOOSHIK_SESSION",
+        "MOOSHIK_AGENT",
+        # Mooshik's store / embedder overlay for that child.
+        "MOOSHIK_STORE_KIND",
+        "MOOSHIK_EMBEDDER",
+        "MOOSHIK_EMBED_DIM",
+        "MOOSHIK_GEMINI_PROJECT",
+        "MOOSHIK_GEMINI_LOCATION",
+        "MOOSHIK_GEMINI_MODEL",
+        "MOOSHIK_GEMINI_CREDENTIALS",
+        # store / embedder resolution when the child is a raw `lambo serve`
+        # instead — still supported through INGEST_LAMBO_SERVE.
         "LAMBO_STORE",
         "LAMBO_EMBEDDER",
         "LAMBO_EMBED_DIM",
-        # Canonization policy for the serve child. Without this the child runs
-        # lambo's default (Swarm), which requires independent agents to
-        # converge — so a single-writer bootstrap promotes NOTHING, however
-        # well attested. That was the primary cause of M9's empty canonical
-        # pool. The allowlist strips anything not named here, so omitting it
-        # silently reinstates the bug.
+        # Only meaningful for a raw lambo child: `mooshik serve` stamps Solo
+        # in Rust. A raw lambo defaults to Swarm, which promotes on
+        # independent agents converging — so a single-writer bootstrap under
+        # Swarm promotes NOTHING, which is what M9 measured.
         "LAMBO_PROMOTION_POLICY",
         # Gemini embedder credentials (lambo adapter reads these names)
         "LAMBO_GEMINI_PROJECT",

@@ -1,8 +1,20 @@
 # Mooshik bootstrap ingester — Cloud Run Job image.
 #
-# Multi-stage: builds the pinned `lambo` binary (the MCP writer's subprocess)
-# from the same rev Mooshik consumes, then a slim Python runtime with the
-# ingester, the Cloud SQL Auth Proxy, and the fixture corpus baked in.
+# Multi-stage: builds the `mooshik` binary from THIS checkout, then a slim
+# Python runtime with the ingester, the Cloud SQL Auth Proxy, and the fixture
+# corpus baked in.
+#
+# One binary, deliberately. The writer speaks MCP to a `serve` child, and that
+# child used to be a separately-installed `lambo` pinned by SHA — a second
+# copy of the same code that could drift from the library Mooshik links. It
+# did drift once: the image sat on a rev whose write params predated
+# `event_time`, and because they are `deny_unknown_fields` that image would
+# have rejected every historical write rather than ignoring the field.
+#
+# `mooshik serve` publishes lambo's whole MCP surface from the library this
+# repo already compiles, so the skew is now impossible rather than merely
+# tested for. It also stamps the Solo promotion policy in Rust, which is what
+# lets a single-writer bootstrap promote at all.
 #
 # Build (from the repo root):
 #   docker build -f ingester/Dockerfile -t ingester .
@@ -16,35 +28,31 @@
 #
 # Deploy as a Cloud Run Job — see README.md "Cloud Run deployment".
 
-FROM rust:1.97-slim AS lambo-build
+FROM rust:1.97-slim AS mooshik-build
 
+# libdbus is the OS keyring backend's link dependency (see the repo README).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates git \
+ && apt-get install -y --no-install-recommends \
+      pkg-config libssl-dev libdbus-1-dev ca-certificates git \
  && rm -rf /var/lib/apt/lists/*
 
-# MUST match the rev in the repo root Cargo.toml (pinned by a test). This
-# binary is the `lambo serve` child the writer speaks MCP to, and it decides
-# two things the bootstrap depends on:
-#   * `deny_unknown_fields` on its write params — a rev without `event_time`
-#     rejects every historical write rather than ignoring the field;
-#   * the canonization policy — a rev that cannot select Solo runs Swarm,
-#     which needs independent agents to converge, so a single-writer ingest
-#     promotes nothing.
-RUN cargo install --git https://github.com/nrynss/lambo \
-      --rev 0aaaba9617efd1a069155db4de2f15e547e37017 \
-      lambo \
-      --no-default-features --features store-postgres,embed-gemini
+WORKDIR /src
+COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
+COPY src ./src
+# --locked so the image cannot silently resolve a different lambo than the
+# lockfile this repo tests against.
+RUN cargo build --release --locked
 
 FROM python:3.13-slim
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates \
+ && apt-get install -y --no-install-recommends curl ca-certificates libdbus-1-3 \
  && rm -rf /var/lib/apt/lists/* \
  && curl -sS --fail -o /usr/local/bin/cloud-sql-proxy \
       https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.14.2/cloud-sql-proxy.linux.amd64 \
  && chmod +x /usr/local/bin/cloud-sql-proxy
 
-COPY --from=lambo-build /usr/local/cargo/bin/lambo /usr/local/bin/lambo
+COPY --from=mooshik-build /src/target/release/mooshik /usr/local/bin/mooshik
 
 WORKDIR /app
 

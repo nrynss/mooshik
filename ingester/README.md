@@ -32,7 +32,7 @@ pytest -q                                                  # offline seam tests
 | --- | --- | --- |
 | `INGEST_EXTENSIONS` | `.md,.markdown,.txt,.rst` | extension **allowlist** (never a denylist) |
 | `INGEST_EXTRA_FORBIDDEN` | *(empty)* | comma-separated secret values to drop on sight — paste current `mooshik secret list` values here; vault values never leave the Rust process |
-| `INGEST_LAMBO_SERVE` | `lambo serve` | writer command, e.g. `/path/to/lambo serve` |
+| `INGEST_LAMBO_SERVE` | `mooshik serve` | writer command; a raw `lambo serve` also works |
 | `INGEST_SESSION` | `ingest-<hostname>` | session id for the MCP writes |
 | `INGEST_AGENT` | `bootstrap` | agent id recorded in the graph |
 | `INGEST_MODEL` | `gemini-2.5-flash` | Vertex extraction model |
@@ -57,7 +57,36 @@ pytest -q                                                  # offline seam tests
 
 ## Write path
 
-The ingester speaks MCP over stdio to a **`lambo serve` subprocess**
+### One binary
+
+The image ships **only `mooshik`**. The serve child used to be a separately
+installed `lambo` pinned by SHA — a second copy of the same code, free to
+drift from the library Mooshik links, and it did: the image once sat on a rev
+whose write params predated `event_time`, and because they are
+`deny_unknown_fields` it would have *rejected* every historical write rather
+than ignoring the field.
+
+`mooshik serve` publishes lambo's whole MCP surface from the library this repo
+already compiles, so that skew is now impossible rather than merely tested
+for. It also stamps the **Solo** promotion policy in Rust: a raw `lambo`
+defaults to Swarm, which promotes only when independent agents converge, so a
+single-writer bootstrap under Swarm fills the graph and promotes nothing —
+exactly what M9 measured.
+
+`mooshik serve` takes its session from configuration (`MOOSHIK_SESSION`), not
+a flag, and opens an *existing* home — so the entrypoint runs `mooshik init`
+first, after the proxy is up. That init creates a vault it never uses: no
+secret is stored there (the DSN arrives by environment) and the serve child
+opens a vault only when configuration *references* one. The throwaway
+passphrase is unset before the child is spawned, and the writer's env
+allowlist excludes it regardless.
+
+A raw `lambo serve` is still supported through `INGEST_LAMBO_SERVE` — set
+`LAMBO_PROMOTION_POLICY=Solo` if you go that way, or it will promote nothing.
+
+### Write path
+
+The ingester speaks MCP over stdio to a **`mooshik serve` subprocess**
 (`INGEST_LAMBO_SERVE`). Lambo's J2 makes a refused `serve` proxy into the
 session holder when one exists (Mooshik chat holding the lease), and become
 the hub otherwise — either way exactly one graph gets written and the
@@ -85,14 +114,18 @@ hand-rolled JSON-RPC was needed. One sharp edge, fixed in `writer.py`: the
 package filters the child environment to a whitelist by default, which
 silently strips `LAMBO_*`/DSN config — so the writer builds its own
 **targeted allowlist** (`LamboMcpWriter._CHILD_ENV_ALLOWLIST`) of exactly the
-variables the serve child needs: `PATH`, `HOME`, `TMPDIR`, `LANG`, `TZ`,
-the store/embedder knobs (`LAMBO_STORE`, `LAMBO_EMBEDDER`,
-`LAMBO_EMBED_DIM`), Gemini credentials (`LAMBO_GEMINI_PROJECT/_LOCATION/
-_CREDENTIALS`, `GCP_LAMBO_CREDENTIALS`,
-`GOOGLE_APPLICATION_CREDENTIALS`), and the Postgres DSN authorities
+variables the serve child needs: `PATH`, `HOME`, `TMPDIR`, `LANG`, `TZ`; the
+child's identity (`MOOSHIK_HOME`, `MOOSHIK_SESSION`, `MOOSHIK_AGENT`) and its
+store/embedder overlay (`MOOSHIK_STORE_KIND`, `MOOSHIK_EMBEDDER`,
+`MOOSHIK_EMBED_DIM`, `MOOSHIK_GEMINI_*`); the `LAMBO_*` equivalents for a raw
+lambo child; Gemini credentials (`GCP_LAMBO_CREDENTIALS`,
+`GOOGLE_APPLICATION_CREDENTIALS`); and the Postgres DSN authorities
 (`MOOSHIK_POSTGRES_DSN`, `LAMBO_POSTGRES_DSN`, `DATABASE_URL`). Everything
 else in the parent environment — vault passphrases, cloud tokens, whatever
 else a shell accumulates — stays out of the subprocess.
+
+`MOOSHIK_SESSION` earns its place: without it the child would serve the
+*default* session and quietly write a bootstrap into the wrong graph.
 
 For the **proxy path** the `lambo serve` child must resolve the same store
 as the holder, so a refused start proxies into it instead of opening its own
@@ -156,7 +189,8 @@ want to own — we deliberately keep none. Documented here and in
 ## Deployment (Cloud Run Job) — deployed 2026-08-26
 
 The image builds from the repo root (`docker build -f ingester/Dockerfile .`)
-and bakes in the pinned `lambo` binary plus the Cloud SQL Auth Proxy. Deployed
+and builds the `mooshik` binary from this checkout, plus the Cloud SQL Auth
+Proxy. Deployed
 as a Cloud Run **Job** (batch, not a serving service): each execution starts
 the proxy, runs one ingest pass over `/corpus`, and exits.
 
