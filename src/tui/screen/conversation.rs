@@ -16,7 +16,9 @@
 //!
 //! The one exception is a turn taller than the whole panel: dropping *that*
 //! left the panel empty behind its frame, with nothing to scroll it back. See
-//! [`Block::clip_to`].
+//! [`Block::clip_to`], which also states the floor — a block that still does not
+//! fit once clipped is dropped after all, because a half-drawn frame is worse
+//! than an empty panel.
 
 use ratatui::text::Span;
 
@@ -105,7 +107,7 @@ impl Block {
         }
     }
 
-    /// Trim this block from the front so it fits in `height` rows.
+    /// Trim this block so it fits in `height` rows.
     ///
     /// Only reached when the newest block *alone* is taller than the panel — a
     /// long reply into a short terminal; about 1900 characters into a 31-row
@@ -115,40 +117,62 @@ impl Block {
     /// letting the panel clip it is what the design asks for: the panel "shows
     /// the tail that fits".
     ///
-    /// The *tail* is what survives, so the lines dropped are the ones at the
-    /// front — the newest words are the ones the reader is waiting for, and they
-    /// are the ones that would otherwise fall off the bottom. What is never
-    /// dropped is the chrome that makes the rest legible: the speaker's row, and
-    /// a card's two rules with its badge. A quotation without its attribution is
-    /// the one thing this module refuses to draw.
-    fn clip_to(self, height: u16) -> Self {
+    /// **A turn is trimmed from the front; a card is trimmed from the back.** A
+    /// turn is a stream and reads from its last word — the newest words are the
+    /// ones the reader is waiting for, and they are the ones that would otherwise
+    /// fall off the bottom. A card is a *statement* and reads from its first: a
+    /// caution clipped from the front began mid-sentence ("every day this week —
+    /// it's the thing you come back to most"), which is the same fault as a
+    /// quotation without its attribution, and this module refuses that outright.
+    ///
+    /// What is never dropped either way is the chrome that makes the rest
+    /// legible: the speaker's row, and a card's two rules with its badge. Which
+    /// is also the floor, and why this returns an `Option`: below that chrome
+    /// there is nothing left to clip to, and it **declines** rather than handing
+    /// back a block with no content in it.
+    ///
+    /// It used to return the block regardless, so a recall clipped to one row came
+    /// back still measuring two, [`fit`] pushed it, and the grid clipped away the
+    /// card's bottom rule and its badge — precisely the half-frame this exists to
+    /// prevent, and reachable at 120x9 on the wide layout or 80x11 on the narrow
+    /// one. What was drawn there was a frame with no title, no quote and no
+    /// reason: strictly less than nothing.
+    fn clip_to(self, height: u16) -> Option<Self> {
         match self {
-            Self::Gap => Self::Gap,
+            Self::Gap => (height >= 1).then_some(Self::Gap),
             Self::Said {
                 time,
                 name,
                 name_role,
                 text_role,
                 lines,
-            } => Self::Said {
-                time,
-                name,
-                name_role,
-                text_role,
-                lines: keep_tail(lines, height.saturating_sub(1)),
-            },
-            Self::Recalled { card, quote } => Self::Recalled {
-                card,
-                quote: keep_tail(quote, height.saturating_sub(2)),
-            },
-            Self::Cautioned { mut card, lead } => {
+            } => {
+                // The speaker's row, and at least one row of what they said: a
+                // name with its words trimmed away says who spoke and not what.
+                let room = height.checked_sub(1).filter(|room| *room > 0)?;
+                Some(Self::Said {
+                    time,
+                    name,
+                    name_role,
+                    text_role,
+                    lines: keep_tail(lines, room),
+                })
+            }
+            Self::Recalled { card, mut quote } => {
+                let room = height.checked_sub(2).filter(|room| *room > 0)?;
+                quote.truncate(usize::from(room));
+                Some(Self::Recalled { card, quote })
+            }
+            Self::Cautioned { mut card, mut lead } => {
                 // The lead is the statement, so it is trimmed last: the list of
                 // what leans on the commitment goes first.
-                let room = height.saturating_sub(CAUTION_CHROME);
-                let lead = keep_tail(lead, room);
+                let room = height
+                    .checked_sub(CAUTION_CHROME)
+                    .filter(|room| *room > 0)?;
+                lead.truncate(usize::from(room));
                 let left = room.saturating_sub(rows(lead.len()));
                 card.leaning.truncate(usize::from(left));
-                Self::Cautioned { card, lead }
+                Some(Self::Cautioned { card, lead })
             }
         }
     }
@@ -182,12 +206,19 @@ impl Block {
             Self::Cautioned { card, lead } => {
                 let (col, design) = CAUTION;
                 let width = card_width(design, grid.width().saturating_sub(col));
-                let mut inner = Panel::new(&card.title, Kind::Caution)
+                // The title is fixed chrome, not content: `1d`'s " One thing
+                // before you do " is the same sentence on every caution there
+                // could be, so it comes from `en.toml` beside every other panel
+                // title rather than from the model.
+                let mut inner = Panel::new(text::get("tui.panel_caution"), Kind::Caution)
                     .badge(&card.because)
                     .draw(grid, Place::new(col, row, width, self.height()));
+                // One state for the whole block, threaded through the lines: see
+                // `emphasise_quoted`.
+                let mut inside = false;
                 let mut at = 0;
                 for line in lead {
-                    inner.run(1, at, emphasise_quoted(line));
+                    inner.run(1, at, emphasise_quoted(line, &mut inside));
                     at = at.saturating_add(1);
                 }
                 // A blank row separates the statement from what leans on it.
@@ -212,7 +243,8 @@ fn rows(count: usize) -> u16 {
     u16::try_from(count).unwrap_or(u16::MAX)
 }
 
-/// The last `room` of `lines`, dropping from the front. See [`Block::clip_to`].
+/// The last `room` of `lines`, dropping from the front — how a *turn* is
+/// clipped. A card is clipped the other way round; see [`Block::clip_to`].
 fn keep_tail(mut lines: Vec<String>, room: u16) -> Vec<String> {
     let room = usize::from(room);
     if lines.len() > room {
@@ -241,19 +273,29 @@ fn card_width(design: u16, available: u16) -> u16 {
 /// the model prose: the emphasis is a property of how a caution is drawn, not of
 /// what it says.
 ///
-/// An unclosed quotation mark leaves the rest of the line emphasised, which is
+/// **`inside` is the caller's, and it spans the whole block.** A quotation is a
+/// property of the caution, not of a line, and the caution's lead wraps: at 40
+/// columns `1d`'s opening breaks as `You've held to "block, never` / `drop" every
+/// day this week —`. This used to derive the state from `index % 2` within one
+/// line, which restarts at "outside" on every line, so the second line came out
+/// exactly inverted — `drop` in body text and the words after the closing mark in
+/// the brightest step. The caller resets it once per block; see
+/// [`Block::draw`].
+///
+/// An unclosed quotation mark leaves the rest of the block emphasised, which is
 /// the benign reading. Nothing is dropped either way — every character of the
 /// input appears in the output.
-fn emphasise_quoted(line: &str) -> Vec<Span<'static>> {
+fn emphasise_quoted(line: &str, inside: &mut bool) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     for (index, piece) in line.split('"').enumerate() {
         if index > 0 {
-            // The mark belongs with the quotation it delimits.
+            // The mark belongs with the quotation it delimits, whichever end of
+            // it this one is.
             spans.push(Span::styled("\"", Role::Strongest.style()));
+            *inside = !*inside;
         }
         if !piece.is_empty() {
-            let inside = index % 2 == 1;
-            let role = if inside { Role::Strongest } else { Role::Body };
+            let role = if *inside { Role::Strongest } else { Role::Body };
             spans.push(Span::styled(piece.to_owned(), role.style()));
         }
     }
@@ -320,6 +362,17 @@ fn blocks(conversation: &Conversation, person: &str, width: u16) -> Vec<Block> {
 /// The newest block is kept even when it does not fit, clipped to the panel —
 /// otherwise a single long reply produced an empty panel behind its frame, and
 /// nothing in the app scrolls it back. See [`Block::clip_to`].
+///
+/// **And only when clipping leaves something worth drawing.** [`Block::clip_to`]
+/// cannot shrink a block below its own chrome — a recall needs two rules, a
+/// caution four rows before a word of it is legible — and it declines rather than
+/// returning a block with nothing in it. The result is also re-measured here, so
+/// the two independent pieces of arithmetic (`clip_to`'s room and
+/// [`Block::height`]) have to agree before anything is drawn.
+///
+/// So a panel with a one-row interior and nothing but a card in it draws its own
+/// frame and nothing else: "never leave the panel empty" yields to "never draw a
+/// broken frame", because an empty panel is at least a whole one.
 fn fit(blocks: Vec<Block>, height: u16) -> Vec<Block> {
     let mut kept = Vec::new();
     let mut used = 0u16;
@@ -337,8 +390,11 @@ fn fit(blocks: Vec<Block>, height: u16) -> Vec<Block> {
         used = next;
         kept.push(block);
     }
-    if let Some(block) = oversized {
-        kept.push(block.clip_to(height));
+    if let Some(block) = oversized
+        .and_then(|block| block.clip_to(height))
+        .filter(|block| block.height() <= height)
+    {
+        kept.push(block);
     }
     kept.reverse();
     // A leading gap reads as a stray blank row at the top of the panel.
@@ -381,16 +437,16 @@ pub fn panel(
     let available = inner.height().saturating_sub(top);
     let blocks = fit(blocks(conversation, person, text_width), available);
 
-    // The newest turn sits on the panel's bottom rule, just above the composer,
-    // and any slack opens up under the elision marker instead. Dropping whole
-    // turns means the kept ones rarely fill the panel exactly, and top-anchoring
-    // left those spare rows at the bottom — a gap between the last thing said
-    // and the box you say the next thing in, which reads as a rendering fault.
-    let used: u16 = blocks
-        .iter()
-        .map(Block::height)
-        .fold(0u16, |sum, height| sum.saturating_add(height));
-    let mut at = top.saturating_add(available.saturating_sub(used));
+    // Top-anchored, and the slack is left at the bottom, because that is what the
+    // artboard draws: `1a` puts the elision marker on row 2, one blank on row 3,
+    // the first turn on row 4, and its last line on row 30 of an interior that
+    // runs to row 32 — two spare rows above the composer. Bottom-anchoring closed
+    // that gap and looked tidier, but the gap is the designer's: the conversation
+    // grows downwards into it, and pinning the newest turn to the rule meant every
+    // reply shifted the whole scroll up by its own height. What the reader needs
+    // is that the newest turn survives the trim, and [`fit`] is what provides
+    // that — it keeps the tail and drops from the front.
+    let mut at = top;
 
     for block in &blocks {
         block.draw(&mut inner, at);

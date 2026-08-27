@@ -15,7 +15,7 @@ fn day(label: &str, of_month: &str, hard: bool) -> Day {
         short_label: label.to_owned(),
         long_label: format!("{label} August"),
         day_of_month: of_month.to_owned(),
-        weather: Some("Rain · 15°".to_owned()),
+        weather: Some("Rain, 15°".to_owned()),
         mood: Some(if hard {
             Mood::hard("A rough day")
         } else {
@@ -23,7 +23,10 @@ fn day(label: &str, of_month: &str, hard: bool) -> Day {
         }),
         load: Load::new(4, Tone::Plain),
         highlights: vec![Entry::line("Moved the cache")],
-        entries: vec![Entry::at("09:42", "The ring overflowed in production").hard()],
+        // Plain, as `1b` draws it: the incident is already named in yellow in the
+        // week gutter one panel to the left, and `1i` allows the caution colour
+        // twice a week.
+        entries: vec![Entry::at("09:42", "The ring overflowed in production")],
         notes: "You came back to this four times.\n\nAnd again since.".to_owned(),
     }
 }
@@ -181,6 +184,65 @@ fn every_thread_shows_its_reason_here() {
     );
 }
 
+/// This panel has no right margin, and `1b`'s own longest lines are why.
+///
+/// It has 39 columns past `THREAD_TEXT` and spends all of them: `Three days ·
+/// Monday, Tuesday, Thursday` is 38 characters on one line in the artboard, and
+/// `Cobalt Lantern retries failed fetches` is 37. The shared two-cell margin cut
+/// the available width to 37 and broke the first of those after `Tuesday,`.
+#[test]
+fn the_thread_panel_spends_its_whole_width() {
+    let mut workspace = workspace();
+    workspace.threads = vec![Thread {
+        summary: "Cobalt Lantern retries failed fetches".to_owned(),
+        days: [false, false, false, false, true, true, false],
+        because: Justification::history("Three days · Monday, Tuesday, Thursday"),
+        leaned_on: Vec::new(),
+    }];
+    let buf = drawn(120, 40, &workspace);
+    let row = row_of(&buf, 16..39, "Three days");
+    let line = row_text(&buf, row);
+    assert!(
+        line.contains("Three days · Monday, Tuesday, Thursday"),
+        "the reason was broken: {line:?}"
+    );
+    // And the summary above it is whole too, on one line.
+    let above = row_text(&buf, row - 1);
+    assert!(
+        above.contains("Cobalt Lantern retries failed fetches"),
+        "the summary was broken: {above:?}"
+    );
+}
+
+/// The detail pane's notes keep the artboard's breaks, which need five cells of
+/// margin rather than the shared two.
+///
+/// `1b` breaks `You came back to the 512 cap four / times on this day.` after
+/// `four` and `You still haven't called him back — / it's come up on two days
+/// since.` after the dash. Both fit one more word at 41 columns, so both reflowed.
+#[test]
+fn the_detail_notes_keep_the_artboards_breaks() {
+    let mut workspace = workspace();
+    workspace.week.days[5].notes = "You came back to the 512 cap four times on this day.\n\n         You still haven't called him back — it's come up on two days since."
+        .to_owned();
+    let buf = drawn(120, 40, &workspace);
+    let text = all_text(&buf);
+    for (line, spilled) in [
+        ("You came back to the 512 cap four", "four times"),
+        ("times on this day.", ""),
+        ("You still haven't called him back —", "back — it's"),
+        ("it's come up on two days since.", ""),
+    ] {
+        assert!(text.contains(line), "{line:?} is not a line: {text}");
+        if !spilled.is_empty() {
+            assert!(
+                !text.contains(spilled),
+                "the note ran on past the artboard's break: {spilled:?}"
+            );
+        }
+    }
+}
+
 /// The cursor brightens a row without moving it — the list's order is its
 /// meaning, so `J`/`K` must not reorder it.
 #[test]
@@ -249,15 +311,15 @@ fn day_titles_are_dates() {
     assert_eq!(buf[(88, 1)].fg, Role::Strongest.color());
 }
 
-/// The two runs on the bottom rule do not overlap, at any width.
+/// The two runs on the bottom rule do not overlap, at any width, and the keys
+/// are never the run that gets cut.
 ///
-/// They did, and 80 and 100 were exactly the widths that showed it: the scope's
-/// column is a proportion of the width, and below about 108 it landed inside the
-/// keys, which are a fixed 47 characters from the left margin. The old version
-/// of this test asserted on a *prefix* of the hint and only from 100 columns up,
-/// so it passed while the rendered rule read
-/// `H/L a day · J/K a thread · ^1 today ·21-27 August  ·  214 remembered`. It
-/// now asserts the whole hint, and covers 80 and 90.
+/// They did overlap, and 80 and 100 were exactly the widths that showed it: the
+/// scope's column is a proportion of the width, and below about 108 it landed
+/// inside the keys, which are a fixed 47 characters from the left margin. An
+/// earlier version of this test asserted on a *prefix* of the hint and only from
+/// 100 columns up, so it passed while the rendered rule read
+/// `H/L a day · J/K a thread · ^1 today ·21-27 August  ·  214 remembered`.
 #[test]
 fn the_bottom_rule_does_not_collide_with_itself() {
     let keys = crate::text::get("tui.hint_week");
@@ -268,25 +330,53 @@ fn the_bottom_rule_does_not_collide_with_itself() {
             rule.contains(keys),
             "the keys are cut off or overwritten at {width}: {rule:?}"
         );
+        // Nothing reaches the chrome's right edge, whichever runs were drawn.
+        let end = rule.trim_end().chars().count();
         assert!(
-            rule.contains("21-27 August · 214 remembered"),
-            "the scope is cut off at {width}: {rule:?}"
-        );
-        assert!(
-            !rule.contains("back to 21 August"),
-            "the long scope is on the narrow rule at {width}"
+            end <= usize::from(width - chrome::Margins::WIDE.right),
+            "the rule runs into the margin at {width}: {end} of {width}"
         );
     }
 }
 
+/// The scope prefers the long form and falls back to the written short one, which
+/// is what `1b` draws: `21-27 August · 214 things remembered` from column 74 to
+/// column 110 of 120. The comment here used to claim the long form would run off
+/// the edge, and the short one was used unconditionally as a result.
+#[test]
+fn the_rule_prefers_the_long_scope_where_it_fits() {
+    let buf = drawn(120, 40, &workspace());
+    let rule = row_text(&buf, 39);
+    assert!(
+        rule.contains("21-27 August · 214 things remembered"),
+        "the long scope is not on the wide rule: {rule:?}"
+    );
+    assert_eq!(col_of(&buf, 39, "21-27 August"), 74, "{rule:?}");
+
+    // At 100 the long form no longer fits and the short one does.
+    let buf = drawn(100, 40, &workspace());
+    let rule = row_text(&buf, 39);
+    assert!(
+        rule.contains("21-27 August · 214 remembered"),
+        "the short scope is missing at 100: {rule:?}"
+    );
+    assert!(!rule.contains("214 things remembered"), "{rule:?}");
+}
+
 /// A rule with no room for both runs keeps the keys whole and drops the scope,
-/// rather than writing the scope over them.
+/// rather than writing the scope over them — at 80 and 90 as well as at 60,
+/// because the scope is now measured against the chrome's own right edge.
 #[test]
 fn a_rule_too_narrow_for_both_runs_drops_the_scope() {
-    let buf = drawn(60, 40, &workspace());
-    let rule = row_text(&buf, 39);
-    assert!(rule.contains("H/L a day · J/K a thread"), "{rule:?}");
-    assert!(!rule.contains("214 remembered"), "{rule:?}");
+    for width in [60u16, 80, 90] {
+        let buf = drawn(width, 40, &workspace());
+        let rule = row_text(&buf, 39);
+        assert!(rule.contains("H/L a day · J/K a thread"), "{rule:?}");
+        assert!(
+            !rule.contains("214 remembered") && !rule.contains("214 things"),
+            "the scope was drawn into the margin at {width}: {rule:?}"
+        );
+    }
 }
 
 /// The detail pane with no day selected draws no title, so its accent rule is
@@ -325,11 +415,11 @@ fn the_detail_pane_shows_the_log_and_the_notes() {
     let text = all_text(&buf);
     assert!(text.contains("Day 5 August"), "the pane title is missing");
     assert!(text.contains("09:42"));
-    // `1b`'s detail head is `Rain, 15° · A rough day` — the tight separator,
-    // not the title rule's spaced one.
+    // `1b`'s detail head is `Rain, 15° · A rough day` — the tight separator, and
+    // the weather itself written with a comma so it composes into it.
     assert!(
-        text.contains("Rain · 15° · A rough day"),
-        "the detail head uses the wrong separator"
+        text.contains("Rain, 15° · A rough day"),
+        "the detail head does not read as the artboard's"
     );
     assert!(text.contains("The ring overflowed in"));
     assert!(text.contains("You came back to this four"));
@@ -373,6 +463,164 @@ fn the_columns_reach_the_right_edge() {
             "the day columns leave a gap at width {width}"
         );
     }
+}
+
+/// A terminal too narrow for seven 17-cell columns shows fewer whole days rather
+/// than seven shredded ones, and says on the bottom rule how many it dropped.
+///
+/// `1b` spends all 13 text columns of a day's 17 cells — "Mum called /
+/// mid-incident / — not called / back" is a wrap at 13 — so dividing the width by
+/// seven whatever the width was gave an 80-column terminal seven 11-cell columns.
+#[test]
+fn a_narrow_terminal_windows_the_days_rather_than_narrowing_them() {
+    let buf = drawn(80, 40, &workspace());
+    let text = all_text(&buf);
+    // 80 / 17 is four columns, windowed around the selected Day 5.
+    for shown in ["Day 3", "Day 4", "Day 5", "Day 6"] {
+        assert!(text.contains(shown), "{shown} is missing at 80 columns");
+    }
+    for hidden in ["Day 0", "Day 1", "Day 2"] {
+        assert!(!text.contains(hidden), "{hidden} was drawn at 80 columns");
+    }
+    // And the three that are not there are stated, spelled, on the bottom rule.
+    assert!(
+        row_text(&buf, 39).contains("three more days"),
+        "{:?}",
+        row_text(&buf, 39)
+    );
+
+    // Nothing is said when nothing is missing: 7 * 17 is 119.
+    for width in [119u16, 120, 200] {
+        let buf = drawn(width, 40, &workspace());
+        assert!(
+            all_text(&buf).contains("Day 0"),
+            "a day is missing at {width}"
+        );
+        assert!(
+            !row_text(&buf, 39).contains("more day"),
+            "days are claimed missing at {width}: {:?}",
+            row_text(&buf, 39)
+        );
+    }
+    // One missing day is one day, not "one more days".
+    let buf = drawn(118, 40, &workspace());
+    let rule = row_text(&buf, 39);
+    assert!(rule.contains("one more day"), "{rule:?}");
+    assert!(!rule.contains("one more days"), "{rule:?}");
+}
+
+/// The window follows the selected day and stops at both ends of the week, so
+/// `H`/`L` scroll it without it ever running off.
+#[test]
+fn the_window_follows_the_selection_and_clamps_at_the_ends() {
+    let mut workspace = workspace();
+    let windows = [
+        (0usize, "Day 0", "Day 3"),
+        (3, "Day 1", "Day 4"),
+        (6, "Day 3", "Day 6"),
+    ];
+    for (selected, first, last) in windows {
+        workspace.week.selected = selected;
+        let buf = drawn(80, 40, &workspace);
+        let text = all_text(&buf);
+        assert!(
+            text.contains(first),
+            "{first} is missing with {selected} selected"
+        );
+        assert!(
+            text.contains(last),
+            "{last} is missing with {selected} selected"
+        );
+        // Exactly four columns, so the window never overhangs either end.
+        let frames = (0..80u16).filter(|c| buf[(*c, 1)].symbol() == "┌").count();
+        assert_eq!(frames, 4, "{frames} columns with {selected} selected");
+        // And the selected day is always in the window.
+        assert!(text.contains(&format!("Day {selected}")));
+    }
+}
+
+/// The remainder of the division is spread a cell at a time, so no column is more
+/// than one cell wider than another — and the row still reaches the right edge.
+///
+/// The last column used to take the whole remainder, which made it six cells wider
+/// than its neighbours at 137 columns.
+#[test]
+fn no_column_is_more_than_one_cell_wider_than_another() {
+    for width in [70u16, 80, 100, 120, 137, 200] {
+        let mut workspace = workspace();
+        workspace.week.selected = 0;
+        let buf = drawn(width, 40, &workspace);
+        let starts: Vec<u16> = (0..width)
+            .filter(|c| buf[(*c, 1)].symbol() == "┌")
+            .collect();
+        assert!(!starts.is_empty(), "no columns at {width}");
+        let mut widths: Vec<u16> = starts.windows(2).map(|pair| pair[1] - pair[0]).collect();
+        widths.push(width - starts[starts.len() - 1]);
+        let narrowest = *widths.iter().min().expect("a column");
+        let widest = *widths.iter().max().expect("a column");
+        assert!(
+            widest - narrowest <= 1,
+            "columns differ by {} cells at {width}: {widths:?}",
+            widest - narrowest
+        );
+        // The design's own stride survives at 120, where the remainder is one.
+        if width == 120 {
+            assert_eq!(starts, [0, 17, 34, 51, 68, 85, 102]);
+        }
+    }
+}
+
+/// `1b` brightens two columns out of seven — the selected day and today — and
+/// leaves the other five in the fading step. Its column text divs are `var(--t)`
+/// for Wed 26 and Thu 27 and `var(--t2)` for the rest.
+#[test]
+fn the_selected_day_and_today_are_brighter_than_the_rest() {
+    let mut workspace = workspace();
+    // No day is today until the workspace says which, so only the selection is
+    // bright: a fallback here would brighten the last column of a week that has
+    // already ended and call it today.
+    let buf = drawn(120, 40, &workspace);
+    let highlight = 4;
+    assert_eq!(style_at(&buf, 1, highlight), Role::Fading.style(), "Day 0");
+    assert_eq!(style_at(&buf, 86, highlight), Role::Body.style(), "Day 5");
+    assert_eq!(
+        style_at(&buf, 103, highlight),
+        Role::Fading.style(),
+        "Day 6"
+    );
+
+    // Day 6's `day_of_month` is "26"; naming it today brightens its column too.
+    workspace.today.day_of_month = "26".to_owned();
+    let buf = drawn(120, 40, &workspace);
+    assert_eq!(style_at(&buf, 103, highlight), Role::Body.style(), "today");
+    assert_eq!(style_at(&buf, 86, highlight), Role::Body.style(), "Day 5");
+    assert_eq!(style_at(&buf, 1, highlight), Role::Fading.style(), "Day 0");
+    // A hard entry keeps the caution colour whichever column it is in.
+    let mut hard = workspace.clone();
+    hard.week.days[0].highlights = vec![Entry::line("Incident").hard()];
+    let buf = drawn(120, 40, &hard);
+    assert_eq!(style_at(&buf, 1, highlight), Role::Caution.style());
+}
+
+/// A column too narrow for prose draws its frame and its date and stops, rather
+/// than filling with words broken mid-letter.
+#[test]
+fn a_column_too_narrow_for_prose_draws_no_prose() {
+    let workspace = workspace();
+    // One column of eight cells: below `MIN_COLUMN_CELLS`.
+    let buf = drawn(8, 40, &workspace);
+    let text = all_text(&buf);
+    assert!(
+        !text.contains("Moved"),
+        "prose was shredded into a sliver: {text}"
+    );
+    assert_eq!(buf[(0, 1)].symbol(), "┌", "the frame is missing");
+    // Ten cells is enough, and then the column fills.
+    let buf = drawn(10, 40, &workspace);
+    assert!(
+        all_text(&buf).contains("Moved"),
+        "a wide-enough column is empty"
+    );
 }
 
 /// Every size draws without panicking.

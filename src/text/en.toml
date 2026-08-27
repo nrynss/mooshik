@@ -205,8 +205,8 @@ inert_list = "deny-until-a-tool-matches"
 # rather than chrome and arrives in the view model, so none of it is here.
 [tui]
 help = "Open the terminal interface"
-after_help = "The conversation, what the graph is doing underneath it, and what keeps coming back — in one pane you leave open.\n\nExamples:\n  mooshik tui           the live workspace\n  mooshik tui --demo    the design's own demo day, touching nothing\n\nKeys: Tab cycles panels · ^1 today · ^2 the week · Enter sends · Alt-Enter is a newline · Esc or ^C leaves. Needs a terminal; 80x24 is the smallest useful size."
-demo_help = "Draw the design's demo day instead of the live workspace. Reads no configuration and opens no database."
+after_help = "The conversation, what the graph is doing underneath it, and what keeps coming back — in one pane you leave open.\n\nExamples:\n  mooshik tui                  the live workspace\n  mooshik tui --demo           the design's demo day, touching nothing\n  mooshik tui --demo recall    the same day with Monday's words quoted back\n  mooshik tui --demo caution   the same day with one careful sentence standing\n\nKeys: Tab cycles panels · ^1 today · ^2 the week · Esc or ^C leaves. Needs a terminal; 80x24 is the smallest useful size."
+demo_help = "Draw the design's demo day instead of the live workspace, reading no configuration and opening no database. Takes an optional scene: today (the default), recall, or caution."
 brand = "Mooshik"
 separator = "  ·  "
 # The same bullet, tight, for body text. The title rule and the bottom rule
@@ -238,26 +238,64 @@ person_unknown = "You"
 # When there is no controlling terminal to take: `mooshik tui` in a pipe, a cron
 # job, or a CI step.
 needs_a_terminal = "The terminal interface needs a terminal to draw on, and this process has none. Run `mooshik tui` from an interactive shell; the recall, stats and chat commands write to a pipe and work anywhere."
-hint_composer = "Enter send  ·  Alt-Enter newline  ·  Nothing here needs saving"
+# When the terminal was taken successfully and then failed mid-session: a draw,
+# a poll or a read went wrong. Not the same fault as having no terminal at all,
+# so not the same sentence.
+session_failed = "The terminal interface stopped because the terminal could not be drawn to or read from. Your shell has been put back the way it was; run `mooshik tui` again to reopen it."
+hint_composer = "Nothing here needs saving"
 # Only keys `tui::input` binds may appear here — a hint is a promise. See the
 # header of that module for the whole keymap.
 hint_today = "Tab panel · J/K a thread · ^2 week · Esc leave"
 hint_week = "H/L a day · J/K a thread · ^1 today · Esc leave"
 hint_narrow = "Tab panel · ^2 week · Esc leave"
 # Not a key hint: how many threads the collapsed line did not have room for.
+# `{count}` is spelled where the artboards spell it — see [tui.numbers].
 narrow_more = "{count} more"
+# The same statement for the week screen: how many day columns the terminal is
+# too narrow to show. `1h` says "four more" beside the thread line it truncated;
+# this says it on the bottom rule about the columns it windowed away.
+#
+# Two keys, because English inflects the noun and "one more days" is not a
+# sentence anybody wrote. A locale with three plural forms adds its own keys here
+# and reads them in `week::offscreen_note`; deriving the plural from the count in
+# Rust would put a grammar rule in the renderer, which is exactly what this file
+# exists to prevent.
+week_offscreen = "{count} more days"
+week_offscreen_one = "one more day"
 narrow_trickle_prefix = "· Just remembered: "
 
 # The gutter a thread's marks sit in. The trickle's bullet is a glyph, so it
 # lives in Rust: see `widget::marks`.
 week_day_header = "  Fri Sat Sun Mon Tue Wed Thu"
 
-# The caution's dependency list gets a generated header and key hint, so the
-# count is a numeral here. Where the design spells it out — "eight other notes
-# lean on it" — that sentence is content and arrives in the view model, which is
-# where a locale can spell it however it likes.
+# Small numbers, spelled. Every artboard writes them out in prose — `1d`'s
+# "Eight things lean on it:", `1h`'s "four more" — so a generated sentence has
+# to as well, and how far a language spells before it gives up and uses digits
+# is a property of that language. Above twelve the numeral is used; see
+# `screen::spelled`, which is the only reader of this table.
+[tui.numbers]
+1 = "one"
+2 = "two"
+3 = "three"
+4 = "four"
+5 = "five"
+6 = "six"
+7 = "seven"
+8 = "eight"
+9 = "nine"
+10 = "ten"
+11 = "eleven"
+12 = "twelve"
+
+# The caution's dependency list gets a generated header, so its count is
+# substituted rather than written. Where the design spells it out — "eight other
+# notes lean on it" — that sentence is content and arrives in the view model,
+# which is where a locale can spell it however it likes.
 [tui.leans]
-header = "{count} things lean on it:"
+# `{Count}` rather than `{count}`: this sentence starts with the number, so the
+# word needs its capital — `1d` writes " Eight things lean on it:". A locale that
+# does not capitalise there uses `{count}` and gets the plain word.
+header = "{Count} things lean on it:"
 
 # The 80-column nav, which abbreviates rather than wrapping. Artboard `1h`.
 [tui.narrow]

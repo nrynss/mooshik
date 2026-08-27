@@ -1,0 +1,54 @@
+# Artboard `1d`, as the turns it adds to the demo day.
+#
+# "A quiet caution — said once, in the conversation, in the place a reply would
+# go. Not a modal, not an error, nothing to dismiss."
+#
+# Layered onto `demo.toml` by `tui::demo(Scene::Caution)`, for the reason
+# `demo_recall.toml`'s header gives: `1d` is `1a`'s Thursday with three more
+# things said in it.
+#
+# **One divergence from the artboard, and it is deliberate.** `1d` also draws the
+# two turns that answer the caution — "Keep it. I'll widen the ring instead." and
+# "Noted. Nothing changed." — while still showing "What leans on this" in the
+# middle panel. `screen::today`'s `Tail` reads only the *last* turn, on the
+# grounds that a caution answered an hour ago should not still be reshaping the
+# screen, and `1d`'s own argument is about the moment the caution is standing.
+# So this fixture stops at the caution. The answered state is what `--demo`
+# without a scene already shows: an ordinary screen with the thread list back.
+#
+# Prose here is UNWRAPPED, for the reason `demo.toml`'s header gives.
+
+# `1d`'s title rule reads 15:03.
+time = "15:03"
+
+[[entries]]
+time = "15:02"
+text = "Thinking about dropping instead"
+
+[[turns]]
+kind = "said"
+time = "15:02"
+speaker = "person"
+text = "Honestly — let's just drop on overflow. Simpler, and the writers stop stalling."
+
+# The artboard puts a bare `15:03  Mooshik` above the card and nothing beside it:
+# the yellow frame is what Mooshik said. An empty text draws the speaker's row
+# and no words, which is exactly that.
+[[turns]]
+kind = "said"
+time = "15:03"
+speaker = "mooshik"
+text = ""
+
+# No `title`: the card's name is fixed chrome — `1d`'s " One thing before you do "
+# — and comes from `tui.panel_caution`, not from the caution.
+[[turns]]
+kind = "cautioned"
+lead = "You've held to \"block, never drop\" every day this week — it's the thing you come back to most, and eight other notes lean on it:"
+leaning = [
+  "The postmortem is short because nothing dropped",
+  "The 40ms fairness quantum assumes writers wait",
+  "The runbook tells oncall to ignore drop alarms",
+  "... and five more",
+]
+because = "Nothing's changed — say the word and I'll follow"

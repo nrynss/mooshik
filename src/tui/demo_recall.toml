@@ -1,0 +1,59 @@
+# Artboard `1c`, as the turns it adds to the demo day.
+#
+# "Something came back — the model forgot; the memory didn't. Blue is only ever
+# this: a thing returning from another day, with its reason on the bottom rule."
+#
+# Layered onto `demo.toml` by `tui::demo(Scene::Recall)`, which is why this file
+# carries no week, no threads and no trickle: `1c` is the same Thursday as `1a`
+# with four more things said in it, and two of them are quotations from days
+# before. Duplicating the rest would be three files to keep in agreement about
+# one day.
+#
+# Prose here is UNWRAPPED, for the reason `demo.toml`'s header gives.
+
+# `1c`'s title rule reads 14:31, nine minutes after `1a`'s.
+time = "14:31"
+
+# The artboard's Today log gains the question that started this.
+[[entries]]
+time = "14:31"
+text = "Why 512, and not dropping"
+
+[[turns]]
+kind = "said"
+time = "14:31"
+speaker = "person"
+text = "Remind me why we capped the ring at 512 instead of just dropping on overflow?"
+
+[[turns]]
+kind = "said"
+time = "14:31"
+speaker = "mooshik"
+text = "You decided that on Monday, and leaned on it again in Wednesday's incident notes. Your words:"
+
+[[turns]]
+kind = "recalled"
+source = "From Monday 24 August"
+quote = "Blocking the writer is honest. Dropping is a lie the consumer only finds out an hour later."
+because = "You've come back to this every day this week"
+
+[[turns]]
+kind = "recalled"
+source = "From Wednesday's incident notes, 10:12"
+quote = "Overflow at 09:47 — nothing was dropped, writers just waited. That's why the postmortem is short."
+because = "You've raised this three times"
+
+# The artboard draws this as a continuation of the 14:31 reply above — the cards
+# interrupt one Mooshik turn — so it keeps that turn's own time rather than
+# inventing a new one.
+[[turns]]
+kind = "said"
+time = "14:31"
+speaker = "mooshik"
+text = "The 512 itself came from the NAS throughput ceiling — you worked that out on Friday."
+
+[[turns]]
+kind = "said"
+time = "14:33"
+speaker = "person"
+text = "Right. That goes in the postmortem."

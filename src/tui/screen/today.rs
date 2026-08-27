@@ -23,7 +23,7 @@ use crate::{
     },
 };
 
-use super::{aside, chrome, conversation, Band, Focus};
+use super::{aside, chrome, conversation, joined, Band, Focus};
 
 /// The column the right-hand column starts at on a 120-column screen, and the
 /// proportion that keeps when the terminal is a different width.
@@ -121,11 +121,12 @@ pub fn draw(grid: &mut Grid<'_>, workspace: &Workspace, focus: Focus, thread_cur
     let split = Split::new(grid.width(), band);
     let tail = Tail::of(workspace);
 
-    let subject = format!(
-        "{}{}{}",
-        workspace.now.long_date,
+    // Joined rather than formatted: the live workspace has no clock yet, and an
+    // unconditional separator drew "Mooshik  ·    ·  " on the primary path. See
+    // `screen::joined`.
+    let subject = joined(
+        &[&workspace.now.long_date, &workspace.now.time],
         text::get("tui.separator"),
-        workspace.now.time
     );
     chrome::title(grid, band.margins, &subject, chrome::View::Today);
 
@@ -333,6 +334,38 @@ mod tests {
         assert_eq!(split.trickle_rows, TRICKLE_ROWS);
     }
 
+    /// A band too short for a thread panel gives it zero rows, and a panel with no
+    /// interior draws no name — not a bare ` What keeps coming back ` floating on
+    /// the blank row above the bottom rule with no frame around it.
+    ///
+    /// Reachable at any terminal 18 rows or shorter and 100 columns or wider,
+    /// which is a tmux pane, not a pathological size.
+    #[test]
+    fn a_band_with_no_room_for_the_thread_panel_draws_no_title() {
+        let split = Split::new(120, Band::new(18, chrome::Margins::WIDE));
+        assert_eq!(split.threads_rows, 0, "the band is not short enough");
+        assert_eq!(split.trickle_rows, 0);
+
+        let workspace = workspace();
+        let text = all_text(&drawn(120, 18, &workspace, Focus::Conversation));
+        assert!(
+            !text.contains("What keeps coming back"),
+            "a frameless title was drawn: {text}"
+        );
+        // The screen is otherwise whole: the Today panel and both rules.
+        assert!(text.contains("Today"), "{text}");
+        assert!(text.contains("Tab panel"), "{text}");
+
+        // Three rows of frame is the least that has an interior, so at 22 rows —
+        // a 19-row band, 16 of them the Today panel's — its name comes back.
+        assert_eq!(
+            Split::new(120, Band::new(22, chrome::Margins::WIDE)).threads_rows,
+            3
+        );
+        let text = all_text(&drawn(120, 22, &workspace, Focus::Conversation));
+        assert!(text.contains("What keeps coming back"), "{text}");
+    }
+
     /// The whole screen draws without panicking at any size, down to one cell.
     #[test]
     fn every_size_draws_without_panicking() {
@@ -372,7 +405,6 @@ mod tests {
     fn a_standing_caution_swaps_the_middle_panel() {
         let mut workspace = workspace();
         workspace.conversation.turns = vec![Turn::Cautioned(Caution {
-            title: "One thing before you do".to_owned(),
             lead: "You've held to this every day.".to_owned(),
             leaning: vec!["The short postmortem".to_owned()],
             because: "Nothing's changed".to_owned(),
@@ -412,7 +444,6 @@ mod tests {
         let mut workspace = workspace();
         workspace.conversation.turns = vec![
             Turn::Cautioned(Caution {
-                title: "One thing before you do".to_owned(),
                 lead: "You've held to this.".to_owned(),
                 leaning: vec!["The short postmortem".to_owned()],
                 because: "Nothing's changed".to_owned(),
@@ -435,7 +466,6 @@ mod tests {
         let mut workspace = workspace();
         workspace.threads.clear();
         workspace.conversation.turns = vec![Turn::Cautioned(Caution {
-            title: "One thing".to_owned(),
             lead: "x".to_owned(),
             leaning: Vec::new(),
             because: "y".to_owned(),

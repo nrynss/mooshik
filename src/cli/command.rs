@@ -29,9 +29,18 @@ pub fn command() -> Command {
                 .about(text::get("tui.help"))
                 .after_help(text::get("tui.after_help"))
                 .arg(
+                    // An optional value: `--demo` is the ordinary day, and
+                    // `--demo recall` / `--demo caution` are the two artboards
+                    // that are states of the conversation rather than screens of
+                    // their own. `default_missing_value` is what keeps the bare
+                    // flag working, and the parser is what keeps a typo from
+                    // silently drawing the wrong one.
                     Arg::new("demo")
                         .long("demo")
-                        .action(ArgAction::SetTrue)
+                        .action(ArgAction::Set)
+                        .num_args(0..=1)
+                        .default_missing_value("today")
+                        .value_parser(["today", "recall", "caution"])
                         .help(text::get("tui.demo_help")),
                 ),
         )

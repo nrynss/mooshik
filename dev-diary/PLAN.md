@@ -640,14 +640,19 @@ progress). What landed:
 * The 16-colour palette with its rules enforced in code: no hex, no background but the ground, five
   bright slots deliberately unspent, red reserved to two uses, one double-ruled frame in the whole
   app. Cross-screen tests hold all of those at every terminal size.
-* `--demo` draws the design's own day, reading no configuration and opening no database.
+* `--demo` draws the design's own day, reading no configuration and opening no database. It takes
+  an optional scene — `--demo recall` for `1c`'s quoted words and `--demo caution` for `1d`'s one
+  careful sentence — because both artboards are states of the conversation rather than screens of
+  their own, and nothing else can reach them until the chat loop lands.
 
 What is **not** wired: the status bar is live (from `memory::stats`), and the rest of the live
 workspace is empty, because the data the artboards show has no source behind Mooshik yet — a day's
 weather and mood have none at all, and per-day thread marks need recalled nodes grouped by event
-date. Sending from the composer needs the M3 chat loop restructured into something a redraw loop can
-drive; until that lands `Enter` is deliberately inert and the draft stays where it was typed. The screens read the view model and never a store, so filling any
-of this in is a change to `tui::live` and nothing else.
+date. Sending from the composer needs the M3 chat loop restructured into something a redraw loop
+can drive; until that lands `Enter` is deliberately inert, `Alt-Enter` is unbound, and neither is
+advertised on the composer's rule — a hint that does nothing is worse than no hint. The draft
+stays where it was typed. The screens read the view model and never a store, so filling any of
+this in is a change to `tui::live` and nothing else.
 
 **Still allowed to fail.** No capability lives only here.
 

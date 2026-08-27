@@ -1,18 +1,29 @@
 //! Keys to [`Action`]s — the whole keymap, and nothing the screens do not print.
 //!
 //! Everything bound, in full: `Tab`/`Shift-Tab` cycle panels, `^1` and `^2`
-//! choose the view, `Enter` sends and `Alt-Enter` puts a newline in the draft,
-//! `Backspace` edits it, the arrows and `H`/`J`/`K`/`L` move the two cursors,
-//! and `Esc`, `q` and `^C` leave. That list and the hints in
-//! `src/text/en.toml` are the same list, deliberately: the design's rules also
-//! printed `Alt-H/L resize`, `^K a day`, `? keys`, `/ find`, `^, settings` and
-//! `Enter open the day`, none of which is bound to anything, and a hint that
-//! does nothing is worse than no hint. They come back here and there together,
-//! or not at all.
+//! choose the view, `Enter` sends, `Backspace` edits the draft, the arrows and
+//! `H`/`J`/`K`/`L` move the two cursors, and `Esc`, `q` and `^C` leave. That list
+//! and the hints in `src/text/en.toml` are the same list, deliberately: the
+//! design's rules also printed `Alt-H/L resize`, `^K a day`, `? keys`, `/ find`,
+//! `^, settings` and `Enter open the day`, none of which is bound to anything,
+//! and a hint that does nothing is worse than no hint. They come back here and
+//! there together, or not at all.
+//!
+//! **`Alt-Enter` used to be that hint, from the inside.** The composer's rule
+//! advertised it as `newline`; it pushed `'\n'` onto the draft, and
+//! `Buffer::set_stringn` filters control characters, so nothing appeared — and
+//! the composer has one interior text row, so nothing could have. Typing `abc`,
+//! `Alt-Enter`, `Backspace` looked like two keys doing nothing and then a third
+//! eating a letter. So it is unbound, and the rule no longer names it. Both come
+//! back with the chat loop, which is also what gives `Enter` something to do:
+//! it is bound and deliberately inert (see [`Action::Send`]), which is why the
+//! rule does not promise `Enter send` either.
 //!
 //! Modifiers Mooshik does not use are refused rather than ignored. `Alt-h` used
 //! to fall through the `Char('h')` arm and move the week's day cursor, so a key
-//! the app never claimed did something the user did not ask for.
+//! the app never claimed did something the user did not ask for. With
+//! `Alt-Enter` gone, Alt is claimed for nothing at all and every Alt chord is
+//! refused here.
 //!
 //! **Why the keymap is modal but the app is not.** When the conversation has
 //! focus, `j` is the letter `j`; when the thread list has focus, it moves the
@@ -37,7 +48,6 @@ pub fn action(key: KeyEvent, typing: bool) -> Action {
     }
 
     let control = key.modifiers.contains(KeyModifiers::CONTROL);
-    let alt = key.modifiers.contains(KeyModifiers::ALT);
 
     // Chords first: they mean the same thing wherever focus is, so a `^2` in the
     // middle of typing still shows the week rather than inserting a `2`.
@@ -50,20 +60,18 @@ pub fn action(key: KeyEvent, typing: bool) -> Action {
         };
     }
 
-    // Alt is claimed for exactly one binding, `Alt-Enter`, so an Alt-modified
-    // letter is refused here rather than falling through to the plain-letter
-    // arms below — `Alt-h` moved the week's day cursor, which nothing asked
-    // for. Shift is not filtered: crossterm reports a capital as `Char('J')`
-    // with the modifier set, and the design's hints are written `J/K`.
-    if alt && !matches!(key.code, KeyCode::Enter) {
+    // Alt is claimed for nothing, so every Alt chord is refused here rather than
+    // falling through to the arms below — `Alt-h` moved the week's day cursor and
+    // `Alt-Enter` put an invisible newline in the draft, neither of which anybody
+    // asked for. Shift is not filtered: crossterm reports a capital as
+    // `Char('J')` with the modifier set, and the design's hints are written `J/K`.
+    if key.modifiers.contains(KeyModifiers::ALT) {
         return Action::Ignore;
     }
 
     match key.code {
         KeyCode::Tab => Action::NextPanel,
         KeyCode::BackTab => Action::PreviousPanel,
-        // Alt-Enter is a newline in the draft, so it must not send.
-        KeyCode::Enter if alt && typing => Action::Type('\n'),
         KeyCode::Enter if typing => Action::Send,
         KeyCode::Backspace if typing => Action::Backspace,
 
@@ -114,15 +122,51 @@ mod tests {
         assert_eq!(action(plain(KeyCode::Char('l')), false), Action::Right);
     }
 
-    /// Enter sends; Alt-Enter puts a newline in the draft instead, so a
-    /// multi-line message is possible without a send key that sometimes doesn't.
+    /// Enter sends. `Alt-Enter` is bound to nothing: it pushed a `'\n'` the
+    /// buffer filters out, into a composer with one text row, so it could never
+    /// show — and the rule that advertised it no longer does either.
     #[test]
-    fn alt_enter_is_a_newline_and_enter_sends() {
+    fn enter_sends_and_alt_enter_is_unbound() {
         assert_eq!(action(plain(KeyCode::Enter), true), Action::Send);
-        assert_eq!(
-            action(with(KeyCode::Enter, KeyModifiers::ALT), true),
-            Action::Type('\n')
-        );
+        for typing in [true, false] {
+            assert_eq!(
+                action(with(KeyCode::Enter, KeyModifiers::ALT), typing),
+                Action::Ignore,
+                "Alt-Enter is bound while typing={typing}"
+            );
+        }
+    }
+
+    /// And no key can put a control character in the draft, invisible or not.
+    #[test]
+    fn no_binding_types_a_control_character() {
+        let codes = [
+            KeyCode::Enter,
+            KeyCode::Tab,
+            KeyCode::BackTab,
+            KeyCode::Esc,
+            KeyCode::Backspace,
+            KeyCode::Delete,
+            KeyCode::Home,
+            KeyCode::F(1),
+        ];
+        for code in codes {
+            for modifiers in [
+                KeyModifiers::NONE,
+                KeyModifiers::ALT,
+                KeyModifiers::CONTROL,
+                KeyModifiers::SHIFT,
+            ] {
+                for typing in [true, false] {
+                    if let Action::Type(character) = action(with(code, modifiers), typing) {
+                        assert!(
+                            !character.is_control(),
+                            "{code:?} with {modifiers:?} types {character:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// A chord means the same thing mid-sentence as it does anywhere else.
@@ -215,10 +259,10 @@ mod tests {
     ///
     /// `Alt-H/L` was on the artboards' bottom rule as "resize" and is bound to
     /// nothing; falling through moved the week's day cursor instead, which is a
-    /// key doing something the user did not ask for. `Alt-Enter` is the one
-    /// Alt binding and still works.
+    /// key doing something the user did not ask for. Alt now claims nothing at
+    /// all, `Alt-Enter` included.
     #[test]
-    fn alt_modified_letters_are_refused() {
+    fn alt_modified_keys_are_refused() {
         for letter in ['h', 'l', 'j', 'k', 'q'] {
             for typing in [true, false] {
                 assert_eq!(
@@ -228,9 +272,5 @@ mod tests {
                 );
             }
         }
-        assert_eq!(
-            action(with(KeyCode::Enter, KeyModifiers::ALT), true),
-            Action::Type('\n')
-        );
     }
 }

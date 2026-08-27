@@ -80,6 +80,24 @@ impl Kind {
         }
     }
 
+    /// The role a badge punched through the bottom rule is drawn in.
+    ///
+    /// The same as [`Kind::title`] everywhere except on a caution, where `1d`
+    /// draws the badge div in `var(--d)` — furniture — while its title and rule
+    /// are yellow. (`1c`'s recall badge *is* `var(--bl)`, the same as its frame,
+    /// which is why this is a per-kind decision rather than one rule for badges.)
+    ///
+    /// It matters more than a shade: the caution's badge is the reassurance
+    /// "Nothing's changed — say the word and I'll follow", and painting it yellow
+    /// spent `1i`'s twice-a-week caution colour on the one line whose whole job
+    /// is to be calm — three yellow runs on a card the artboard gives two.
+    pub const fn badge(self) -> Role {
+        match self {
+            Self::Caution => Role::Furniture,
+            other => other.title(),
+        }
+    }
+
     /// Whether this frame is double-ruled. True for [`Kind::Danger`] and
     /// nothing else — see this module's header.
     pub const fn is_double(self) -> bool {
@@ -174,6 +192,24 @@ impl<'a> Panel<'a> {
                 .border_style(self.kind.border().style()),
         );
 
+        // A frame with no interior has nothing to name, so it writes neither its
+        // title nor its badge and yields an empty grid — contents then simply do
+        // not draw rather than spilling over the frame.
+        //
+        // The condition is the interior's own emptiness, which the rules inset by
+        // one on all four sides, and every part of it is reachable.
+        // `today::Split` gives the thread panel `h = 0` whenever the band is 16
+        // rows or shorter (a terminal 18 rows tall at 100 columns or wider), and
+        // `grid.widget` is a no-op at zero height while the title write was not: a
+        // bare ` What keeps coming back ` floated on the blank row above the bottom
+        // rule with no frame around it. At `h = 1` the title and the badge shared
+        // one row and the badge won. And at `w = 2` the title was written from the
+        // inset — past the frame's own right rule and into whatever panel sat
+        // beside it, because `grid.put` clips to the grid and not to the frame.
+        if w < 3 || h < 3 {
+            return grid.sub(col, row, 0, 0);
+        }
+
         // The title and badge overwrite the rule they sit on, against the
         // ground, which is how the design punches them through it.
         let title_style = self
@@ -193,18 +229,16 @@ impl<'a> Panel<'a> {
                 title_style,
             );
         }
-        if let (Some(badge), Some(last)) = (self.badge, h.checked_sub(1)) {
+        if let Some(badge) = self.badge {
             grid.put(
                 col.saturating_add(Self::INSET),
-                row.saturating_add(last),
+                row.saturating_add(h.saturating_sub(1)),
                 &format!(" {badge} "),
-                title_style,
+                self.kind.badge().on_ground(),
             );
         }
 
-        // The interior is the frame inset by its own rules on all four sides. A
-        // panel too small to have an interior yields an empty grid, so contents
-        // simply do not draw rather than spilling over the frame.
+        // The interior is the frame inset by its own rules on all four sides.
         grid.sub(
             col.saturating_add(1),
             row.saturating_add(1),
@@ -303,6 +337,77 @@ mod tests {
             .badge("three times")
             .draw(&mut grid, Place::new(0, 0, 20, 3));
         assert_eq!(row_text(&buf, 2), "└─ three times ────┘    ");
+    }
+
+    /// A caution's badge is furniture, not yellow — `1d` draws its badge div in
+    /// `var(--d)` while its title and rule are yellow. Every other frame colours
+    /// the badge the same as its title, `1c`'s blue recall badge included.
+    #[test]
+    fn only_a_cautions_badge_leaves_its_frames_colour() {
+        for kind in ALL_KINDS {
+            let expected = if kind == Kind::Caution {
+                Role::Furniture
+            } else {
+                kind.title()
+            };
+            assert_eq!(kind.badge(), expected, "{kind:?}'s badge");
+        }
+        assert_eq!(Kind::Returned.badge(), Role::Returned);
+        assert_ne!(Kind::Caution.badge(), Role::Caution);
+    }
+
+    /// And it is drawn that way, not merely decided that way: the reassurance on a
+    /// caution's bottom rule is the one line whose job is to be calm, and three
+    /// yellow runs on a card the artboard gives two spent `1i`'s twice-a-week
+    /// colour on it.
+    #[test]
+    fn a_cautions_badge_is_drawn_in_furniture() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 4));
+        let area = buf.area;
+        let mut grid = crate::tui::grid::Grid::new(&mut buf, area);
+        Panel::new("One thing before you do", Kind::Caution)
+            .badge("Nothing's changed")
+            .draw(&mut grid, Place::new(0, 0, 30, 3));
+        // Column 3 of the top rule is the title; column 3 of the bottom rule is
+        // the badge.
+        assert_eq!(buf[(3, 0)].fg, Role::Caution.color(), "the title faded");
+        assert_eq!(buf[(0, 2)].fg, Role::Caution.color(), "the rule faded");
+        assert_eq!(
+            buf[(3, 2)].fg,
+            Role::Furniture.color(),
+            "the badge is yellow"
+        );
+    }
+
+    /// A frame with no interior writes neither its title nor its badge.
+    ///
+    /// `grid.widget` is already a no-op at zero height, but the title write was
+    /// not, and it clipped only to the enclosing grid — so `today::Split`'s
+    /// zero-row thread panel left a bare ` What keeps coming back ` floating on the
+    /// blank row above the bottom rule with no frame around it. At one row the
+    /// title and the badge shared a row and the badge won.
+    #[test]
+    fn a_frame_with_no_interior_writes_no_name() {
+        for (w, h) in [(20u16, 0u16), (20, 1), (20, 2), (2, 4), (1, 4), (0, 4)] {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 24, 6));
+            let area = buf.area;
+            let mut grid = crate::tui::grid::Grid::new(&mut buf, area);
+            let inner = Panel::new("Named", Kind::Idle)
+                .badge("Because")
+                .draw(&mut grid, Place::new(0, 1, w, h));
+            assert_eq!(inner.width(), 0, "{w}x{h} has an interior");
+            assert_eq!(inner.height(), 0, "{w}x{h} has an interior");
+            let all: String = (0..6).map(|r| row_text(&buf, r)).collect();
+            assert!(!all.contains("Named"), "{w}x{h} wrote its title: {all:?}");
+            assert!(!all.contains("Because"), "{w}x{h} wrote its badge: {all:?}");
+        }
+        // Two by two draws a frame with no interior, and its name must not be
+        // written past its own right rule into the panel beside it.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 2));
+        let area = buf.area;
+        let mut grid = crate::tui::grid::Grid::new(&mut buf, area);
+        Panel::new("Named", Kind::Idle).draw(&mut grid, Place::new(0, 0, 2, 2));
+        assert_eq!(row_text(&buf, 0), "┌┐  ");
     }
 
     /// The title and badge are drawn against the ground so they read as punched

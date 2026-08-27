@@ -78,12 +78,20 @@ pub fn title(grid: &mut Grid<'_>, margins: Margins, subject: &str, view: View) {
 /// its own subject and its own nav — `1h` abbreviates the nav but not the brand.
 pub fn brand(grid: &mut Grid<'_>, margins: Margins, subject: &str) {
     let separator = text::get("tui.separator");
+    // The separator only where there is a subject to separate the brand from. The
+    // live workspace has no date source yet, and `format!("{separator}{subject}")`
+    // opened `mooshik tui` on a trailing bullet with nothing after it.
+    let tail = if subject.trim().is_empty() {
+        String::new()
+    } else {
+        format!("{separator}{subject}")
+    };
     grid.run(
         margins.left,
         0,
         [
             Span::styled(text::get("tui.brand"), Role::Strongest.style()),
-            Span::styled(format!("{separator}{subject}"), Role::Furniture.style()),
+            Span::styled(tail, Role::Furniture.style()),
         ],
     );
 }
@@ -165,15 +173,15 @@ pub fn health_rule(
     } else {
         (marks::HEALTH_BEHIND, Role::Furniture)
     };
+    // Joined, for the reason `brand` joins: a live workspace with no scope yet
+    // must not draw the bullet that would have separated it from the state.
+    let words = super::joined(&[&health.state, scope], separator);
     grid.run(
         margins.left,
         row,
         [
             Span::styled(mark, mark_role.style()),
-            Span::styled(
-                format!(" {}{separator}{scope}", health.state),
-                Role::Furniture.style(),
-            ),
+            Span::styled(format!(" {words}"), Role::Furniture.style()),
         ],
     );
     keys_rule(grid, margins, row, keys);

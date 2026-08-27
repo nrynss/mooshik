@@ -46,8 +46,9 @@ fn style_at(buf: &Buffer, col: u16, row: u16) -> Style {
     Style::default().fg(cell.fg).add_modifier(cell.modifier)
 }
 
-/// The row `needle` appears on. The panel fills from the bottom, so tests
-/// locate content rather than assuming which row it landed on.
+/// The row `needle` appears on. Tests locate content rather than assuming which
+/// row it landed on, because how much of a long conversation is kept depends on
+/// the panel's height.
 fn find_row(buf: &Buffer, needle: &str) -> u16 {
     (0..buf.area.height)
         .find(|r| row_text(buf, *r).contains(needle))
@@ -160,12 +161,11 @@ fn the_elision_marker_sits_above_the_turns() {
     assert!(find_row(&buf, "Neom") > 1);
 }
 
-/// The newest turn sits on the panel's bottom rule, so there is never a gap
-/// between the last thing said and the composer under it.
+/// The newest turn survives the trim even though the panel fills from the top —
+/// whole turns are dropped from the *front*, so what is kept is the tail.
 #[test]
-fn the_newest_turn_sits_on_the_bottom_rule() {
-    // Nine short turns into a panel that cannot hold them all: whole turns
-    // are dropped, so the kept ones will not fill it exactly.
+fn the_newest_turn_survives_the_trim() {
+    // Nine short turns into a panel that cannot hold them all.
     let turns: Vec<Turn> = (0..9)
         .map(|n| said("09:04", Speaker::Person, &format!("Line {n}")))
         .collect();
@@ -173,28 +173,70 @@ fn the_newest_turn_sits_on_the_bottom_rule() {
     let buf = drawn(72, 12, |grid| {
         panel(grid, "Neom", &conversation, false, Place::new(0, 0, 72, 12));
     });
-    // Interior row 9 is the last one; buffer row 10 sits on it.
-    assert!(
-        row_text(&buf, 10).contains("Line 8"),
-        "the newest turn is not on the bottom rule: {:?}",
-        row_text(&buf, 10)
-    );
+    let all: String = (0..12).map(|r| row_text(&buf, r)).collect();
+    assert!(all.contains("Line 8"), "the newest turn was dropped");
+    assert!(all.contains("Line 6"), "too little of the tail was kept");
+    assert!(!all.contains("Line 0"), "the oldest turn survived");
 }
 
-/// With an elision marker, the slack opens up under it rather than at the
-/// bottom — the marker stays on the top row either way.
+/// The panel is top-anchored, exactly as `1a` draws it: the elision marker on the
+/// first interior row, one blank under it, the first turn on the row after that,
+/// and the slack left at the bottom.
+///
+/// The artboard's conversation is a 33-row panel whose interior runs rows 2 to 32;
+/// the marker is on row 2, the first speaker on row 4, and the last line of the
+/// last turn on row 30 — two spare rows above the composer. Bottom-anchoring
+/// closed that gap, which looked tidier and was not the design: the conversation
+/// grows downwards into it. This used to be `slack_opens_up_under_the_elision
+/// _marker`, which pinned the anchoring the other way round.
 #[test]
-fn slack_opens_up_under_the_elision_marker() {
-    let turns: Vec<Turn> = (0..9)
+fn the_panel_is_top_anchored_as_the_artboard_draws_it() {
+    let turns: Vec<Turn> = (0..3)
         .map(|n| said("09:04", Speaker::Person, &format!("Line {n}")))
         .collect();
     let mut conversation = conversation_of(turns);
     conversation.earlier = Some("... earlier today".to_owned());
+    let buf = drawn(72, 14, |grid| {
+        panel(grid, "Neom", &conversation, false, Place::new(0, 0, 72, 14));
+    });
+    // Buffer row 1 is the interior's first: the marker.
+    assert!(row_text(&buf, 1).contains("... earlier today"));
+    // Then a blank, then the turns from row 3 — the artboard's rows 2, 3, 4.
+    let blank: String = row_text(&buf, 2).chars().skip(1).take(70).collect();
+    assert!(blank.trim().is_empty(), "{blank:?}");
+    assert!(
+        row_text(&buf, 3).contains("Neom"),
+        "{:?}",
+        row_text(&buf, 3)
+    );
+    assert!(row_text(&buf, 4).contains("Line 0"));
+    // Three turns of two rows with a gap between them end on row 10, and the
+    // slack is the two rows under that rather than a gap above the composer.
+    assert!(
+        row_text(&buf, 10).contains("Line 2"),
+        "{:?}",
+        row_text(&buf, 10)
+    );
+    for row in [11u16, 12] {
+        let slack: String = row_text(&buf, row).chars().skip(1).take(70).collect();
+        assert!(slack.trim().is_empty(), "row {row} is not slack: {slack:?}");
+    }
+    assert_eq!(buf[(0, 13)].symbol(), "└");
+}
+
+/// Without a marker the first turn takes the panel's own first interior row.
+#[test]
+fn a_panel_with_no_marker_starts_on_its_first_row() {
+    let conversation = conversation_of(vec![said("09:04", Speaker::Person, "Only turn")]);
     let buf = drawn(72, 12, |grid| {
         panel(grid, "Neom", &conversation, false, Place::new(0, 0, 72, 12));
     });
-    assert!(row_text(&buf, 1).contains("... earlier today"));
-    assert!(row_text(&buf, 10).contains("Line 8"));
+    assert!(
+        row_text(&buf, 1).contains("Neom"),
+        "{:?}",
+        row_text(&buf, 1)
+    );
+    assert!(row_text(&buf, 2).contains("Only turn"));
 }
 
 /// A conversation that fits leaves the panel filled from the bottom without
@@ -235,7 +277,6 @@ fn a_recall_card_is_framed_and_inline() {
 #[test]
 fn a_caution_is_a_yellow_frame_in_the_scroll() {
     let conversation = conversation_of(vec![Turn::Cautioned(Caution {
-        title: "One thing before you do".to_owned(),
         lead: "You've held to \"block, never drop\" every day this week.".to_owned(),
         leaning: vec![
             "The short postmortem".to_owned(),
@@ -246,12 +287,16 @@ fn a_caution_is_a_yellow_frame_in_the_scroll() {
     let buf = drawn(72, 14, |grid| {
         panel(grid, "Neom", &conversation, false, Place::new(0, 0, 72, 14));
     });
+    // The caution's name is chrome, not content: it comes from `en.toml`, and the
+    // model no longer carries a title at all.
+    let title = crate::text::get("tui.panel_caution");
+    assert_eq!(title, "One thing before you do");
     // The caution sits two columns left of the text indent — buffer 8.
-    let top = find_row(&buf, "One thing before you do");
+    let top = find_row(&buf, title);
     assert_eq!(buf[(8, top)].symbol(), "┌");
     assert_eq!(style_at(&buf, 8, top), Role::Caution.style());
     let all: String = (0..14).map(|r| row_text(&buf, r)).collect();
-    assert!(all.contains("One thing before you do"));
+    assert!(all.contains(title));
     assert!(all.contains("The short postmortem"));
     assert!(all.contains("say the word and I'll follow"));
 }
@@ -261,7 +306,7 @@ fn a_caution_is_a_yellow_frame_in_the_scroll() {
 #[test]
 fn a_quotation_is_emphasised_without_losing_characters() {
     let line = "You've held to \"block, never drop\" every day";
-    let spans = emphasise_quoted(line);
+    let spans = emphasise_quoted(line, &mut false);
     assert_eq!(text_of(&spans), line);
     let quoted: String = spans
         .iter()
@@ -282,7 +327,7 @@ fn an_unclosed_quotation_keeps_every_character() {
         "\"\"",
         "\"a\"b\"c",
     ] {
-        let spans = emphasise_quoted(line);
+        let spans = emphasise_quoted(line, &mut false);
         assert_eq!(text_of(&spans), line, "characters lost in {line:?}");
     }
 }
@@ -420,4 +465,181 @@ fn a_card_narrows_with_its_panel() {
             );
         }
     }
+}
+
+/// A quotation that spans a wrapped line keeps its emphasis on both sides of the
+/// break.
+///
+/// `emphasise_quoted` used to derive inside-or-outside from `index % 2` within one
+/// line, and it is applied per line, so the state restarted at "outside" on every
+/// one. At 40 columns `1d`'s opening breaks inside the quotation and the second
+/// line came out exactly inverted: `drop` in body text, and the words after the
+/// closing mark in the brightest step.
+#[test]
+fn a_quotation_across_a_wrap_is_not_inverted() {
+    let lead = "You've held to \"block, never drop\" every day this week";
+    let lines = crate::tui::wrap::wrap(lead, 28);
+    assert!(lines.len() > 1, "the fixture does not wrap: {lines:?}");
+    assert!(
+        lines[0].contains("never") && lines[1].starts_with("drop\""),
+        "the wrap does not land inside the quotation: {lines:?}"
+    );
+
+    let mut inside = false;
+    let first = emphasise_quoted(&lines[0], &mut inside);
+    assert!(inside, "the state did not survive the first line");
+    let second = emphasise_quoted(&lines[1], &mut inside);
+    assert!(!inside, "the closing mark did not end the quotation");
+
+    // Everything up to the opening mark is body text; everything after it, on
+    // either line, is the brightest step until the closing mark.
+    let bright = |spans: &[Span<'static>]| -> String {
+        spans
+            .iter()
+            .filter(|s| s.style == Role::Strongest.style())
+            .map(|s| s.content.as_ref().to_owned())
+            .collect()
+    };
+    assert_eq!(bright(&first), "\"block, never");
+    assert_eq!(bright(&second), "drop\"");
+    // And the tail of the second line is back to body text.
+    assert!(
+        second
+            .iter()
+            .any(|s| s.style == Role::Body.style() && s.content.contains("every day")),
+        "the words after the quotation are not body text"
+    );
+    // Nothing was lost either way.
+    assert_eq!(text_of(&first), lines[0]);
+    assert_eq!(text_of(&second), lines[1]);
+}
+
+/// A card is clipped from its *tail*, so the statement still starts at its first
+/// word — where a turn is clipped from its front, so the newest words survive.
+#[test]
+fn a_card_is_clipped_from_the_tail_and_a_turn_from_the_front() {
+    let lead: Vec<String> = (0..6).map(|n| format!("Lead line {n}")).collect();
+    let card = Caution {
+        lead: lead.join(" "),
+        leaning: vec!["Leans".to_owned()],
+        because: "Nothing's changed".to_owned(),
+    };
+    let block = Block::Cautioned {
+        card,
+        lead: lead.clone(),
+    };
+    let Some(Block::Cautioned { card, lead: kept }) = block.clip_to(7) else {
+        panic!("clip_to declined a block it had room for")
+    };
+    assert_eq!(kept, ["Lead line 0", "Lead line 1", "Lead line 2"]);
+    assert!(
+        card.leaning.is_empty(),
+        "the list is trimmed before the lead"
+    );
+
+    // A turn, the other way round.
+    let block = Block::Said {
+        time: "09:04".to_owned(),
+        name: "Neom".to_owned(),
+        name_role: Role::Strongest,
+        text_role: Role::Strongest,
+        lines: lead.clone(),
+    };
+    let Some(Block::Said { lines, .. }) = block.clip_to(4) else {
+        panic!("clip_to declined a block it had room for")
+    };
+    assert_eq!(lines, ["Lead line 3", "Lead line 4", "Lead line 5"]);
+}
+
+/// A card that still does not fit once clipped is dropped, not half-drawn.
+///
+/// `clip_to` cannot shrink a card below its own chrome — a recall clipped to one
+/// row still measures two — and `fit` used to push it anyway, so the grid clipped
+/// away the card's bottom rule and its badge. A one-row interior is reachable at
+/// 120x9 on the wide layout and 80x11 on the narrow one.
+#[test]
+fn a_card_too_tall_for_one_row_is_dropped_rather_than_half_drawn() {
+    let conversation = conversation_of(vec![Turn::Recalled(Recall {
+        source: "From Monday".to_owned(),
+        quote: "Blocking is honest.".to_owned(),
+        because: "Every day this week".to_owned(),
+    })]);
+    // A three-row panel has one interior row; a recall card needs two.
+    let buf = drawn(72, 3, |grid| {
+        panel(grid, "Neom", &conversation, false, Place::new(0, 0, 72, 3));
+    });
+    let all: String = (0..3).map(|r| row_text(&buf, r)).collect();
+    assert!(!all.contains("From Monday"), "a half-framed card was drawn");
+    assert!(!all.contains("Blocking is honest"));
+    // The panel's own frame is whole, top and bottom.
+    assert_eq!(buf[(0, 0)].symbol(), "┌");
+    assert_eq!(buf[(0, 2)].symbol(), "└");
+    assert_eq!(row_text(&buf, 1).trim_end().chars().last(), Some('│'));
+
+    // Two interior rows is not enough either: a frame with no interior has no
+    // title, no quote and no reason left in it.
+    let buf = drawn(72, 4, |grid| {
+        panel(grid, "Neom", &conversation, false, Place::new(0, 0, 72, 4));
+    });
+    let all: String = (0..4).map(|r| row_text(&buf, r)).collect();
+    assert!(
+        !all.contains("From Monday"),
+        "a frameful of nothing was drawn"
+    );
+
+    // Three is, and then it is drawn whole — rules, title, quote and badge.
+    let buf = drawn(72, 5, |grid| {
+        panel(grid, "Neom", &conversation, false, Place::new(0, 0, 72, 5));
+    });
+    let all: String = (0..5).map(|r| row_text(&buf, r)).collect();
+    assert!(all.contains("From Monday"), "the card fits and was dropped");
+    assert!(all.contains("Blocking is honest"));
+    assert!(all.contains("Every day this week"));
+}
+
+/// The same for a caution, which needs four rows of chrome before a word of it
+/// is legible.
+#[test]
+fn a_caution_too_tall_for_its_chrome_is_dropped() {
+    let conversation = conversation_of(vec![Turn::Cautioned(Caution {
+        lead: "You've held to \"block, never drop\".".to_owned(),
+        leaning: vec!["The short postmortem".to_owned()],
+        because: "Nothing's changed".to_owned(),
+    })]);
+    for height in [3u16, 4, 5] {
+        let buf = drawn(72, height, |grid| {
+            panel(
+                grid,
+                "Neom",
+                &conversation,
+                false,
+                Place::new(0, 0, 72, height),
+            );
+        });
+        let all: String = (0..height).map(|r| row_text(&buf, r)).collect();
+        assert!(
+            !all.contains("block, never drop"),
+            "a broken caution was drawn at height {height}: {all:?}"
+        );
+        assert_eq!(buf[(0, height - 1)].symbol(), "└");
+    }
+}
+
+/// The composer's rule carries the artboard's reassurance and nothing else.
+///
+/// It used to open with `Enter send  ·  Alt-Enter newline  ·  `. `Alt-Enter` put
+/// a `'\n'` in the draft that `Buffer::set_stringn` filters out, into a composer
+/// with one interior text row; `Enter` maps to a deliberate no-op. Both are
+/// promises the app cannot keep yet, and `chrome`'s own rule is that a hint doing
+/// nothing is worse than no hint.
+#[test]
+fn the_composer_rule_promises_no_key() {
+    let empty = conversation_of(Vec::new());
+    let buf = drawn(72, 4, |grid| {
+        composer(grid, &empty, false, Place::new(0, 0, 72, 4))
+    });
+    let rule = row_text(&buf, 2);
+    assert!(rule.contains("Nothing here needs saving"), "{rule:?}");
+    assert!(!rule.contains("Enter"), "{rule:?}");
+    assert!(!rule.contains("Alt"), "{rule:?}");
 }

@@ -39,6 +39,16 @@ const RIBBON_ROWS: u16 = 3;
 /// Cells kept clear at the right-hand end of the Today panel's footer.
 const FOOTER_MARGIN: u16 = 2;
 
+/// Cells kept clear at the right of the two thread panels, where the design
+/// leaves four rather than [`RIGHT_MARGIN`]'s two.
+///
+/// `1a`'s thread panel has 35 columns available past [`THREAD_TEXT`], and the
+/// artboard breaks `Every day this week · eight / other notes lean on it` after
+/// `eight` — a wrap at 27, not at 32 — and `The Quillstone cache lives on / the
+/// NAS at /srv/quillstone` after `on`. Two cells left room for one more word on
+/// both, so both reflowed. Four is the margin the artboard's own breaks imply.
+const THREAD_MARGIN: u16 = 4;
+
 /// Column a thread's day marks sit at, inside the panel's interior.
 const MARKS: u16 = 2;
 /// Column a thread's text sits at: the marks, then two cells of gutter.
@@ -154,7 +164,7 @@ pub fn threads(grid: &mut Grid<'_>, list: &[Thread], focused: bool, cursor: usiz
     let width = inner
         .width()
         .saturating_sub(THREAD_TEXT)
-        .saturating_sub(RIGHT_MARGIN);
+        .saturating_sub(THREAD_MARGIN);
     let height = inner.height();
     let mut at = 0;
 
@@ -204,7 +214,7 @@ pub fn leans_on(grid: &mut Grid<'_>, thread: &Thread, at: Place) {
     let width = inner
         .width()
         .saturating_sub(THREAD_TEXT)
-        .saturating_sub(RIGHT_MARGIN);
+        .saturating_sub(THREAD_MARGIN);
     let height = inner.height();
     let mut at = 0;
     let mut first = true;
@@ -225,8 +235,9 @@ pub fn leans_on(grid: &mut Grid<'_>, thread: &Thread, at: Place) {
     if at >= height {
         return;
     }
-    let header =
-        text::get("tui.leans.header").replace("{count}", &thread.leaned_on.len().to_string());
+    // Spelled and capitalised, because `1d` writes " Eight things lean on it:".
+    let header = text::get("tui.leans.header")
+        .replace("{Count}", &super::spelled_leading(thread.leaned_on.len()));
     inner.put(LEANING_INDENT, at, &header, Role::Furniture.style());
     inner.lines(
         LEANING_INDENT,

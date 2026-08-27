@@ -374,11 +374,16 @@ pub struct Recall {
 
 /// Said once, in the conversation, in the place a reply would go — not a modal,
 /// not an error, nothing to dismiss. Artboard `1d`.
+///
+/// **No title.** The card's name is fixed chrome — `1d`'s " One thing before you
+/// do " — and lives in `en.toml` as `tui.panel_caution`, beside every other panel
+/// title. It was a field here, set to that same sentence by every caution that
+/// existed, which made a piece of the frame look like content and left the key
+/// unread; a locale that translated `panel_caution` would have seen no change on
+/// screen.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Caution {
-    /// " One thing before you do ".
-    pub title: String,
     /// The opening, unwrapped. The quoted commitment inside it is emphasised by
     /// the renderer finding the quotation marks, not marked up here.
     pub lead: String,

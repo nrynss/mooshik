@@ -377,6 +377,91 @@ fn a_vault_value_never_reaches_a_rendered_error() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// "This process has no terminal" is attached to the handshake and to nothing
+/// else.
+///
+/// It used to wrap every error the whole session could return, so a
+/// `terminal.draw`, `event::poll` or `event::read` that failed an hour in was
+/// reported as a missing terminal — a diagnosis true of neither the cause nor the
+/// cure. Checked at the source, because reaching either failure needs a terminal
+/// this test does not have: the property is which call each context is attached
+/// to, and that is a structural fact about the file.
+#[test]
+fn the_missing_terminal_sentence_is_attached_only_to_the_handshake() {
+    let src = include_str!("tui_cmd.rs");
+    let production = src.split("#[cfg(test)]").next().unwrap();
+    for (call, context) in [
+        ("crate::tui::start()", "tui.needs_a_terminal"),
+        ("crate::tui::run(terminal, workspace)", "tui.session_failed"),
+    ] {
+        let at = production
+            .find(call)
+            .unwrap_or_else(|| panic!("`{call}` is not called"));
+        let tail = &production[at..];
+        let next = tail
+            .find("text::get(\"")
+            .unwrap_or_else(|| panic!("`{call}` attaches no context"));
+        assert!(
+            tail[next..].starts_with(&format!("text::get(\"{context}\")")),
+            "`{call}` is not followed by {context}"
+        );
+    }
+    // And exactly one of each, so neither sentence is reused for the other half.
+    assert_eq!(production.matches("tui.needs_a_terminal").count(), 1);
+    assert_eq!(production.matches("tui.session_failed").count(), 1);
+}
+
+/// `--demo` takes an optional scene, defaults to the ordinary day, and refuses
+/// anything it cannot draw.
+///
+/// It used to be a bare flag, which meant `1c` and `1d` — the two artboards that
+/// carry the design's argument — were unreachable from the command line.
+#[test]
+fn the_demo_flag_takes_an_optional_scene() {
+    let scene_of = |argv: [&str; 3]| -> Option<String> {
+        let matches = command()
+            .try_get_matches_from(argv)
+            .unwrap_or_else(|error| panic!("`{}` does not parse: {error}", argv.join(" ")));
+        matches
+            .subcommand_matches("tui")
+            .expect("the tui subcommand")
+            .get_one::<String>("demo")
+            .cloned()
+    };
+    // The bare flag is the ordinary day...
+    assert_eq!(
+        scene_of(["mooshik", "tui", "--demo"]).as_deref(),
+        Some("today")
+    );
+    assert_eq!(
+        crate::tui::Scene::named(scene_of(["mooshik", "tui", "--demo"]).as_deref()),
+        crate::tui::Scene::Today
+    );
+    // ...and the two named scenes reach the two remaining artboards.
+    for (value, expected) in [
+        ("recall", crate::tui::Scene::Recall),
+        ("caution", crate::tui::Scene::Caution),
+        ("today", crate::tui::Scene::Today),
+    ] {
+        let parsed = scene_of(["mooshik", "tui", &format!("--demo={value}")]);
+        assert_eq!(parsed.as_deref(), Some(value));
+        assert_eq!(crate::tui::Scene::named(parsed.as_deref()), expected);
+    }
+    // Without the flag there is no scene, which is the live workspace.
+    let matches = command()
+        .try_get_matches_from(["mooshik", "tui"])
+        .expect("`mooshik tui` must parse");
+    assert!(matches
+        .subcommand_matches("tui")
+        .unwrap()
+        .get_one::<String>("demo")
+        .is_none());
+    // A value nothing can draw is a usage error, not a silently wrong artboard.
+    assert!(command()
+        .try_get_matches_from(["mooshik", "tui", "--demo=nonsense"])
+        .is_err());
+}
+
 #[test]
 fn every_documented_example_parses_as_written() {
     let src = include_str!("../text/en.toml");

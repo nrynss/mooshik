@@ -107,6 +107,53 @@ fn a_long_log_cannot_push_the_footer_off_the_panel() {
     assert_eq!(buf[(0, 15)].symbol(), "└");
 }
 
+/// The one hard thing in a day's log takes the caution colour; the rest is body
+/// text and a notable line brightens instead.
+///
+/// This is the only place `Tone::Hard` reaches [`Role::Caution`] in the Today
+/// panel, and nothing covered it — `1a` draws the log in body text throughout,
+/// so the mapping was live and untested. `1i` allows the colour twice a week,
+/// which is exactly why it must be the tone that reaches for it and not a rank.
+#[test]
+fn a_hard_entry_is_the_one_yellow_line_in_the_log() {
+    let mut day = a_day();
+    day.entries = vec![
+        Entry::at("08:10", "Rode in"),
+        Entry::at("09:42", "The ring overflowed").hard(),
+        Entry::at("11:52", "Finished the novel"),
+    ];
+    let week = vec![day.clone()];
+    let buf = drawn(48, 16, |grid| {
+        today(grid, &day, &week, 0, false, Place::new(0, 0, 48, 16));
+    });
+    for (needle, role) in [
+        ("Rode in", Role::Body),
+        ("The ring overflowed", Role::Caution),
+        ("Finished the novel", Role::Body),
+    ] {
+        let row = find_row(&buf, needle);
+        assert_eq!(
+            style_at(&buf, col_of(&buf, row, needle), row),
+            role.style(),
+            "{needle} is not {role:?}"
+        );
+    }
+
+    // And the third tone brightens rather than reaching for the caution colour.
+    day.entries = vec![Entry {
+        tone: Tone::Notable,
+        ..Entry::at("11:52", "Finished the novel")
+    }];
+    let buf = drawn(48, 16, |grid| {
+        today(grid, &day, &week, 0, false, Place::new(0, 0, 48, 16));
+    });
+    let row = find_row(&buf, "Finished the novel");
+    assert_eq!(
+        style_at(&buf, col_of(&buf, row, "Finished the novel"), row),
+        Role::Strongest.style()
+    );
+}
+
 /// A hard day keeps its caution colour on the footer; an ordinary one is
 /// furniture, as artboard `1a` draws it.
 #[test]
@@ -228,6 +275,50 @@ fn the_cursor_brightens_a_focused_row_without_moving_it() {
     );
 }
 
+/// The thread panel's own margin, held by the two artboard lines that fixed it.
+///
+/// `1a` gives the panel 48 cells — 46 of interior, 35 past `THREAD_TEXT` — and
+/// breaks `Every day this week · eight / other notes lean on it` after `eight`
+/// and `The Quillstone cache lives on / the NAS at /srv/quillstone` after `on`.
+/// Both fit one more word at the two-cell margin every other panel uses, so both
+/// reflowed; `THREAD_MARGIN` is four because the artboard's breaks say four.
+#[test]
+fn the_thread_panels_margin_reproduces_the_artboards_breaks() {
+    let list = vec![
+        thread(
+            "The ring holds 512 in flight; overflow blocks, never drops",
+            [true; 7],
+            "Every day this week · eight other notes lean on it",
+        ),
+        thread(
+            "The Quillstone cache lives on the NAS at /srv/quillstone",
+            [true, true, false, false, true, true, true],
+            "",
+        ),
+    ];
+    let buf = drawn(48, 14, |grid| {
+        threads(grid, &list, false, 0, Place::new(0, 0, 48, 14))
+    });
+    let text = all_text(&buf);
+    // Each pair is a line the artboard draws and the word that must not join it.
+    for (line, spilled) in [
+        ("The ring holds 512 in flight;", "flight; overflow"),
+        ("overflow blocks, never drops", ""),
+        ("Every day this week · eight", "eight other"),
+        ("other notes lean on it", ""),
+        ("The Quillstone cache lives on", "on the"),
+        ("the NAS at /srv/quillstone", ""),
+    ] {
+        assert!(text.contains(line), "{line:?} is not a line: {text}");
+        if !spilled.is_empty() {
+            assert!(
+                !text.contains(spilled),
+                "the line ran on past the artboard's break: {spilled:?}"
+            );
+        }
+    }
+}
+
 /// A thread whose reason is that it just came back is drawn in the returning
 /// colour — the one thing blue means.
 #[test]
@@ -256,7 +347,8 @@ fn the_leans_panel_is_a_caution_frame_with_a_count() {
     assert_eq!(style_at(&buf, 0, 0), Role::Caution.style());
     let text = all_text(&buf);
     assert!(text.contains("What leans on this"));
-    assert!(text.contains("2 things lean on it:"), "{text}");
+    // Spelled and capitalised, as `1d` writes it: " Eight things lean on it:".
+    assert!(text.contains("Two things lean on it:"), "{text}");
     assert!(text.contains("The oncall runbook"));
 }
 

@@ -5,6 +5,13 @@
 //! [`crate::tui::input`] turns key events into actions; [`App::draw`] hands the
 //! state to a screen.
 //!
+//! **Focus belongs to the screen that has panels.** `Tab` used to cycle all four
+//! of [`Focus`]'s variants whatever was showing. On the 80-column layout that
+//! left the screen with no accented rule anywhere, keystrokes no longer reaching
+//! the draft, and two cursors moving that nothing drew; on the week screen it
+//! mutated a field the week screen never reads. So the cycle is a property of
+//! what is on screen — see `App::panels` — and so is the focus that is drawn.
+//!
 //! **The cursor never reorders anything.** `J`/`K` move a highlight through the
 //! thread list and `H`/`L` move it through the week, but neither changes the
 //! order of what is on screen. The design is explicit that position *is* the
@@ -24,6 +31,9 @@ use crate::tui::{
 /// somewhere between. 100 is the midpoint: a terminal at 96 columns has no room
 /// for a 48-column aside beside a readable conversation, and one at 104 does.
 pub const NARROW_BELOW: u16 = 100;
+
+/// The design's own width, and what an undrawn [`App`] assumes it has.
+const DESIGN_COLUMNS: u16 = 120;
 
 /// One thing a keypress can ask for.
 ///
@@ -78,9 +88,22 @@ pub struct App {
     /// Which view is showing.
     pub view: View,
     /// Which panel holds focus on the Today screen.
+    ///
+    /// What is *drawn* is [`App::focus`], which is this clamped to the panels the
+    /// current screen actually has. The field keeps the wide screen's choice
+    /// across a narrow detour, so a terminal widened back finds focus where it
+    /// was left.
     pub focus: Focus,
     /// Which thread the week screen's cursor is on.
     pub thread_cursor: usize,
+    /// How many columns the last draw was given.
+    ///
+    /// Recorded because `Tab` has to know which screen it is cycling and the key
+    /// arrives between draws, not during one. Starts at the design's own 120 so
+    /// an [`App`] that has never been drawn behaves as the wide screen — the
+    /// alternative, treating "not yet drawn" as narrow, would make the first
+    /// keypress of a real session depend on a value no draw had set.
+    pub columns: u16,
     /// Whether the loop should keep going.
     pub running: bool,
 }
@@ -93,6 +116,7 @@ impl App {
             view: View::Today,
             focus: Focus::default(),
             thread_cursor: 0,
+            columns: DESIGN_COLUMNS,
             running: true,
         }
     }
@@ -104,8 +128,10 @@ impl App {
     pub fn apply(&mut self, action: Action) {
         match action {
             Action::Quit => self.running = false,
-            Action::NextPanel => self.focus = self.focus.next(),
-            Action::PreviousPanel => self.focus = self.focus.previous(),
+            // Only on the screen that has panels to cycle. The week screen has
+            // none, and the narrow layout has one — see `panels`.
+            Action::NextPanel => self.focus = self.focus.next_in(self.panels()),
+            Action::PreviousPanel => self.focus = self.focus.previous_in(self.panels()),
             Action::ShowToday => self.view = View::Today,
             Action::ShowWeek => self.view = View::Week,
             Action::Next => self.move_cursor(1),
@@ -146,26 +172,57 @@ impl App {
         self.workspace.week.selected = step(self.workspace.week.selected, delta, last);
     }
 
+    /// The panels the screen currently showing can put focus on.
+    ///
+    /// The bottom rules advertise `Tab panel`, and this is what makes that
+    /// promise true rather than approximately true. The week screen returns
+    /// nothing at all — `1b` draws nine panels and gives focus to none of them,
+    /// its own rule offers `H/L a day · J/K a thread`, and it never reads
+    /// [`App::focus`] — so `Tab` there is a no-op instead of a silent mutation.
+    /// The narrow layout returns the one focus its two panels share.
+    fn panels(&self) -> &'static [Focus] {
+        match self.view {
+            View::Week => &[],
+            _ if self.columns < NARROW_BELOW => &Focus::NARROW,
+            _ => &Focus::CYCLE,
+        }
+    }
+
+    /// The focus the current screen can actually draw.
+    pub fn focus(&self) -> Focus {
+        self.focus.within(self.panels())
+    }
+
     /// Draw the current state over the whole of `grid`.
     ///
     /// The layout choice lives here rather than in a screen because it is a
     /// choice *between* screens: below [`NARROW_BELOW`] columns the design does
     /// not shrink the Today screen, it draws a different one.
-    pub fn draw(&self, grid: &mut Grid<'_>) {
+    ///
+    /// `&mut self` for one field: the width is recorded here because this is the
+    /// only place that knows it, and `Tab` — which arrives between draws — has to
+    /// know which screen it is cycling. Nothing else about the draw is stateful;
+    /// the screens remain a pure function of the model.
+    pub fn draw(&mut self, grid: &mut Grid<'_>) {
+        self.columns = grid.width();
+        let focus = self.focus();
         match self.view {
             View::Week => screen::week::draw(grid, &self.workspace, self.thread_cursor),
             View::Today | View::Settings if grid.width() < NARROW_BELOW => {
-                screen::narrow::draw(grid, &self.workspace, self.focus)
+                screen::narrow::draw(grid, &self.workspace, focus)
             }
             View::Today | View::Settings => {
-                screen::today::draw(grid, &self.workspace, self.focus, self.thread_cursor)
+                screen::today::draw(grid, &self.workspace, focus, self.thread_cursor)
             }
         }
     }
 
     /// Whether keystrokes should reach the draft rather than the navigation keys.
+    ///
+    /// Reads [`App::focus`] rather than the field, so a focus left on a panel the
+    /// current screen does not draw cannot silently swallow the draft.
     pub fn is_typing(&self) -> bool {
-        self.view == View::Today && self.focus == Focus::Conversation
+        self.view == View::Today && self.focus() == Focus::Conversation
     }
 }
 
@@ -210,6 +267,80 @@ mod tests {
         }
         app.apply(Action::PreviousPanel);
         assert_eq!(app.focus, Focus::Trickle);
+    }
+
+    /// `Tab` is a no-op on the week screen, which draws no focusable panel and
+    /// never reads [`App::focus`].
+    ///
+    /// It used to cycle all four variants there, so `Tab` on `1b` moved a field
+    /// nothing on screen could show — and `J`/`K`, whose cursor that screen *does*
+    /// draw, are the keys its own bottom rule offers.
+    #[test]
+    fn tab_does_nothing_on_the_week_screen() {
+        let mut app = app();
+        app.apply(Action::ShowWeek);
+        for _ in 0..5 {
+            app.apply(Action::NextPanel);
+            assert_eq!(
+                app.focus,
+                Focus::Conversation,
+                "Tab moved focus on the week"
+            );
+        }
+        app.apply(Action::PreviousPanel);
+        assert_eq!(app.focus, Focus::Conversation);
+        // And coming back to Today finds the cycle working again.
+        app.apply(Action::ShowToday);
+        app.apply(Action::NextPanel);
+        assert_eq!(app.focus, Focus::Today);
+    }
+
+    /// `Tab` on the narrow layout reaches only the panels `1h` draws — the
+    /// conversation and the composer, which share one focus — so it moves nothing
+    /// and typing keeps working.
+    ///
+    /// One press on an 80x24 terminal used to leave the screen with no accented
+    /// rule anywhere, keystrokes no longer reaching the draft, and `j`/`k`/`h`/`l`
+    /// moving two cursors nothing drew.
+    #[test]
+    fn tab_on_the_narrow_layout_keeps_the_conversation_focused() {
+        let mut app = app();
+        // The width comes from the last draw, so draw first.
+        screen(&mut app, 80, 24);
+        for press in 0..5 {
+            app.apply(Action::NextPanel);
+            assert_eq!(app.focus(), Focus::Conversation, "press {press}");
+            assert!(app.is_typing(), "typing stopped after press {press}");
+        }
+        // And the keystroke reaches the draft, not the cursors.
+        app.apply(Action::Type('x'));
+        assert_eq!(app.workspace.conversation.composer.draft, "x");
+        assert_eq!(app.thread_cursor, 0);
+
+        // Every panel rule the narrow screen draws is still accented.
+        let text = screen(&mut app, 80, 24);
+        assert!(text.contains("The conversation"), "{text}");
+    }
+
+    /// A terminal narrowed out of the wide layout drops focus back to the
+    /// conversation rather than leaving it on a panel the narrow screen does not
+    /// draw — the same fault `Tab` used to cause, reached by resizing.
+    #[test]
+    fn narrowing_the_terminal_brings_focus_back_to_the_conversation() {
+        let mut app = app();
+        screen(&mut app, 120, 40);
+        app.apply(Action::NextPanel);
+        app.apply(Action::NextPanel);
+        assert_eq!(app.focus, Focus::Threads);
+        assert!(!app.is_typing());
+
+        screen(&mut app, 80, 24);
+        assert_eq!(app.focus(), Focus::Conversation);
+        assert!(app.is_typing(), "typing is dead on the narrow layout");
+        // The field keeps the wide screen's choice, so widening finds it again.
+        assert_eq!(app.focus, Focus::Threads);
+        screen(&mut app, 120, 40);
+        assert_eq!(app.focus(), Focus::Threads);
     }
 
     /// The thread cursor clamps at both ends rather than wrapping, so it cannot
@@ -377,7 +508,7 @@ mod tests {
             .join("\n")
     }
 
-    fn screen(app: &App, width: u16, height: u16) -> String {
+    fn screen(app: &mut App, width: u16, height: u16) -> String {
         let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
         let area = buf.area;
         let mut grid = Grid::new(&mut buf, area);
@@ -392,9 +523,9 @@ mod tests {
     /// the three right-hand panels.
     #[test]
     fn the_narrow_boundary_switches_screens() {
-        let app = app();
+        let mut app = app();
         for width in [80u16, NARROW_BELOW - 1] {
-            let text = screen(&app, width, 24);
+            let text = screen(&mut app, width, 24);
             assert!(
                 text.contains("Today  Week"),
                 "the narrow nav is missing at {width}"
@@ -405,7 +536,7 @@ mod tests {
             );
         }
         for width in [NARROW_BELOW, 120] {
-            let text = screen(&app, width, 30);
+            let text = screen(&mut app, width, 30);
             assert!(
                 text.contains("Today   The week"),
                 "the wide nav is missing at {width}"
@@ -425,7 +556,7 @@ mod tests {
         let mut app = app();
         app.apply(Action::ShowWeek);
         for width in [60u16, 80, 120] {
-            let text = screen(&app, width, 30);
+            let text = screen(&mut app, width, 30);
             assert!(
                 text.contains("Fri Sat Sun"),
                 "the week's day header is missing at {width}"

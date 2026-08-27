@@ -37,7 +37,7 @@ use crate::{
     },
 };
 
-use super::{chrome, conversation, Focus};
+use super::{chrome, conversation, joined, spelled, Focus};
 
 /// Rows the composer takes here: two rules and the draft, with no room for the
 /// reassurance line the wide layout carries.
@@ -60,11 +60,12 @@ pub fn draw(grid: &mut Grid<'_>, workspace: &Workspace, focus: Focus) {
     let width = grid.width();
     let height = grid.height();
 
-    let subject = format!(
-        "{}{}{}",
-        workspace.now.short_date,
+    // Joined rather than formatted: the live workspace has no clock yet, and an
+    // unconditional separator drew "Mooshik  ·    ·  " on the primary path. See
+    // `screen::joined`.
+    let subject = joined(
+        &[&workspace.now.short_date, &workspace.now.time],
         text::get("tui.separator"),
-        workspace.now.time
     );
     chrome::brand(grid, margins, &subject);
     chrome::nav(grid, margins, text::get("tui.narrow.nav_gap"), &nav_items());
@@ -128,9 +129,10 @@ fn nav_items() -> [(&'static str, Role); 2] {
 /// The marks stay: they are seven cells and they carry the whole "every day this
 /// week" claim without a word, which is exactly what a single row needs.
 ///
-/// The count is a plain "4 more", not `1h`'s `^3 four more`: `^3` is bound to
-/// nothing, and the number is worth saying without pretending there is a key
-/// that shows it.
+/// The count is `1h`'s own "four more" without its `^3`: the key is bound to
+/// nothing, and the number is worth saying without pretending there is a key that
+/// shows it. Spelled, because the artboard spells it — see
+/// [`spelled`](super::spelled).
 fn thread_line(grid: &mut Grid<'_>, threads: &[Thread], margins: chrome::Margins, row: u16) {
     let Some(thread) = threads.first() else {
         return;
@@ -138,7 +140,7 @@ fn thread_line(grid: &mut Grid<'_>, threads: &[Thread], margins: chrome::Margins
 
     let more = threads.len().saturating_sub(1);
     let hint = if more > 0 {
-        text::get("tui.narrow_more").replace("{count}", &more.to_string())
+        text::get("tui.narrow_more").replace("{count}", &spelled(more))
     } else {
         String::new()
     };
@@ -152,19 +154,25 @@ fn thread_line(grid: &mut Grid<'_>, threads: &[Thread], margins: chrome::Margins
     let available = right
         .saturating_sub(text_col)
         .saturating_sub(hint_width.saturating_add(2));
-    let joined = if thread.because.is_empty() {
+    let sentence = if thread.because.is_empty() {
         thread.summary.clone()
     } else {
+        // The tight separator, not the trickle's bullet: `1h` draws "The 512 cap
+        // · every day this week", and a bullet between two pieces of prose is
+        // prose. `marks`'s own header draws that line — a glyph a reader *looks
+        // at* lives in Rust, a mark between words a reader *reads* lives in
+        // `en.toml` — and using the notation const here broke it, identical
+        // rendering notwithstanding.
         format!(
             "{}{}{}",
             thread.summary,
-            marks::TRICKLE_BULLET,
+            text::get("tui.separator_tight"),
             thread.because.text
         )
     };
     // An ellipsis when the sentence was cut, so a row ending "…overflow blocks,
     // never" reads as truncation rather than as an unfinished thought.
-    let mut lines = wrap(&joined, available.saturating_sub(1)).into_iter();
+    let mut lines = wrap(&sentence, available.saturating_sub(1)).into_iter();
     if let Some(line) = lines.next() {
         let clipped = lines.next().is_some();
         let shown = if clipped { format!("{line}…") } else { line };
@@ -334,8 +342,9 @@ mod tests {
         // `1h` row 20 puts the thread's text at column 9, right after the seven
         // marks and one space. It was drawn at 10.
         assert_eq!(row.chars().nth(9), Some('T'), "{row:?}");
-        // The count, with no key attached: `^3` is bound to nothing.
-        assert!(row.contains("4 more"), "{row:?}");
+        // The count, spelled as `1h` spells it, with no key attached: `^3` is
+        // bound to nothing.
+        assert!(row.contains("four more"), "{row:?}");
         assert!(!row.contains("^3"), "an unbound key is advertised: {row:?}");
     }
 
@@ -390,6 +399,41 @@ mod tests {
         let buf = drawn(24, 24, &workspace());
         let row = row_text(&buf, 21);
         assert!(row.trim().is_empty(), "{row:?}");
+    }
+
+    /// The collapsed thread line joins its two halves with the prose separator,
+    /// not with the trickle's notation bullet.
+    ///
+    /// The two render identically — both are `" · "` — so this is checked at the
+    /// source, which is the only place the difference exists. `marks`'s own header
+    /// draws the line: a glyph a reader *looks at* lives in Rust, a mark between
+    /// words a reader *reads* lives in `en.toml`, so that a locale which separates
+    /// prose differently can say so without editing the design's legend.
+    #[test]
+    fn the_thread_line_joins_prose_with_a_prose_separator() {
+        let production = include_str!("narrow.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("a production half");
+        assert!(
+            !production.contains("TRICKLE_BULLET"),
+            "a notation glyph is used as a prose separator"
+        );
+        assert!(
+            production.contains("tui.separator_tight"),
+            "the prose separator is not used"
+        );
+
+        // And the rendered row still reads as `1h` draws it.
+        let buf = drawn(80, 24, &workspace());
+        let row = row_text(&buf, 20);
+        assert!(
+            row.contains(&format!(
+                "Thought 0{}every day this week",
+                text::get("tui.separator_tight")
+            )),
+            "{row:?}"
+        );
     }
 
     /// The narrow scope is used, not a truncation of the wide one.

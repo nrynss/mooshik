@@ -190,6 +190,16 @@ text = "Call Mum back"
 text = "Clear, 19°"
 
 # ── The week ─────────────────────────────────────────────────────────────────
+#
+# A day's `weather` is written with a comma — "Rain, 15°" — not a bullet. It
+# composes: the week screen's detail head joins it to the mood with the tight
+# separator, and `1b` draws that as "Rain, 15° · A rough day". A bullet inside the
+# field made it "Rain · 15° · A rough day", three bullets for two facts.
+#
+# `tone` on a day's entries is the *one* hard thing that happened, and `1b` spends
+# it on the week gutter's "Incident 09:42-11:40" and nowhere else. The detail
+# pane's 09:42 line is body text in the artboard: the incident is already named
+# in yellow one panel to the left, and `1i` allows the caution colour twice a week.
 
 [week]
 label = "21-27 August"
@@ -199,7 +209,7 @@ selected = 5
 short_label = "Fri 21"
 long_label = "Friday 21 August"
 day_of_month = "21"
-weather = "Clear · 21°"
+weather = "Clear, 21°"
 highlights = [
   { text = "Designed the backpressure behaviour" },
   { text = "Rode in" },
@@ -212,7 +222,7 @@ mood = { text = "A good day", tone = "plain" }
 short_label = "Sat 22"
 long_label = "Saturday 22 August"
 day_of_month = "22"
-weather = "Showers · 17°"
+weather = "Showers, 17°"
 highlights = [{ text = "Moved the Quillstone cache to the NAS" }]
 notes = ""
 load = { level = 4, tone = "plain" }
@@ -222,7 +232,7 @@ mood = { text = "Quiet", tone = "plain" }
 short_label = "Sun 23"
 long_label = "Sunday 23 August"
 day_of_month = "23"
-weather = "Warm · 24°"
+weather = "Warm, 24°"
 highlights = [
   { text = "58km ride" },
   { text = "Cooked" },
@@ -236,7 +246,7 @@ mood = { text = "Mixed", tone = "plain" }
 short_label = "Mon 24"
 long_label = "Monday 24 August"
 day_of_month = "24"
-weather = "Clear · 20°"
+weather = "Clear, 20°"
 highlights = [
   { text = "\"Blocking is honest, dropping is a lie\"" },
   { text = "40ms quantum" },
@@ -249,7 +259,7 @@ mood = { text = "Steady", tone = "plain" }
 short_label = "Tue 25"
 long_label = "Tuesday 25 August"
 day_of_month = "25"
-weather = "Grey · 18°"
+weather = "Grey, 18°"
 highlights = [
   { text = "Cobalt Lantern retries, jitter" },
   { text = "Late finish" },
@@ -262,7 +272,7 @@ mood = { text = "Flat", tone = "plain" }
 short_label = "Wed 26"
 long_label = "Wednesday 26 August"
 day_of_month = "26"
-weather = "Rain · 15°"
+weather = "Rain, 15°"
 notes = """
 You came back to the 512 cap four times on this day.
 
@@ -278,7 +288,6 @@ highlights = [
 [[week.days.entries]]
 time = "09:42"
 text = "The ring overflowed in production"
-tone = "hard"
 
 [[week.days.entries]]
 time = "10:12"
@@ -304,7 +313,7 @@ text = "Wrote the incident notes"
 short_label = "Thu 27"
 long_label = "Thursday 27 August"
 day_of_month = "27"
-weather = "Clear · 19°"
+weather = "Clear, 19°"
 highlights = [
   { text = "Postmortem done" },
   { text = "Novel finished" },

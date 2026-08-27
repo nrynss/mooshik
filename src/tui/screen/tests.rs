@@ -22,7 +22,7 @@ const SIZES: [(u16, u16); 9] = [
     (400, 120),
 ];
 
-fn draw(app: &App, width: u16, height: u16) -> Buffer {
+fn draw(app: &mut App, width: u16, height: u16) -> Buffer {
     let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
     let area = buf.area;
     let mut grid = Grid::new(&mut buf, area);
@@ -31,9 +31,9 @@ fn draw(app: &App, width: u16, height: u16) -> Buffer {
 }
 
 fn apps() -> Vec<(&'static str, App)> {
-    let mut today = App::new(crate::tui::demo());
+    let mut today = App::new(crate::tui::demo(crate::tui::Scene::Today));
     today.view = View::Today;
-    let mut week = App::new(crate::tui::demo());
+    let mut week = App::new(crate::tui::demo(crate::tui::Scene::Today));
     week.view = View::Week;
     let empty = App::new(Workspace::default());
     vec![("today", today), ("week", week), ("empty", empty)]
@@ -47,9 +47,9 @@ fn cells(buf: &Buffer) -> impl Iterator<Item = &ratatui::buffer::Cell> {
 /// buffer it was given.
 #[test]
 fn every_screen_draws_at_every_size() {
-    for (name, app) in apps() {
+    for (name, mut app) in apps() {
         for (width, height) in SIZES {
-            let buf = draw(&app, width, height);
+            let buf = draw(&mut app, width, height);
             assert_eq!(buf.area.width, width, "{name} at {width}x{height}");
             assert_eq!(buf.area.height, height, "{name} at {width}x{height}");
         }
@@ -61,9 +61,9 @@ fn every_screen_draws_at_every_size() {
 /// behind."
 #[test]
 fn nothing_paints_a_background_but_the_ground() {
-    for (name, app) in apps() {
+    for (name, mut app) in apps() {
         for (width, height) in SIZES {
-            let buf = draw(&app, width, height);
+            let buf = draw(&mut app, width, height);
             for cell in cells(&buf) {
                 assert!(
                     cell.bg == Color::Reset || cell.bg == Role::Ground.color(),
@@ -86,9 +86,9 @@ fn no_colour_escapes_the_sixteen() {
         Color::LightBlue,
         Color::LightCyan,
     ];
-    for (name, app) in apps() {
+    for (name, mut app) in apps() {
         for (width, height) in SIZES {
-            let buf = draw(&app, width, height);
+            let buf = draw(&mut app, width, height);
             for cell in cells(&buf) {
                 for colour in [cell.fg, cell.bg] {
                     assert!(
@@ -109,8 +109,8 @@ fn no_colour_escapes_the_sixteen() {
 /// on the Today or week screens.
 #[test]
 fn the_reserved_red_is_unspent_on_these_screens() {
-    for (name, app) in apps() {
-        let buf = draw(&app, 120, 40);
+    for (name, mut app) in apps() {
+        let buf = draw(&mut app, 120, 40);
         for cell in cells(&buf) {
             assert_ne!(
                 cell.fg,
@@ -125,8 +125,8 @@ fn the_reserved_red_is_unspent_on_these_screens() {
 /// action — so it appears nowhere on these screens.
 #[test]
 fn no_double_rule_on_these_screens() {
-    for (name, app) in apps() {
-        let buf = draw(&app, 120, 40);
+    for (name, mut app) in apps() {
+        let buf = draw(&mut app, 120, 40);
         for cell in cells(&buf) {
             assert!(
                 !matches!(cell.symbol(), "╔" | "╗" | "╚" | "╝" | "═" | "║"),
@@ -141,8 +141,8 @@ fn no_double_rule_on_these_screens() {
 /// screen never ends on a bare panel edge.
 #[test]
 fn the_bottom_rule_is_always_the_last_row() {
-    let apps = apps();
-    for (name, app) in &apps {
+    let mut apps = apps();
+    for (name, app) in &mut apps {
         if *name == "empty" {
             continue;
         }
@@ -187,7 +187,7 @@ fn nothing_is_written_outside_the_grid() {
     /// two-column one are both visible.
     const MARGIN: u16 = 2;
 
-    for (name, app) in apps() {
+    for (name, mut app) in apps() {
         for (width, height) in SIZES {
             let mut buf = Buffer::empty(Rect::new(0, 0, width + MARGIN * 2, height + MARGIN * 2));
             for cell in buf.content.iter_mut() {
@@ -221,8 +221,8 @@ fn nothing_is_written_outside_the_grid() {
 #[test]
 fn dim_is_only_used_to_double_two_slots() {
     use ratatui::style::Modifier;
-    for (name, app) in apps() {
-        let buf = draw(&app, 120, 40);
+    for (name, mut app) in apps() {
+        let buf = draw(&mut app, 120, 40);
         for cell in cells(&buf) {
             if cell.modifier.contains(Modifier::DIM) {
                 assert!(
@@ -247,16 +247,9 @@ fn dim_is_only_used_to_double_two_slots() {
 #[test]
 #[ignore = "prints the screens for a human to look at; asserts nothing"]
 fn eyeball() {
-    for (name, app) in apps() {
-        if name == "empty" {
-            continue;
-        }
-        let (w, h) = if name == "narrow" {
-            (80, 24)
-        } else {
-            (120, 40)
-        };
-        let buf = draw(&app, w, h);
+    /// Print one screen, trimmed at the right.
+    fn look(name: &str, app: &mut App, w: u16, h: u16) {
+        let buf = draw(app, w, h);
         println!("\n=== {name} {w}x{h} ===");
         for row in 0..h {
             let line: String = (0..w)
@@ -265,28 +258,36 @@ fn eyeball() {
             println!("|{}|", line.trim_end());
         }
     }
-    let mut narrow = App::new(crate::tui::demo());
-    narrow.view = View::Today;
-    let buf = draw(&narrow, 80, 24);
-    println!("\n=== narrow 80x24 ===");
-    for row in 0..24 {
-        let line: String = (0..80)
-            .map(|col| buf[(col, row)].symbol().chars().next().unwrap_or(' '))
-            .collect();
-        println!("|{}|", line.trim_end());
-    }
-    // The week's bottom rule is the one that used to overwrite itself, and it
-    // did so only below 108 columns — so the narrow widths get a look too.
-    let mut week = App::new(crate::tui::demo());
-    week.view = View::Week;
-    for (w, h) in [(80u16, 24u16), (90, 30), (100, 30)] {
-        let buf = draw(&week, w, h);
-        println!("\n=== week {w}x{h} ===");
-        for row in 0..h {
-            let line: String = (0..w)
-                .map(|col| buf[(col, row)].symbol().chars().next().unwrap_or(' '))
-                .collect();
-            println!("|{}|", line.trim_end());
+
+    // `apps()` has no "narrow" entry — the narrow layout is the Today screen at
+    // a narrow width, not a third app — so the size was always the wide one and
+    // the `if name == "narrow"` arm here never fired.
+    for (name, mut app) in apps() {
+        if name == "empty" {
+            continue;
         }
+        look(name, &mut app, 120, 40);
+    }
+    let mut narrow = App::new(crate::tui::demo(crate::tui::Scene::Today));
+    narrow.view = View::Today;
+    look("narrow", &mut narrow, 80, 24);
+
+    // The two artboards that are states of the conversation rather than screens.
+    for (name, scene) in [
+        ("recall (1c)", crate::tui::Scene::Recall),
+        ("caution (1d)", crate::tui::Scene::Caution),
+    ] {
+        let mut app = App::new(crate::tui::demo(scene));
+        app.view = View::Today;
+        look(name, &mut app, 120, 40);
+        look(name, &mut app, 80, 24);
+    }
+    // The week's bottom rule is the one that used to overwrite itself, and it did
+    // so only below 108 columns; the day columns are windowed below 119. So the
+    // narrow widths get a look too.
+    let mut week = App::new(crate::tui::demo(crate::tui::Scene::Today));
+    week.view = View::Week;
+    for (w, h) in [(80u16, 24u16), (90, 30), (100, 30), (118, 40)] {
+        look("week", &mut week, w, h);
     }
 }
