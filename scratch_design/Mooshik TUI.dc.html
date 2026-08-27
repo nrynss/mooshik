@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="stylesheet" href="_ds/nocturne-2899c291-dfce-4ebd-9e96-778c30ea2b83/styles.css">
+<script src="_ds/nocturne-2899c291-dfce-4ebd-9e96-778c30ea2b83/_ds_bundle.js"></script>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Inter:wght@400;500&display=swap">
+<style>
+  body { margin: 0; background: #0e1017; }
+  a { color: #9184d9; text-decoration: none; border-bottom: 1px solid #4c4a75; }
+  a:hover { color: #b3a7f2; border-bottom-color: #9184d9; }
+</style>
+</helmet>
+<div style="--cw:9.6px;--ch:21px;--tbg:#161826;--d:#4a4d63;--dd:#33364a;--t:#b9bac6;--t2:#8f92a3;--b:#e9e9ed;--m:#9184d9;--m2:#b3a7f2;--g:#6fae7f;--y:#cfa65c;--r:#d1656b;--bl:#8d9ff0;--c:#7fc8d8;background:#0e1017;color:var(--color-text);font-family:var(--font-body);padding:64px;display:flex;flex-direction:column;gap:40px">
+
+  <div style="display:flex;flex-direction:column;gap:10px;max-width:900px">
+    <div style="font-family:var(--font-heading);font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:var(--color-accent)">Mooshik — ratatui artboards</div>
+    <h1 style="margin:0;font-family:var(--font-heading);font-weight:500;font-size:34px;letter-spacing:-0.01em">A diary that writes itself</h1>
+    <p style="margin:0;font-size:15px;line-height:1.6;color:var(--color-neutral-400);text-wrap:pretty">Every artboard is a true 120&#215;40 character grid, with one narrow variant at 80&#215;24. Monospace only, box-drawing frames, 16-colour ANSI, keyboard only. Nothing on screen is a size — hierarchy is weight, colour and space. Colour legend and strength notation at <a href="#1i">1i</a>.</p>
+  </div>
+
+  <section style="display:flex;flex-direction:column;gap:40px">
+
+    <div id="1a" style="display:flex;flex-direction:column;gap:12px;width:1180px">
+      <div style="display:flex;align-items:baseline;gap:14px">
+        <span style="font-family:var(--font-heading);font-size:11px;letter-spacing:0.14em;color:var(--color-accent);border:1px solid var(--color-accent-700);border-radius:var(--radius-sm);padding:3px 7px">1a</span>
+        <h2 style="margin:0;font-family:var(--font-heading);font-weight:500;font-size:19px">Today</h2>
+        <span style="font-size:13px;color:var(--color-neutral-500)">The default — the pane that stays open in a tmux split all day</span>
+      </div>
+      <div style="padding:14px;background:var(--tbg);box-shadow:var(--shadow-md);border-radius:3px;width:1180px;box-sizing:border-box">
+        <div style="position:relative;width:1152px;height:840px;overflow:hidden;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:16px;line-height:21px;font-variant-ligatures:none;color:var(--t)">
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:0;white-space:pre;color:var(--b)">Mooshik<span style="color:var(--d)">  &#183;  Thursday 27 August  &#183;  14:22</span></div>
+          <sc-if value="{{ showKeyHints }}" hint-placeholder-val="{{ true }}"><div style="position:absolute;left:calc(var(--cw) * 76);top:0;white-space:pre;color:var(--m)">Today<span style="color:var(--d)">   The week   ^, settings   ? keys</span></div></sc-if>
+
+          <dc-import name="Panel" col="0" row="1" w="72" h="33" title=" The conversation " bc="{{ bcConv }}" tc="{{ tcConv }}" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <dc-import name="Panel" col="0" row="34" w="72" h="4" title=" You " bc="#4a4d63" tc="#b9bac6" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <dc-import name="Panel" col="72" row="1" w="48" h="16" title=" Today " bc="{{ bcToday }}" tc="{{ tcToday }}" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <dc-import name="Panel" col="72" row="17" w="48" h="14" title=" What keeps coming back " bc="{{ bcThreads }}" tc="{{ tcThreads }}" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <sc-if value="{{ showTrickle }}" hint-placeholder-val="{{ true }}"><dc-import name="Panel" col="72" row="31" w="48" h="7" title=" Just remembered " bc="{{ bcTrickle }}" tc="{{ tcTrickle }}" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import></sc-if>
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:calc(var(--ch) * 2);white-space:pre;color:var(--b)"><span style="color:var(--d)">        ... earlier today</span><br><br><span style="color:var(--d)"> 08:12  </span>Neom<br>        Rode in before standup. 12km, first since the incident.<br><br><span style="color:var(--d)"> 08:12  </span><span style="color:var(--m)">Mooshik</span><br><span style="color:var(--t)">        Good — that's three days back on the bike this week.</span><br><br><span style="color:var(--d)"> 09:04  </span>Neom<br>        Postmortem's basically done. The fix is the 512 cap —<br>        writers block, we don't drop. Shipping the doc after lunch.<br><br><span style="color:var(--d)"> 09:05  </span><span style="color:var(--m)">Mooshik</span><br><span style="color:var(--t)">        Almost word for word what you wrote on Monday. Fifth day<br>        running that the cap has come up.</span><br><br><span style="color:var(--d)"> 11:52  </span>Neom<br>        Finished the novel on the train. First one since June.<br><br><span style="color:var(--d)"> 13:38  </span>Neom<br>        Quillstone cache is cold on the new runners — is the NAS<br>        path still right?<br><br><span style="color:var(--d)"> 13:38  </span><span style="color:var(--m)">Mooshik</span><br><span style="color:var(--t)">        /srv/quillstone on the shared NAS. That's where you've<br>        mounted it five days out of seven.</span><br><br><span style="color:var(--d)"> 14:20  </span>Neom<br>        Right. And I still need to call Mum back.</div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:calc(var(--ch) * 35);white-space:pre;color:var(--b)"><span style="color:var(--m)">&#9612;</span> Called Mum. No answer. Try again once the doc is out<span style="color:var(--m)">&#9608;</span></div>
+          <sc-if value="{{ showKeyHints }}" hint-placeholder-val="{{ true }}"><div style="position:absolute;left:calc(var(--cw) * 2);top:calc(var(--ch) * 36);white-space:pre;color:var(--d)">  Enter send  &#183;  Alt-Enter newline  &#183;  Nothing here needs saving</div></sc-if>
+
+          <div style="position:absolute;left:calc(var(--cw) * 74);top:calc(var(--ch) * 2);white-space:pre;color:var(--t)"><span style="color:var(--c)">  21    22    23    24    25    26    </span><span style="color:var(--b)">27</span><br><span style="color:var(--d)">  &#9603;     &#9604;     &#9605;     &#9604;     &#9603;     </span><span style="color:var(--y)">&#9607;</span><span style="color:var(--d)">     </span><span style="color:var(--b)">&#9604;</span><br><br><span style="color:var(--d)"> 08:10  </span>Rode in, 12km<br><span style="color:var(--d)"> 09:04  </span>Postmortem — the 512 cap holds<br><span style="color:var(--d)"> 11:52  </span>Finished the novel<br><span style="color:var(--d)"> 13:38  </span>Quillstone cache cold on runners<br><span style="color:var(--d)"> 14:20  </span>Call Mum back<br><br><span style="color:var(--d)"> Clear, 19&#176;               A good day so far</span></div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 74);top:calc(var(--ch) * 18);white-space:pre;color:var(--t)"><span style="color:var(--b)"> <span style="color:var(--t2)">&#9604;&#9604;&#9604;&#9604;&#9604;&#9604;&#9604;</span>  The ring holds 512 in flight;<br>          overflow blocks, never drops</span><br><span style="color:var(--d)">          Every day this week &#183; eight<br>          other notes lean on it</span><br> <span style="color:var(--t2)">&#9604;&#9604;<span style="color:var(--dd)">&#9601;</span>&#9604;&#9604;&#9604;<span style="color:var(--dd)">&#9601;</span></span>  Secrets never get remembered —<br>          the vault is the only place a<br>          credential lives<br><span style="color:var(--t2)"> &#9604;&#9604;<span style="color:var(--dd)">&#9601;&#9601;</span>&#9604;&#9604;&#9604;  The Quillstone cache lives on<br>          the NAS at /srv/quillstone<br> <span style="color:var(--dd)">&#9601;&#9601;&#9601;</span>&#9604;&#9604;<span style="color:var(--dd)">&#9601;</span>&#9604;  Zephyr gives every task 40ms</span><br><span style="color:var(--d)"> <span style="color:var(--t2)"><span style="color:var(--dd)">&#9601;&#9601;&#9601;&#9601;</span>&#9604;&#9604;<span style="color:var(--dd)">&#9601;</span></span>  Cobalt Lantern retries three<br>          times, with jitter</span></div>
+
+          <sc-if value="{{ showTrickle }}" hint-placeholder-val="{{ true }}"><div style="position:absolute;left:calc(var(--cw) * 74);top:calc(var(--ch) * 32);white-space:pre;color:var(--t)"><span style="color:var(--d)"> &#183; </span>The 512 cap, again — fifth day<br><span style="color:var(--t2)"><span style="color:var(--d)"> &#183; </span>12km before standup</span><br><span style="color:var(--d)"> &#183; "First novel since June"</span><br><span style="color:var(--dd)"> &#183; Call Mum back</span><br><span style="color:var(--dd)"> &#183; Clear, 19&#176;</span></div></sc-if>
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:calc(var(--ch) * 39);white-space:pre;color:var(--d)"><span style="color:var(--g)">&#10003;</span> Keeping up  &#183;  214 things remembered, back to 21 August</div>
+          <sc-if value="{{ showKeyHints }}" hint-placeholder-val="{{ true }}"><div style="position:absolute;left:calc(var(--cw) * 70);top:calc(var(--ch) * 39);white-space:pre;color:var(--d)">Tab panel &#183; Alt-H/L resize &#183; ^K a day &#183; ? keys</div></sc-if>
+
+        </div>
+      </div>
+    </div>
+
+    <div id="1b" style="display:flex;flex-direction:column;gap:12px;width:1180px">
+      <div style="display:flex;align-items:baseline;gap:14px">
+        <span style="font-family:var(--font-heading);font-size:11px;letter-spacing:0.14em;color:var(--color-accent);border:1px solid var(--color-accent-700);border-radius:var(--radius-sm);padding:3px 7px">1b</span>
+        <h2 style="margin:0;font-family:var(--font-heading);font-weight:500;font-size:19px">The week</h2>
+        <span style="font-size:13px;color:var(--color-neutral-500)">Seven days, and the threads that run across them — strength reads as brightness, day-marks and order, never a tier</span>
+      </div>
+      <div style="padding:14px;background:var(--tbg);box-shadow:var(--shadow-md);border-radius:3px;width:1180px;box-sizing:border-box">
+        <div style="position:relative;width:1152px;height:840px;overflow:hidden;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:16px;line-height:21px;font-variant-ligatures:none;color:var(--t)">
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:0;white-space:pre;color:var(--b)">Mooshik<span style="color:var(--d)">  &#183;  Your week  &#183;  21-27 August</span></div>
+          <div style="position:absolute;left:calc(var(--cw) * 76);top:0;white-space:pre;color:var(--d)">Today   <span style="color:var(--m)">The week</span>   ^, settings   ? keys</div>
+
+          <dc-import name="Panel" col="0" row="1" w="17" h="15" title=" Fri 21 " bc="#4a4d63" tc="#7fc8d8" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <dc-import name="Panel" col="17" row="1" w="17" h="15" title=" Sat 22 " bc="#4a4d63" tc="#7fc8d8" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <dc-import name="Panel" col="34" row="1" w="17" h="15" title=" Sun 23 " bc="#4a4d63" tc="#7fc8d8" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <dc-import name="Panel" col="51" row="1" w="17" h="15" title=" Mon 24 " bc="#4a4d63" tc="#7fc8d8" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <dc-import name="Panel" col="68" row="1" w="17" h="15" title=" Tue 25 " bc="#4a4d63" tc="#7fc8d8" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <dc-import name="Panel" col="85" row="1" w="17" h="15" title=" Wed 26 " bc="#9184d9" tc="#e9e9ed" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <dc-import name="Panel" col="102" row="1" w="17" h="15" title=" Thu 27 " bc="#4a4d63" tc="#e9e9ed" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+
+          <div style="position:absolute;left:calc(var(--cw) * 1);top:calc(var(--ch) * 2);white-space:pre;color:var(--t2)"><span style="color:var(--d)">Clear &#183; 21&#176;</span><br><br>Designed the<br>backpressure<br>behaviour<br>Rode in<br><br><span style="color:var(--t)">A good day</span></div>
+          <div style="position:absolute;left:calc(var(--cw) * 18);top:calc(var(--ch) * 2);white-space:pre;color:var(--t2)"><span style="color:var(--d)">Showers &#183; 17&#176;</span><br><br>Moved the<br>Quillstone<br>cache to the<br>NAS<br><br><span style="color:var(--t)">Quiet</span></div>
+          <div style="position:absolute;left:calc(var(--cw) * 35);top:calc(var(--ch) * 2);white-space:pre;color:var(--t2)"><span style="color:var(--d)">Warm &#183; 24&#176;</span><br><br>58km ride<br>Cooked<br>A hard call<br>with Mum,<br>unresolved<br><br><span style="color:var(--t)">Mixed</span></div>
+          <div style="position:absolute;left:calc(var(--cw) * 52);top:calc(var(--ch) * 2);white-space:pre;color:var(--t2)"><span style="color:var(--d)">Clear &#183; 20&#176;</span><br><br>"Blocking is<br>honest,<br>dropping is a<br>lie"<br>40ms quantum<br><br><span style="color:var(--t)">Steady</span></div>
+          <div style="position:absolute;left:calc(var(--cw) * 69);top:calc(var(--ch) * 2);white-space:pre;color:var(--t2)"><span style="color:var(--d)">Grey &#183; 18&#176;</span><br><br>Cobalt Lantern<br>retries, jitter<br>Late finish<br><br><span style="color:var(--t)">Flat</span></div>
+          <div style="position:absolute;left:calc(var(--cw) * 86);top:calc(var(--ch) * 2);white-space:pre;color:var(--t)"><span style="color:var(--d)">Rain &#183; 15&#176;</span><br><br><span style="color:var(--y)">Incident<br>09:42-11:40</span><br>Drinks off<br>Mum called<br>mid-incident<br>— not called<br>back<br><br><span style="color:var(--y)">A rough day</span></div>
+          <div style="position:absolute;left:calc(var(--cw) * 103);top:calc(var(--ch) * 2);white-space:pre;color:var(--t)"><span style="color:var(--d)">Clear &#183; 19&#176;</span><br><br>Postmortem<br>done<br>Novel finished<br>Back on the<br>bike<br><br><span style="color:var(--b)">Better</span></div>
+
+          <dc-import name="Panel" col="0" row="16" w="74" h="23" title=" What keeps coming back " bc="#4a4d63" tc="#b9bac6" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <dc-import name="Panel" col="74" row="16" w="46" h="23" title=" Wednesday 26 August " bc="#9184d9" tc="#e9e9ed" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:calc(var(--ch) * 17);white-space:pre;color:var(--t)"><span style="color:var(--d)">  Fri Sat Sun Mon Tue Wed Thu</span><br><span style="color:var(--b)">   &#9607;   &#9607;   &#9607;   &#9607;   &#9607;   &#9607;   &#9607;    The ring never holds more than 512<br>                                in flight; overflow blocks, never drops</span><br><span style="color:var(--d)">                                Every day this week &#183; eight lean on it</span><br><br><span style="color:var(--t)">   &#9607;   &#9607;   <span style="color:var(--dd)">&#183;</span>   &#9607;   &#9607;   &#9607;   <span style="color:var(--dd)">&#183;</span>    Secrets never get remembered; the<br>                                vault is the only place they live</span><br><span style="color:var(--d)">                                Five days this week</span><br><br><span style="color:var(--t2)">   &#9607;   &#9607;   <span style="color:var(--dd)">&#183;</span>   <span style="color:var(--dd)">&#183;</span>   &#9607;   &#9607;   &#9607;    The Quillstone build cache lives on<br>                                the shared NAS at /srv/quillstone</span><br><span style="color:var(--d)">                                Five days &#183; you checked it again today</span><br><br><span style="color:var(--t2)">   <span style="color:var(--dd)">&#183;</span>   <span style="color:var(--dd)">&#183;</span>   <span style="color:var(--dd)">&#183;</span>   &#9607;   &#9607;   <span style="color:var(--dd)">&#183;</span>   &#9607;    Zephyr gives every task a 40ms<br>                                fairness quantum</span><br><span style="color:var(--d)">                                Three days &#183; Monday, Tuesday, Thursday</span><br><br><span style="color:var(--d)">   <span style="color:var(--dd)">&#183;</span>   <span style="color:var(--dd)">&#183;</span>   <span style="color:var(--dd)">&#183;</span>   <span style="color:var(--dd)">&#183;</span>   &#9607;   &#9607;   <span style="color:var(--dd)">&#183;</span>    Cobalt Lantern retries failed fetches<br>                                three times, with jitter<br>                                Twice this week</span></div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 76);top:calc(var(--ch) * 17);white-space:pre;color:var(--t)"><span style="color:var(--d)">Rain, 15&#176; &#183; </span><span style="color:var(--y)">A rough day</span><br><br><span style="color:var(--d)">09:42  </span>The ring overflowed in<br>       production<br><span style="color:var(--d)">10:12  </span>Nothing was dropped — writers<br>       waited. That's the whole<br>       postmortem, in one line<br><span style="color:var(--d)">11:40  </span>Clear<br><span style="color:var(--d)">12:30  </span>Cancelled drinks with friends<br><span style="color:var(--d)">12:41  </span>Mum called during it<br><span style="color:var(--d)">18:20  </span>Wrote the incident notes<br><br><span style="color:var(--t2)">You came back to the 512 cap four<br>times on this day.</span><br><br><span style="color:var(--t2)">You still haven't called him back —<br>it's come up on two days since.</span></div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:calc(var(--ch) * 39);white-space:pre;color:var(--d)">H/L a day &#183; J/K a thread &#183; Enter open the day &#183; / find &#183; ^1 today</div>
+          <div style="position:absolute;left:calc(var(--cw) * 74);top:calc(var(--ch) * 39);white-space:pre;color:var(--d)">21-27 August &#183; 214 things remembered</div>
+
+        </div>
+      </div>
+    </div>
+
+    <div id="1c" style="display:flex;flex-direction:column;gap:12px;width:1180px">
+      <div style="display:flex;align-items:baseline;gap:14px">
+        <span style="font-family:var(--font-heading);font-size:11px;letter-spacing:0.14em;color:var(--color-accent);border:1px solid var(--color-accent-700);border-radius:var(--radius-sm);padding:3px 7px">1c</span>
+        <h2 style="margin:0;font-family:var(--font-heading);font-weight:500;font-size:19px">Something came back</h2>
+        <span style="font-size:13px;color:var(--color-neutral-500)">The model forgot; the memory didn't. Blue is only ever this — a thing returning from another day, with its reason on the bottom rule</span>
+      </div>
+      <div style="padding:14px;background:var(--tbg);box-shadow:var(--shadow-md);border-radius:3px;width:1180px;box-sizing:border-box">
+        <div style="position:relative;width:1152px;height:840px;overflow:hidden;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:16px;line-height:21px;font-variant-ligatures:none;color:var(--t)">
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:0;white-space:pre;color:var(--b)">Mooshik<span style="color:var(--d)">  &#183;  Thursday 27 August  &#183;  14:31</span></div>
+          <div style="position:absolute;left:calc(var(--cw) * 76);top:0;white-space:pre;color:var(--m)">Today<span style="color:var(--d)">   The week   ^, settings   ? keys</span></div>
+
+          <dc-import name="Panel" col="0" row="1" w="72" h="33" title=" The conversation " bc="#9184d9" tc="#e9e9ed" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <dc-import name="Panel" col="0" row="34" w="72" h="4" title=" You " bc="#4a4d63" tc="#b9bac6" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <dc-import name="Panel" col="72" row="1" w="48" h="16" title=" Today " bc="#4a4d63" tc="#b9bac6" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <dc-import name="Panel" col="72" row="17" w="48" h="14" title=" What keeps coming back " bc="#4a4d63" tc="#b9bac6" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <dc-import name="Panel" col="72" row="31" w="48" h="7" title=" Just remembered " bc="#4a4d63" tc="#b9bac6" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:calc(var(--ch) * 2);white-space:pre;color:var(--b)"><span style="color:var(--d)">        ... earlier today</span><br><br><span style="color:var(--d)"> 14:31  </span>Neom<br>        Remind me why we capped the ring at 512 instead of just<br>        dropping on overflow?<br><br><span style="color:var(--d)"> 14:31  </span><span style="color:var(--m)">Mooshik</span><br><span style="color:var(--t)">        You decided that on Monday, and leaned on it again in<br>        Wednesday's incident notes. Your words:</span></div>
+
+          <dc-import name="Panel" col="10" row="12" w="54" h="4" title=" From Monday 24 August " bc="#8d9ff0" tc="#8d9ff0" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <div style="position:absolute;left:calc(var(--cw) * 12);top:calc(var(--ch) * 13);white-space:pre;color:var(--b)">Blocking the writer is honest. Dropping is a lie<br>the consumer only finds out an hour later.</div>
+          <div style="position:absolute;left:calc(var(--cw) * 12);top:calc(var(--ch) * 15);white-space:pre;background:var(--tbg);color:var(--bl)"> You've come back to this every day this week </div>
+
+          <dc-import name="Panel" col="10" row="17" w="54" h="4" title=" From Wednesday's incident notes, 10:12 " bc="#8d9ff0" tc="#8d9ff0" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <div style="position:absolute;left:calc(var(--cw) * 12);top:calc(var(--ch) * 18);white-space:pre;color:var(--b)">Overflow at 09:47 — nothing was dropped, writers<br>just waited. That's why the postmortem is short.</div>
+          <div style="position:absolute;left:calc(var(--cw) * 12);top:calc(var(--ch) * 20);white-space:pre;background:var(--tbg);color:var(--bl)"> You've raised this three times </div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:calc(var(--ch) * 22);white-space:pre;color:var(--t)">        The 512 itself came from the NAS throughput ceiling —<br>        you worked that out on Friday.<br><br><span style="color:var(--d)"> 14:33  </span><span style="color:var(--b)">Neom</span><br><span style="color:var(--b)">        Right. That goes in the postmortem.</span></div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:calc(var(--ch) * 35);white-space:pre;color:var(--b)"><span style="color:var(--m)">&#9612;</span><span style="color:var(--m)">&#9608;</span></div>
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:calc(var(--ch) * 36);white-space:pre;color:var(--d)">  Enter send  &#183;  Alt-Enter newline  &#183;  Nothing here needs saving</div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 74);top:calc(var(--ch) * 2);white-space:pre;color:var(--t)"><span style="color:var(--c)">  21    22    23    24    25    26    </span><span style="color:var(--b)">27</span><br><span style="color:var(--d)">  &#9603;     &#9604;     &#9605;     &#9604;     &#9603;     </span><span style="color:var(--y)">&#9607;</span><span style="color:var(--d)">     </span><span style="color:var(--b)">&#9604;</span><br><br><span style="color:var(--d)"> 08:10  </span>Rode in, 12km<br><span style="color:var(--d)"> 09:04  </span>Postmortem — the 512 cap holds<br><span style="color:var(--d)"> 11:52  </span>Finished the novel<br><span style="color:var(--d)"> 13:38  </span>Quillstone cache cold on runners<br><span style="color:var(--d)"> 14:20  </span>Call Mum back<br><span style="color:var(--d)"> 14:31  </span>Why 512, and not dropping<br><span style="color:var(--d)"> Clear, 19&#176;               A good day so far</span></div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 74);top:calc(var(--ch) * 18);white-space:pre;color:var(--t)"><span style="color:var(--b)"> <span style="color:var(--t2)">&#9604;&#9604;&#9604;&#9604;&#9604;&#9604;&#9604;</span>  The ring holds 512 in flight;<br>          overflow blocks, never drops</span><br><span style="color:var(--bl)">          Came back just now — from<br>          Monday and Wednesday</span><br> <span style="color:var(--t2)">&#9604;&#9604;<span style="color:var(--dd)">&#9601;</span>&#9604;&#9604;&#9604;<span style="color:var(--dd)">&#9601;</span></span>  Secrets never get remembered —<br>          the vault is the only place a<br>          credential lives<br><span style="color:var(--t2)"> &#9604;&#9604;<span style="color:var(--dd)">&#9601;&#9601;</span>&#9604;&#9604;&#9604;  The Quillstone cache lives on<br>          the NAS at /srv/quillstone<br> <span style="color:var(--dd)">&#9601;&#9601;&#9601;</span>&#9604;&#9604;<span style="color:var(--dd)">&#9601;</span>&#9604;  Zephyr gives every task 40ms</span><br><span style="color:var(--d)"> <span style="color:var(--t2)"><span style="color:var(--dd)">&#9601;&#9601;&#9601;&#9601;</span>&#9604;&#9604;<span style="color:var(--dd)">&#9601;</span></span>  Cobalt Lantern retries three<br>          times, with jitter</span></div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 74);top:calc(var(--ch) * 32);white-space:pre;color:var(--t)"><span style="color:var(--d)"> &#183; </span>Why 512, and not dropping<br><span style="color:var(--bl)"><span style="color:var(--d)"> &#183; </span>Brought back Monday's decision</span><br><span style="color:var(--t2)"><span style="color:var(--d)"> &#183; </span>The 512 cap, again — fifth day</span><br><span style="color:var(--d)"> &#183; 12km before standup</span><br><span style="color:var(--dd)"> &#183; Clear, 19&#176;</span></div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:calc(var(--ch) * 39);white-space:pre;color:var(--d)"><span style="color:var(--g)">&#10003;</span> Keeping up  &#183;  214 things remembered, back to 21 August</div>
+          <div style="position:absolute;left:calc(var(--cw) * 70);top:calc(var(--ch) * 39);white-space:pre;color:var(--d)">Enter open Monday &#183; J/K scroll &#183; ^2 week &#183; ?</div>
+
+        </div>
+      </div>
+    </div>
+
+    <div id="1d" style="display:flex;flex-direction:column;gap:12px;width:1180px">
+      <div style="display:flex;align-items:baseline;gap:14px">
+        <span style="font-family:var(--font-heading);font-size:11px;letter-spacing:0.14em;color:var(--color-accent);border:1px solid var(--color-accent-700);border-radius:var(--radius-sm);padding:3px 7px">1d</span>
+        <h2 style="margin:0;font-family:var(--font-heading);font-weight:500;font-size:19px">A quiet caution</h2>
+        <span style="font-size:13px;color:var(--color-neutral-500)">Said once, in the conversation, in the place a reply would go — not a modal, not an error, nothing to dismiss</span>
+      </div>
+      <div style="padding:14px;background:var(--tbg);box-shadow:var(--shadow-md);border-radius:3px;width:1180px;box-sizing:border-box">
+        <div style="position:relative;width:1152px;height:840px;overflow:hidden;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:16px;line-height:21px;font-variant-ligatures:none;color:var(--t)">
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:0;white-space:pre;color:var(--b)">Mooshik<span style="color:var(--d)">  &#183;  Thursday 27 August  &#183;  15:03</span></div>
+          <div style="position:absolute;left:calc(var(--cw) * 76);top:0;white-space:pre;color:var(--m)">Today<span style="color:var(--d)">   The week   ^, settings   ? keys</span></div>
+
+          <dc-import name="Panel" col="0" row="1" w="72" h="33" title=" The conversation " bc="#9184d9" tc="#e9e9ed" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <dc-import name="Panel" col="0" row="34" w="72" h="4" title=" You " bc="#4a4d63" tc="#b9bac6" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <dc-import name="Panel" col="72" row="1" w="48" h="16" title=" Today " bc="#4a4d63" tc="#b9bac6" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <dc-import name="Panel" col="72" row="17" w="48" h="14" title=" What leans on this " bc="#cfa65c" tc="#cfa65c" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <dc-import name="Panel" col="72" row="31" w="48" h="7" title=" Just remembered " bc="#4a4d63" tc="#b9bac6" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:calc(var(--ch) * 2);white-space:pre;color:var(--b)"><span style="color:var(--d)">        ... earlier today</span><br><br><span style="color:var(--d)"> 15:02  </span>Neom<br>        Honestly — let's just drop on overflow. Simpler, and<br>        the writers stop stalling.<br><br><span style="color:var(--d)"> 15:03  </span><span style="color:var(--m)">Mooshik</span></div>
+
+          <dc-import name="Panel" col="8" row="9" w="58" h="11" title=" One thing before you do " bc="#cfa65c" tc="#cfa65c" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <div style="position:absolute;left:calc(var(--cw) * 10);top:calc(var(--ch) * 10);white-space:pre;color:var(--t)">You've held to <span style="color:var(--b)">"block, never drop"</span> every day this<br>week — it's the thing you come back to most, and<br>eight other notes lean on it:<br><br><span style="color:var(--t2)">  The postmortem is short because nothing dropped<br>  The 40ms fairness quantum assumes writers wait<br>  The runbook tells oncall to ignore drop alarms<br>  ... and five more</span></div>
+          <div style="position:absolute;left:calc(var(--cw) * 10);top:calc(var(--ch) * 19);white-space:pre;background:var(--tbg);color:var(--d)"> Nothing's changed — say the word and I'll follow </div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:calc(var(--ch) * 21);white-space:pre;color:var(--b)"><span style="color:var(--d)"> 15:05  </span>Neom<br>        Keep it. I'll widen the ring instead.<br><br><span style="color:var(--d)"> 15:05  </span><span style="color:var(--m)">Mooshik</span><br><span style="color:var(--t)">        Noted. Nothing changed.</span></div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:calc(var(--ch) * 35);white-space:pre;color:var(--b)"><span style="color:var(--m)">&#9612;</span><span style="color:var(--m)">&#9608;</span></div>
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:calc(var(--ch) * 36);white-space:pre;color:var(--d)">  Enter send  &#183;  Alt-Enter newline  &#183;  Nothing here needs saving</div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 74);top:calc(var(--ch) * 2);white-space:pre;color:var(--t)"><span style="color:var(--c)">  21    22    23    24    25    26    </span><span style="color:var(--b)">27</span><br><span style="color:var(--d)">  &#9603;     &#9604;     &#9605;     &#9604;     &#9603;     </span><span style="color:var(--y)">&#9607;</span><span style="color:var(--d)">     </span><span style="color:var(--b)">&#9604;</span><br><br><span style="color:var(--d)"> 09:04  </span>Postmortem — the 512 cap holds<br><span style="color:var(--d)"> 11:52  </span>Finished the novel<br><span style="color:var(--d)"> 13:38  </span>Quillstone cache cold on runners<br><span style="color:var(--d)"> 14:20  </span>Call Mum back<br><span style="color:var(--d)"> 15:02  </span>Thinking about dropping instead<br><span style="color:var(--d)"> Clear, 19&#176;               A good day so far</span></div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 74);top:calc(var(--ch) * 18);white-space:pre;color:var(--t2)"><span style="color:var(--b)"> <span style="color:var(--t2)">&#9604;&#9604;&#9604;&#9604;&#9604;&#9604;&#9604;</span>  Block, never drop</span><br><br><span style="color:var(--d)">  Eight things lean on it:</span><br>  The short postmortem<br>  The 40ms fairness quantum<br>  The oncall runbook<br>  Monday's decision<br>  Wednesday's incident notes<br>  The ring size in Windpipe<br>  Friday's backpressure design<br>  The NAS throughput ceiling</div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 74);top:calc(var(--ch) * 32);white-space:pre;color:var(--t)"><span style="color:var(--d)"> &#183; </span>"Widen the ring instead"<br><span style="color:var(--t2)"><span style="color:var(--d)"> &#183; </span>Thinking about dropping, 15:02</span><br><span style="color:var(--d)"> &#183; The 512 cap, again — fifth day</span><br><span style="color:var(--d)"> &#183; 12km before standup</span><br><span style="color:var(--dd)"> &#183; Clear, 19&#176;</span></div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:calc(var(--ch) * 39);white-space:pre;color:var(--d)"><span style="color:var(--g)">&#10003;</span> Keeping up  &#183;  214 things remembered, back to 21 August</div>
+          <div style="position:absolute;left:calc(var(--cw) * 70);top:calc(var(--ch) * 39);white-space:pre;color:var(--d)">Enter show all eight &#183; J/K scroll &#183; ^2 week &#183; ?</div>
+
+        </div>
+      </div>
+    </div>
+
+    <div id="1e" style="display:flex;flex-direction:column;gap:12px;width:1180px">
+      <div style="display:flex;align-items:baseline;gap:14px">
+        <span style="font-family:var(--font-heading);font-size:11px;letter-spacing:0.14em;color:var(--color-accent);border:1px solid var(--color-accent-700);border-radius:var(--radius-sm);padding:3px 7px">1e</span>
+        <h2 style="margin:0;font-family:var(--font-heading);font-weight:500;font-size:19px">First run</h2>
+        <span style="font-size:13px;color:var(--color-neutral-500)">Five things, each validated in place — reachable, refused, not set yet. Every failure names the fix; no secret is ever on screen</span>
+      </div>
+      <div style="padding:14px;background:var(--tbg);box-shadow:var(--shadow-md);border-radius:3px;width:1180px;box-sizing:border-box">
+        <div style="position:relative;width:1152px;height:840px;overflow:hidden;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:16px;line-height:21px;font-variant-ligatures:none;color:var(--t)">
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:0;white-space:pre;color:var(--b)">Mooshik<span style="color:var(--d)">  &#183;  First run</span></div>
+          <div style="position:absolute;left:calc(var(--cw) * 76);top:0;white-space:pre;color:var(--d)">Nothing remembered yet</div>
+
+          <dc-import name="Panel" col="14" row="5" w="92" h="30" title=" Where Mooshik lives " bc="#4a4d63" tc="#e9e9ed" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+
+          <div style="position:absolute;left:calc(var(--cw) * 17);top:calc(var(--ch) * 6);white-space:pre;color:var(--t)">Mooshik keeps what you think, work on and live through — on your own<br>machine, in your own database. Two things it can't work out by itself.<br><br><span style="color:var(--b)">The database</span><br>  Connection            <span style="color:var(--t2)">&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;</span>  <span style="color:var(--g)">&#10003; Reachable, 12ms</span><br><span style="color:var(--d)">                        Kept in the vault. Never shown again, not even here.</span><br><br><span style="color:var(--b)">Google Cloud</span><br>  Project               <span style="color:var(--m)">&#9608;</span>                           <span style="color:var(--d)">&#183; Not set yet</span><br><span style="color:var(--d)">                        The project the database and the model live in.</span><br>  Region                europe-west4                <span style="color:var(--d)">&#183; Pre-filled</span><br><br><span style="color:var(--b)">How Mooshik signs in</span><br>  ( ) The credentials already on this machine        <span style="color:var(--g)">&#10003; Found — neom@endor.ai</span><br>  (*) A key file<br>      Path              ~/.config/mooshik/key.json  <span style="color:var(--r)">&#10007; Refused</span><br><span style="color:var(--y)">                        The file is there but not readable by you —<br>                        chmod 600 it, or use the credentials above.</span><br><br><span style="color:var(--b)">What it thinks with</span><br>  Model                 gemini-2.5-pro              <span style="color:var(--d)">&#183; Pre-filled</span><br><br><span style="color:var(--d)">  Enter  start Mooshik           Two things left: the project, and a key it can read<br>  Esc    quit</span><br><br><span style="color:var(--d)">Nothing else to decide. Mooshik works the rest out, and won't ask again.</span></div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:calc(var(--ch) * 39);white-space:pre;color:var(--d)">Tab next  &#183;  Shift-Tab back  &#183;  Space choose  &#183;  Enter start</div>
+          <div style="position:absolute;left:calc(var(--cw) * 76);top:calc(var(--ch) * 39);white-space:pre;color:var(--d)">Secrets go straight to the vault</div>
+
+        </div>
+      </div>
+    </div>
+
+    <div id="1f" style="display:flex;flex-direction:column;gap:12px;width:1180px">
+      <div style="display:flex;align-items:baseline;gap:14px">
+        <span style="font-family:var(--font-heading);font-size:11px;letter-spacing:0.14em;color:var(--color-accent);border:1px solid var(--color-accent-700);border-radius:var(--radius-sm);padding:3px 7px">1f</span>
+        <h2 style="margin:0;font-family:var(--font-heading);font-weight:500;font-size:19px">Changing the database</h2>
+        <span style="font-size:13px;color:var(--color-neutral-500)">The landmine — the only double-ruled box and the only red in the whole app. Warns before, shows what is there, and keeps the old connection</span>
+      </div>
+      <div style="padding:14px;background:var(--tbg);box-shadow:var(--shadow-md);border-radius:3px;width:1180px;box-sizing:border-box">
+        <div style="position:relative;width:1152px;height:840px;overflow:hidden;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:16px;line-height:21px;font-variant-ligatures:none;color:var(--t)">
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:0;white-space:pre;color:var(--b)">Mooshik<span style="color:var(--d)">  &#183;  Settings  &#183;  Memory</span></div>
+          <div style="position:absolute;left:calc(var(--cw) * 76);top:0;white-space:pre;color:var(--d)">Esc back   ^, close</div>
+
+          <dc-import name="Panel" col="0" row="2" w="20" h="36" title=" Settings " bc="#4a4d63" tc="#b9bac6" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <dc-import name="Panel" col="20" row="2" w="100" h="36" title=" Memory " bc="#9184d9" tc="#e9e9ed" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:calc(var(--ch) * 3);white-space:pre;color:var(--d)"><span style="color:var(--m)">&#9612;</span><span style="color:var(--b)">Memory</span><br> The model<br> The vault<br> Keybindings<br> Appearance<br><br>Hidden behind<br>^, — you open<br>it twice a<br>year.</div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 23);top:calc(var(--ch) * 3);white-space:pre;color:var(--t)"><span style="color:var(--b)">Where your memory lives</span><br><br>  Current      <span style="color:var(--t2)">&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;</span>   <span style="color:var(--g)">&#10003; Reachable</span><span style="color:var(--d)"> &#183; neom-mooshik-01 &#183; europe-west4</span><br>  New          <span style="color:var(--t2)">&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;</span>   <span style="color:var(--g)">&#10003; Reachable</span><span style="color:var(--d)"> &#183; neom-mooshik-02 &#183; europe-west4</span><br><span style="color:var(--d)">               Both stay masked. Mooshik never shows a connection string.</span></div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 23);top:calc(var(--ch) * 9);white-space:pre;color:var(--r)">&#9556;</div>
+          <div style="position:absolute;left:calc(var(--cw) * 112);top:calc(var(--ch) * 9);white-space:pre;color:var(--r)">&#9559;</div>
+          <div style="position:absolute;left:calc(var(--cw) * 23);top:calc(var(--ch) * 28);white-space:pre;color:var(--r)">&#9562;</div>
+          <div style="position:absolute;left:calc(var(--cw) * 112);top:calc(var(--ch) * 28);white-space:pre;color:var(--r)">&#9565;</div>
+          <div style="position:absolute;left:calc(var(--cw) * 24);top:calc(var(--ch) * 9);width:calc(var(--cw) * 88);height:var(--ch);overflow:hidden;white-space:pre;color:var(--r)">&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;</div>
+          <div style="position:absolute;left:calc(var(--cw) * 24);top:calc(var(--ch) * 28);width:calc(var(--cw) * 88);height:var(--ch);overflow:hidden;white-space:pre;color:var(--r)">&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;</div>
+          <div style="position:absolute;left:calc(var(--cw) * 23);top:calc(var(--ch) * 10);white-space:pre;color:var(--r)">&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;</div>
+          <div style="position:absolute;left:calc(var(--cw) * 112);top:calc(var(--ch) * 10);white-space:pre;color:var(--r)">&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;<br>&#9553;</div>
+          <div style="position:absolute;left:calc(var(--cw) * 25);top:calc(var(--ch) * 9);white-space:pre;background:var(--tbg);color:var(--r)"> This leaves your memory behind </div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 25);top:calc(var(--ch) * 10);white-space:pre;color:var(--t)"><span style="color:var(--b)">Your memory lives in the current database. Connecting to a<br>different one starts you empty — everything you've remembered<br>stays where it is.</span><br><br><span style="color:var(--d)">What's there now</span><br>  214 things remembered, going back to 21 August<br>  a week of days, and five threads you keep returning to<br><br>Nothing is deleted, and nothing moves. It just stops being here.<br><br><span style="color:var(--d)">Type </span><span style="color:var(--r)">leave it behind</span><span style="color:var(--d)"> to continue</span><br><span style="color:var(--r)">&#9612;</span><span style="color:var(--b)">leave it beh</span><span style="color:var(--b)">&#9608;</span><br><br><span style="color:var(--d)">Esc keeps the current database. Nothing here is focused, so<br>nothing happens by pressing enter.</span><br><br>The connection you're replacing stays in the vault as<br>"before 27 August" — ^Z puts it back.</div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 23);top:calc(var(--ch) * 30);white-space:pre;color:var(--d)">Every other setting on this screen saves as you leave the field.</div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:calc(var(--ch) * 39);white-space:pre;color:var(--d)">Tab field &#183; Enter save &#183; Esc back</div>
+          <div style="position:absolute;left:calc(var(--cw) * 70);top:calc(var(--ch) * 39);white-space:pre;color:var(--d)">Settings are hidden — ^, opens them</div>
+
+        </div>
+      </div>
+    </div>
+
+    <div id="1g" style="display:flex;flex-direction:column;gap:12px;width:1180px">
+      <div style="display:flex;align-items:baseline;gap:14px">
+        <span style="font-family:var(--font-heading);font-size:11px;letter-spacing:0.14em;color:var(--color-accent);border:1px solid var(--color-accent-700);border-radius:var(--radius-sm);padding:3px 7px">1g</span>
+        <h2 style="margin:0;font-family:var(--font-heading);font-weight:500;font-size:19px">The same field, a cosmetic edit</h2>
+        <span style="font-size:13px;color:var(--color-neutral-500)">A port added to the same host is the same database — so nothing warns. Detail from 1f, 120&#215;14</span>
+      </div>
+      <div style="padding:14px;background:var(--tbg);box-shadow:var(--shadow-md);border-radius:3px;width:1180px;box-sizing:border-box">
+        <div style="position:relative;width:1152px;height:294px;overflow:hidden;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:16px;line-height:21px;font-variant-ligatures:none;color:var(--t)">
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:0;white-space:pre;color:var(--b)">Mooshik<span style="color:var(--d)">  &#183;  Settings  &#183;  Memory</span></div>
+
+          <dc-import name="Panel" col="0" row="1" w="20" h="12" title=" Settings " bc="#4a4d63" tc="#b9bac6" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <dc-import name="Panel" col="20" row="1" w="100" h="12" title=" Memory " bc="#9184d9" tc="#e9e9ed" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:calc(var(--ch) * 2);white-space:pre;color:var(--d)"><span style="color:var(--m)">&#9612;</span><span style="color:var(--b)">Memory</span><br> The model<br> The vault<br> Keybindings<br> Appearance</div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 23);top:calc(var(--ch) * 2);white-space:pre;color:var(--t)"><span style="color:var(--b)">Where your memory lives</span><br><br>  Current      <span style="color:var(--t2)">&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;</span>   <span style="color:var(--g)">&#10003; Reachable</span><span style="color:var(--d)"> &#183; neom-mooshik-01 &#183; europe-west4</span><br>  New          <span style="color:var(--t2)">&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;</span>   <span style="color:var(--g)">&#10003; Reachable</span><span style="color:var(--d)"> &#183; Same host, same database</span><br><span style="color:var(--d)">               You added a port. Mooshik can tell it's the same place.</span><br><br><span style="color:var(--g)">  &#10003; Saved</span><span style="color:var(--d)">   Nothing to warn about — your memory is where it was.</span><br><br><span style="color:var(--d)">  The double-ruled warning only appears for a genuinely different place.</span></div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:calc(var(--ch) * 13);white-space:pre;color:var(--d)">Tab field &#183; Enter save &#183; Esc back</div>
+
+        </div>
+      </div>
+    </div>
+
+    <div id="1h" style="display:flex;flex-direction:column;gap:12px;width:1180px">
+      <div style="display:flex;align-items:baseline;gap:14px">
+        <span style="font-family:var(--font-heading);font-size:11px;letter-spacing:0.14em;color:var(--color-accent);border:1px solid var(--color-accent-700);border-radius:var(--radius-sm);padding:3px 7px">1h</span>
+        <h2 style="margin:0;font-family:var(--font-heading);font-weight:500;font-size:19px">Narrow — 80&#215;24</h2>
+        <span style="font-size:13px;color:var(--color-neutral-500)">What survives: the conversation, one line of what keeps coming back, one line of the trickle, the quiet mark. What goes: the day list and the week ribbon (^2 shows them full-screen). Nothing scrolls sideways</span>
+      </div>
+      <div style="padding:14px;background:var(--tbg);box-shadow:var(--shadow-md);border-radius:3px;width:796px;box-sizing:border-box">
+        <div style="position:relative;width:768px;height:504px;overflow:hidden;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:16px;line-height:21px;font-variant-ligatures:none;color:var(--t)">
+
+          <div style="position:absolute;left:calc(var(--cw) * 1);top:0;white-space:pre;color:var(--b)">Mooshik<span style="color:var(--d)">  &#183;  Thu 27 Aug  &#183;  14:22</span></div>
+          <div style="position:absolute;left:calc(var(--cw) * 62);top:0;white-space:pre;color:var(--m)">Today<span style="color:var(--d)">  Week  ?</span></div>
+
+          <dc-import name="Panel" col="0" row="1" w="80" h="16" title=" The conversation " bc="#9184d9" tc="#e9e9ed" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+          <dc-import name="Panel" col="0" row="17" w="80" h="3" title=" You " bc="#4a4d63" tc="#b9bac6" hint-size="0px,0px" style="position:absolute;left:0;top:0;width:0;height:0"></dc-import>
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:calc(var(--ch) * 2);white-space:pre;color:var(--b)"><span style="color:var(--d)">        ... earlier today</span><br><span style="color:var(--d)"> 09:04  </span>Neom<br>        Postmortem's done. The fix is the 512 cap — writers block,<br>        we don't drop.<br><br><span style="color:var(--d)"> 09:05  </span><span style="color:var(--m)">Mooshik</span><br><span style="color:var(--t)">        Almost word for word what you wrote on Monday. Fifth day<br>        running that the cap has come up.</span><br><br><span style="color:var(--d)"> 13:38  </span>Neom<br>        Quillstone cache is cold on the new runners.<br><br><span style="color:var(--d)"> 14:20  </span>Neom<br>        Right. And I still need to call Mum back.</div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 2);top:calc(var(--ch) * 18);white-space:pre;color:var(--b)"><span style="color:var(--m)">&#9612;</span> Called Mum. No answer. Try again once the doc is out<span style="color:var(--m)">&#9608;</span></div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 1);top:calc(var(--ch) * 20);white-space:pre;color:var(--t)"><span style="color:var(--t2)">&#9604;&#9604;&#9604;&#9604;&#9604;&#9604;&#9604;</span> The 512 cap &#183; every day this week<span style="color:var(--d)">          ^3 four more</span></div>
+          <div style="position:absolute;left:calc(var(--cw) * 1);top:calc(var(--ch) * 21);white-space:pre;color:var(--d)">&#183; Just remembered: 12km before standup, the novel, call Mum back</div>
+
+          <div style="position:absolute;left:calc(var(--cw) * 1);top:calc(var(--ch) * 23);white-space:pre;color:var(--d)"><span style="color:var(--g)">&#10003;</span> Keeping up &#183; 214 remembered<span style="color:var(--d)">          Tab panel &#183; ^2 week &#183; ?</span></div>
+
+        </div>
+      </div>
+    </div>
+
+    <div id="1i" style="display:flex;flex-direction:column;gap:12px;width:1180px">
+      <div style="display:flex;align-items:baseline;gap:14px">
+        <span style="font-family:var(--font-heading);font-size:11px;letter-spacing:0.14em;color:var(--color-accent);border:1px solid var(--color-accent-700);border-radius:var(--radius-sm);padding:3px 7px">1i</span>
+        <h2 style="margin:0;font-family:var(--font-heading);font-weight:500;font-size:19px">Colour legend &amp; notation</h2>
+        <span style="font-size:13px;color:var(--color-neutral-500)">16-colour ANSI plus the dim attribute (SGR 2). Nothing depends on the background — every mark is a glyph in a foreground colour</span>
+      </div>
+      <div style="border:1px solid var(--color-neutral-800);border-radius:var(--radius-md);padding:26px 30px;display:grid;grid-template-columns:1.25fr 1fr;gap:44px;background:#12141f">
+
+        <div style="display:flex;flex-direction:column;gap:0">
+          <div style="font-family:var(--font-heading);font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:var(--color-neutral-500);padding-bottom:10px">Every colour, and what it encodes</div>
+
+          <div style="display:grid;grid-template-columns:14px 168px 82px 1fr;gap:14px;align-items:baseline;padding:8px 0;border-top:1px solid #22242f"><span style="width:14px;height:14px;background:#161826;border:1px solid #2c2f3d;display:block"></span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-300)">black &#183; 0</span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-600)">#161826</span><span style="font-size:13px;color:var(--color-neutral-400)">The ground. Mooshik never paints a background — this is just what is behind.</span></div>
+
+          <div style="display:grid;grid-template-columns:14px 168px 82px 1fr;gap:14px;align-items:baseline;padding:8px 0;border-top:1px solid #22242f"><span style="width:14px;height:14px;background:#4a4d63;display:block"></span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-300)">bright black &#183; 8</span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-600)">#4a4d63</span><span style="font-size:13px;color:var(--color-neutral-400)">The furniture: frames, timestamps, key hints, and anything already dealt with.</span></div>
+
+          <div style="display:grid;grid-template-columns:14px 168px 82px 1fr;gap:14px;align-items:baseline;padding:8px 0;border-top:1px solid #22242f"><span style="width:14px;height:14px;background:#33364a;display:block"></span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-300)">bright black + dim</span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-600)">#33364a</span><span style="font-size:13px;color:var(--color-neutral-400)">Absence — a day a thought did not come up on, and the oldest end of the trickle.</span></div>
+
+          <div style="display:grid;grid-template-columns:14px 168px 82px 1fr;gap:14px;align-items:baseline;padding:8px 0;border-top:1px solid #22242f"><span style="width:14px;height:14px;background:#b9bac6;display:block"></span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-300)">white &#183; 7</span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-600)">#b9bac6</span><span style="font-size:13px;color:var(--color-neutral-400)">What Mooshik says, and ordinary body text.</span></div>
+
+          <div style="display:grid;grid-template-columns:14px 168px 82px 1fr;gap:14px;align-items:baseline;padding:8px 0;border-top:1px solid #22242f"><span style="width:14px;height:14px;background:#8f92a3;display:block"></span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-300)">white + dim</span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-600)">#8f92a3</span><span style="font-size:13px;color:var(--color-neutral-400)">Further down the list. Fading, not gone — it can climb back up.</span></div>
+
+          <div style="display:grid;grid-template-columns:14px 168px 82px 1fr;gap:14px;align-items:baseline;padding:8px 0;border-top:1px solid #22242f"><span style="width:14px;height:14px;background:#e9e9ed;display:block"></span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-300)">bright white &#183; 15</span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-600)">#e9e9ed</span><span style="font-size:13px;color:var(--color-neutral-400)">Neom's own words, and whatever is strongest right now.</span></div>
+
+          <div style="display:grid;grid-template-columns:14px 168px 82px 1fr;gap:14px;align-items:baseline;padding:8px 0;border-top:1px solid #22242f"><span style="width:14px;height:14px;background:#9184d9;display:block"></span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-300)">magenta &#183; 5</span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-600)">#9184d9</span><span style="font-size:13px;color:var(--color-neutral-400)">Mooshik speaking, the focused panel, and the cursor. One accent, used as a line.</span></div>
+
+          <div style="display:grid;grid-template-columns:14px 168px 82px 1fr;gap:14px;align-items:baseline;padding:8px 0;border-top:1px solid #22242f"><span style="width:14px;height:14px;background:#8d9ff0;display:block"></span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-300)">blue &#183; 4</span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-600)">#8d9ff0</span><span style="font-size:13px;color:var(--color-neutral-400)">Something came back. Only ever on a thing returning from another day.</span></div>
+
+          <div style="display:grid;grid-template-columns:14px 168px 82px 1fr;gap:14px;align-items:baseline;padding:8px 0;border-top:1px solid #22242f"><span style="width:14px;height:14px;background:#7fc8d8;display:block"></span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-300)">cyan &#183; 6</span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-600)">#7fc8d8</span><span style="font-size:13px;color:var(--color-neutral-400)">Days and dates — the spine everything hangs from.</span></div>
+
+          <div style="display:grid;grid-template-columns:14px 168px 82px 1fr;gap:14px;align-items:baseline;padding:8px 0;border-top:1px solid #22242f"><span style="width:14px;height:14px;background:#cfa65c;display:block"></span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-300)">yellow &#183; 3</span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-600)">#cfa65c</span><span style="font-size:13px;color:var(--color-neutral-400)">A caution worth hearing, and a day that was hard. Twice a week at most.</span></div>
+
+          <div style="display:grid;grid-template-columns:14px 168px 82px 1fr;gap:14px;align-items:baseline;padding:8px 0;border-top:1px solid #22242f"><span style="width:14px;height:14px;background:#6fae7f;display:block"></span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-300)">green &#183; 2</span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-600)">#6fae7f</span><span style="font-size:13px;color:var(--color-neutral-400)">One mark, one word: reachable, saved, keeping up. Never a sentence.</span></div>
+
+          <div style="display:grid;grid-template-columns:14px 168px 82px 1fr;gap:14px;align-items:baseline;padding:8px 0;border-top:1px solid #22242f"><span style="width:14px;height:14px;background:#d1656b;display:block"></span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-300)">red &#183; 1</span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-600)">#d1656b</span><span style="font-size:13px;color:var(--color-neutral-400)">Reserved. Two uses in the whole app: a refused credential, and leaving a database behind.</span></div>
+
+          <div style="display:grid;grid-template-columns:14px 168px 82px 1fr;gap:14px;align-items:baseline;padding:8px 0;border-top:1px solid #22242f"><span style="width:14px;height:14px;background:#b3a7f2;display:block"></span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-300)">bright magenta &#183; 13</span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--color-neutral-600)">#b3a7f2</span><span style="font-size:13px;color:var(--color-neutral-400)">A key being pressed. Nothing else.</span></div>
+
+          <div style="display:grid;grid-template-columns:14px 1fr;gap:14px;align-items:baseline;padding:12px 0 0;border-top:1px solid #22242f"><span style="width:14px;height:14px;border:1px dashed #3f424d;display:block"></span><span style="font-size:13px;color:var(--color-neutral-500)">Held back on purpose: bright red 9, bright green 10, bright yellow 11, bright blue 12, bright cyan 14. An app that runs all day cannot spend every colour it owns.</span></div>
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:18px">
+          <div style="font-family:var(--font-heading);font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:var(--color-neutral-500)">How strength reads</div>
+
+          <div style="display:flex;gap:16px;align-items:baseline"><span style="font-family:'JetBrains Mono',monospace;font-size:16px;color:#8f92a3;white-space:pre">&#9604;&#9604;&#9604;&#9604;&#9604;&#9604;&#9604;</span><span style="font-size:13px;color:var(--color-neutral-400);line-height:1.55">Seven days, one mark each — filled on the days that thought came up. You can count them if you care; nobody makes you.</span></div>
+
+          <div style="display:flex;gap:16px;align-items:baseline"><span style="font-family:'JetBrains Mono',monospace;font-size:16px;color:#8f92a3;white-space:pre">&#9604;&#9604;<span style="color:#33364a">&#9601;</span>&#9604;&#9604;&#9604;<span style="color:#33364a">&#9601;</span></span><span style="font-size:13px;color:var(--color-neutral-400);line-height:1.55">Five days. The dropped-to-baseline mark is a day it did not come up — absence, drawn rather than written.</span></div>
+
+          <div style="display:flex;gap:16px;align-items:baseline"><span style="font-family:'JetBrains Mono',monospace;font-size:16px;color:#b9bac6;white-space:pre">&#9607;&#160;&#160;&#160;&#9607;&#160;&#160;&#160;<span style="color:#33364a">&#183;</span></span><span style="font-size:13px;color:var(--color-neutral-400);line-height:1.55">On the week screen the same marks sit directly under their day columns, so a thread lines up with the days it belongs to.</span></div>
+
+          <div style="display:flex;gap:16px;align-items:baseline"><span style="font-family:'JetBrains Mono',monospace;font-size:16px;white-space:pre"><span style="color:#e9e9ed">Aa</span> <span style="color:#b9bac6">Aa</span> <span style="color:#8f92a3">Aa</span> <span style="color:#4a4d63">Aa</span></span><span style="font-size:13px;color:var(--color-neutral-400);line-height:1.55">Brightness is the gradient: strongest first, fading down. Four steps, no labels, no numbers, no tiers.</span></div>
+
+          <div style="display:flex;gap:16px;align-items:baseline"><span style="font-family:'JetBrains Mono',monospace;font-size:16px;color:#4a4d63;white-space:pre">1&#8595;</span><span style="font-size:13px;color:var(--color-neutral-400);line-height:1.55">Position does the rest. The list is always ordered by how often you return to something — there is no sort control, because there is nothing to sort by.</span></div>
+
+          <div style="display:flex;gap:16px;align-items:baseline"><span style="font-family:'JetBrains Mono',monospace;font-size:16px;color:#b9bac6;white-space:pre">&#9484;&#9472;&#9488;</span><span style="font-size:13px;color:var(--color-neutral-400);line-height:1.55">A light frame is a panel. Accent frame means focused. Yellow frame is said once and needs no answer.</span></div>
+
+          <div style="display:flex;gap:16px;align-items:baseline"><span style="font-family:'JetBrains Mono',monospace;font-size:16px;color:#d1656b;white-space:pre">&#9556;&#9552;&#9559;</span><span style="font-size:13px;color:var(--color-neutral-400);line-height:1.55">A double frame appears exactly once, on the one action that cannot be undone by pressing esc.</span></div>
+
+          <div style="font-family:var(--font-heading);font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:var(--color-neutral-500);padding-top:8px">Never on screen</div>
+          <div style="font-size:13px;color:var(--color-neutral-400);line-height:1.6">No tier names, no scores, no percentages, and not one word from the engine underneath — no sessions, no nodes, no relevance, no promotion or decay. Strength is only ever justified with Neom's own history: <span style="color:var(--color-neutral-200)">&ldquo;You've come back to this every day this week.&rdquo;</span></div>
+        </div>
+
+      </div>
+    </div>
+
+  </section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;focusedPanel&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;the conversation&quot;,&quot;today&quot;,&quot;what keeps coming back&quot;,&quot;just remembered&quot;],&quot;default&quot;:&quot;the conversation&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Today screen&quot;},&quot;showTrickle&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Today screen&quot;},&quot;showKeyHints&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Today screen&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const f = this.props.focusedPanel ?? "the conversation";
+    const on = "#9184d9", off = "#4a4d63", tOn = "#e9e9ed", tOff = "#b9bac6";
+    const b = (n) => (f === n ? on : off);
+    const t = (n) => (f === n ? tOn : tOff);
+    return {
+      bcConv: b("the conversation"), tcConv: t("the conversation"),
+      bcToday: b("today"), tcToday: t("today"),
+      bcThreads: b("what keeps coming back"), tcThreads: t("what keeps coming back"),
+      bcTrickle: b("just remembered"), tcTrickle: t("just remembered"),
+      showTrickle: this.props.showTrickle ?? true,
+      showKeyHints: this.props.showKeyHints ?? true
+    };
+  }
+}
+</script>
+</body>
+</html>
