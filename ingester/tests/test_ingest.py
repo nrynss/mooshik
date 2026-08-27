@@ -831,6 +831,58 @@ def test_drain_reads_the_rendered_report_the_server_actually_sends():
     asyncio.run(scenario())
 
 
+def test_drain_waits_for_the_flush_queue_not_only_the_log():
+    """The regression this closes: a false green on the durability gate.
+
+    lambo documents `log_depth.max(flush_depth)` as "the honest lower bound"
+    of the loss window — log_depth is the graph's write-behind log,
+    flush_depth is the flush task's pending batch. Gating on the log alone
+    passed while lambo warned in the same run that 34 acked writes had not
+    drained, and left 55 write intents pending: the ingest reported durable
+    writes over an incomplete graph.
+
+    Strings are the real rendered report shape.
+    """
+    import asyncio
+
+    from ingester.writer import drain, undrained
+
+    def report(log: int, flush: int) -> str:
+        return (
+            "session 'x' (owner agent 'a')\nnodes=1 edges=1 concepts=1 canonical=0\n"
+            f"embedded=1/1\nflush_lag=1ms log_depth={log} flush_depth={flush} "
+            "dead_lettered=0 degraded=false\nepoch=1 daemon_cycles=1 "
+            "canonization_cycles=1 canonization_failures=0"
+        )
+
+    # The exact shape that fooled the old gate: log empty, flush is not.
+    assert undrained(report(0, 34)) == 34
+    assert undrained(report(6, 0)) == 6
+    assert undrained(report(0, 0)) == 0
+    assert undrained({"log_depth": 0, "flush_depth": 7}) == 7
+    assert undrained("no depths here") is None
+
+    class SeqWriter:
+        def __init__(self, responses):
+            self.responses = list(responses)
+            self.calls = 0
+
+        async def _call(self, tool, arguments):
+            r = self.responses[min(self.calls, len(self.responses) - 1)]
+            self.calls += 1
+            return r
+
+    async def scenario():
+        # Must NOT return true while the flush queue is still holding writes.
+        stalled = SeqWriter([report(0, 34)])
+        assert await drain(stalled, "a", timeout=0.1, poll=0.01) is False
+        # Returns true only when both are clear.
+        ok = SeqWriter([report(0, 34), report(0, 0)])
+        assert await drain(ok, "a", timeout=5.0, poll=0.01) is True
+
+    asyncio.run(scenario())
+
+
 def test_drain_survives_stats_errors_and_still_times_out():
     import asyncio
     from ingester.writer import drain

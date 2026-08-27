@@ -51,8 +51,8 @@ def tool_failed(result: Any) -> bool:
     return False
 
 
-def log_depth(stats: Any) -> int | None:
-    """The write-behind depth out of a `lambo_stats` reply, or None.
+def _depth(stats: Any, field: str) -> int | None:
+    """One depth field out of a `lambo_stats` reply, or None.
 
     `lambo_stats` answers with a **rendered report**, not JSON, so `_call`
     hands back a `str`. A dict-only reading of it never matches, which makes
@@ -62,13 +62,37 @@ def log_depth(stats: Any) -> int | None:
     becomes structured.
     """
     if isinstance(stats, dict):
-        value = stats.get("log_depth")
+        value = stats.get(field)
         return value if isinstance(value, int) else None
     if isinstance(stats, str):
-        found = re.search(r"\blog_depth=(\d+)\b", stats)
+        found = re.search(rf"\b{field}=(\d+)\b", stats)
         if found:
             return int(found.group(1))
     return None
+
+
+def log_depth(stats: Any) -> int | None:
+    """Mutations still in the graph's write-behind log."""
+    return _depth(stats, "log_depth")
+
+
+def undrained(stats: Any) -> int | None:
+    """How much is provably not durable yet, or None if unreadable.
+
+    `max(log_depth, flush_depth)` — lambo's own words for it: "Neither field
+    alone is the whole loss window ... log_depth.max(flush_depth) is the
+    honest lower bound". `log_depth` is read from the graph and always
+    current; `flush_depth` is the flush task's pending batch plus the log as
+    of its last poll.
+
+    Watching only `log_depth` is how a run reported "writes are durable" while
+    lambo warned in the same breath that 34 acked writes had not drained, and
+    left 55 write intents pending. An empty log is not an applied graph.
+    """
+    log = _depth(stats, "log_depth")
+    flush = _depth(stats, "flush_depth")
+    known = [value for value in (log, flush) if value is not None]
+    return max(known) if known else None
 
 
 async def drain(
@@ -81,9 +105,13 @@ async def drain(
 
     The pipeline's last derive acks before the embedder runs (J3), so an
     abrupt teardown after the final call can still discard the un-embedded
-    tail. Draining on log_depth == 0 before tearing the child down makes
+    tail. Waiting for nothing undrained before tearing the child down makes
     every acknowledged write durable — which matters most where the child
     dies with the process (Cloud Run Jobs).
+
+    Gates on `undrained`, not `log_depth`: an empty log with a non-empty
+    flush queue is not a durable graph, and reading only the log turned this
+    gate into a false green on a real run.
     """
     deadline = time.monotonic() + timeout
     while True:
@@ -91,7 +119,7 @@ async def drain(
             stats = await writer._call("lambo_stats", {"agent_id": agent_id})
         except Exception:
             stats = None
-        if log_depth(stats) == 0:
+        if undrained(stats) == 0:
             return True
         if time.monotonic() >= deadline:
             return False
