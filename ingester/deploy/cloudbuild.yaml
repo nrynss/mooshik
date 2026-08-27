@@ -1,0 +1,28 @@
+# Cloud Build for the ingester image.
+#
+# The Dockerfile lives under ingester/ but its context is the REPO ROOT — it
+# compiles `mooshik` from this checkout — so `--tag` cannot be used and this
+# config names the file explicitly.
+#
+#   gcloud builds submit --project mooshik \
+#     --config ingester/deploy/cloudbuild.yaml \
+#     --substitutions _TAG=m9-repair .
+#
+# Uses a high-CPU machine: the image builds the Rust binary from source.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - ingester/Dockerfile
+      - -t
+      - ${_REPO}:${_TAG}
+      - .
+images:
+  - ${_REPO}:${_TAG}
+options:
+  machineType: E2_HIGHCPU_8
+timeout: 2700s
+substitutions:
+  _REPO: us-central1-docker.pkg.dev/mooshik/ingest/ingester
+  _TAG: latest

@@ -1,0 +1,34 @@
+# Build context for `gcloud builds submit` (ingester/Dockerfile).
+#
+# gcloud uses ONLY this file when it exists — .gitignore is ignored — so
+# anything the image needs must NOT be listed here. The Dockerfile needs
+# rust-toolchain.toml, Cargo.toml, Cargo.lock, src/, ingester/ and
+# ingest-fixtures/.
+
+.git/
+.gitignore
+
+# Rust build output: gigabytes, and rebuilt inside the image anyway.
+target/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Local state and secrets — must never reach a build context.
+.env
+.env.*
+*.key
+*.pem
+*.db
+*.db-shm
+*.db-wal
+.ingest/
+
+# Docs and working material the image does not use.
+dev-diary/
+docs/
+scratch/
