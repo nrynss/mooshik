@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shlex
 import time
 from typing import Any
@@ -26,6 +27,26 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 log = logging.getLogger(__name__)
+
+def log_depth(stats: Any) -> int | None:
+    """The write-behind depth out of a `lambo_stats` reply, or None.
+
+    `lambo_stats` answers with a **rendered report**, not JSON, so `_call`
+    hands back a `str`. A dict-only reading of it never matches, which makes
+    the gate below poll until timeout and then warn about data loss on a
+    perfectly healthy run. Both shapes are accepted: the text form is what
+    the server sends today, the mapping form is free insurance if that ever
+    becomes structured.
+    """
+    if isinstance(stats, dict):
+        value = stats.get("log_depth")
+        return value if isinstance(value, int) else None
+    if isinstance(stats, str):
+        found = re.search(r"\blog_depth=(\d+)\b", stats)
+        if found:
+            return int(found.group(1))
+    return None
+
 
 async def drain(
     writer: "LamboMcpWriter",
@@ -47,7 +68,7 @@ async def drain(
             stats = await writer._call("lambo_stats", {"agent_id": agent_id})
         except Exception:
             stats = None
-        if isinstance(stats, dict) and stats.get("log_depth") == 0:
+        if log_depth(stats) == 0:
             return True
         if time.monotonic() >= deadline:
             return False

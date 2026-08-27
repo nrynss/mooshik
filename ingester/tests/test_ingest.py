@@ -628,6 +628,53 @@ def test_drain_polls_until_log_depth_reaches_zero():
     asyncio.run(scenario())
 
 
+def test_drain_reads_the_rendered_report_the_server_actually_sends():
+    """The regression this closes: `lambo_stats` answers in human-readable
+    text, not JSON, so a dict-only reading never matched. The gate then
+    polled to timeout and warned about data loss on every healthy run —
+    inert exactly where it was supposed to protect (Cloud Run Jobs).
+
+    The strings below are verbatim from a real `lambo serve` (sqlite +
+    fixture embedder) driven over stdio by the production writer.
+    """
+    import asyncio
+
+    from ingester.writer import drain, log_depth
+
+    busy = (
+        "session 'wire-check' (owner agent 'lambo-serve')\n"
+        "nodes=10 edges=11 concepts=5 canonical=0\nembedded=3/5\n"
+        "flush_lag=3.107458ms log_depth=6 flush_depth=0 dead_lettered=0 degraded=false\n"
+        "epoch=4 daemon_cycles=2 canonization_cycles=0 canonization_failures=0"
+    )
+    idle = busy.replace("log_depth=6", "log_depth=0")
+
+    assert log_depth(busy) == 6
+    assert log_depth(idle) == 0
+    # flush_depth=0 must not be mistaken for log_depth.
+    assert log_depth("flush_depth=0 log_depth=7") == 7
+    # Forward insurance if the tool ever answers JSON, and safe on junk.
+    assert log_depth({"log_depth": 0}) == 0
+    assert log_depth("no depth here") is None
+    assert log_depth(None) is None
+
+    class SeqWriter:
+        def __init__(self, responses):
+            self.responses = list(responses)
+            self.calls = 0
+
+        async def _call(self, tool, arguments):
+            response = self.responses[min(self.calls, len(self.responses) - 1)]
+            self.calls += 1
+            return response
+
+    async def scenario():
+        assert await drain(SeqWriter([busy, idle]), "a", timeout=5.0, poll=0.01) is True
+        assert await drain(SeqWriter([busy]), "a", timeout=0.1, poll=0.01) is False
+
+    asyncio.run(scenario())
+
+
 def test_drain_survives_stats_errors_and_still_times_out():
     import asyncio
     from ingester.writer import drain
