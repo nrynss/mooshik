@@ -237,6 +237,17 @@ pub fn leans_on(grid: &mut Grid<'_>, thread: &Thread, at: Place) {
 
     // A blank row, then the count and the list itself.
     at = at.saturating_add(1);
+    // The header only earns its row if a name can follow it. At a three-row
+    // interior — which is a terminal exactly 24 rows tall, the documented
+    // minimum — there was room for the header and none for the list, so the
+    // panel said "Eight things lean on it:" and then named nothing: the `... and
+    // N more` tail below was generated and then written one row past the
+    // interior, where `Grid::lines` drops it without a mark. Better to show the
+    // head alone, as a one- or two-row interior already does, and let the count
+    // reappear with the list it is counting.
+    if at.saturating_add(1) >= height && !thread.leaned_on.is_empty() {
+        return;
+    }
     if at >= height {
         return;
     }

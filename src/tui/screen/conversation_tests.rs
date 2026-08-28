@@ -572,11 +572,32 @@ fn a_card_is_clipped_from_the_tail_and_a_turn_from_the_front() {
     let Some(Block::Cautioned { card, lead: kept }) = block.clip_to(7) else {
         panic!("clip_to declined a block it had room for")
     };
-    assert_eq!(kept, ["Lead line 0", "Lead line 1", "Lead line 2"]);
-    assert!(
-        card.leaning.is_empty(),
-        "the list is trimmed before the lead"
+    // The list is trimmed before the lead — but not all the way to nothing. The
+    // lead's last line is the colon that introduces the list, so a card that
+    // showed no names announced one and then did not: the lead gives up that
+    // line so the colon is true.
+    assert_eq!(kept, ["Lead line 0", "Lead line 1"]);
+    assert_eq!(card.leaning, ["Leans"], "the colon points at nothing");
+
+    // And the trimming order itself is unchanged: a list with room to spare is
+    // still what gives way first.
+    let one_line = vec!["Only line".to_owned()];
+    let block = Block::Cautioned {
+        card: Caution {
+            lead: one_line.join(" "),
+            leaning: (0..5).map(|n| format!("Leans {n}")).collect(),
+            because: "Nothing's changed".to_owned(),
+        },
+        lead: one_line.clone(),
+    };
+    let Some(Block::Cautioned { card, lead: kept }) = block.clip_to(7) else {
+        panic!("clip_to declined a block it had room for")
+    };
+    assert_eq!(
+        kept, one_line,
+        "the lead was trimmed while the list had room"
     );
+    assert_eq!(card.leaning.len(), 2, "the list keeps what the lead left");
 
     // A turn, the other way round.
     let block = Block::Said {

@@ -170,7 +170,23 @@ impl Block {
                     .checked_sub(CAUTION_CHROME)
                     .filter(|room| *room > 0)?;
                 lead.truncate(usize::from(room));
-                let left = room.saturating_sub(rows(lead.len()));
+                let mut left = room.saturating_sub(rows(lead.len()));
+                // But never all the way to nothing while the lead is still
+                // pointing at it. The lead's last line *is* the colon that
+                // introduces the list — `1d` ends it "eight other notes lean on
+                // it:" — so trimming the list to zero left a card whose sentence
+                // announced a list and then showed none, which is the same fault
+                // as a bare "· Just remembered:". One name makes the colon true,
+                // so where the list would get no rows at all the lead gives up
+                // its last one for it — and its last one is the colon.
+                //
+                // Only where the list would get *nothing*: a list that already
+                // fits keeps the whole lead, which is what makes this a floor
+                // under the trimming order rather than a change to it.
+                if left == 0 && !card.leaning.is_empty() {
+                    lead.truncate(lead.len().saturating_sub(1));
+                    left = room.saturating_sub(rows(lead.len()));
+                }
                 card.leaning.truncate(usize::from(left));
                 Some(Self::Cautioned { card, lead })
             }

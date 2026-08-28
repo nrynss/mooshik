@@ -188,6 +188,11 @@ impl App {
         match self.view {
             View::Week => &[],
             _ if self.columns < NARROW_BELOW => &Focus::NARROW,
+            // A standing caution swaps the thread list for "What leans on this",
+            // which takes no focus — so the cycle drops that stop. The predicate
+            // lives with the screen that makes the swap, so the two cannot
+            // disagree about which panels are on screen.
+            _ if screen::today::shows_leans_on(&self.workspace) => &Focus::CAUTIONED,
             _ => &Focus::CYCLE,
         }
     }

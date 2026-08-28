@@ -96,6 +96,65 @@ fn tab_on_the_narrow_layout_keeps_the_conversation_focused() {
     assert!(text.contains("You"), "{text}");
 }
 
+/// A standing caution takes `Focus::Threads` out of the cycle, because the panel
+/// it replaces takes no focus. `Tab Tab` used to land there and accent nothing at
+/// all — the screen did not change and there was no answer to "where am I".
+#[test]
+fn a_standing_caution_drops_the_panel_it_replaces_from_the_cycle() {
+    use crate::tui::model::Caution;
+
+    let mut app = app();
+    app.workspace.threads = vec![crate::tui::model::Thread {
+        summary: "Block, never drop".to_owned(),
+        short_summary: None,
+        days: [true; 7],
+        because: crate::tui::model::Justification::history("Every day"),
+        leaned_on: vec!["The short postmortem".to_owned()],
+    }];
+    app.workspace.conversation.turns = vec![crate::tui::model::Turn::Cautioned(Caution {
+        lead: "You've held to this every day.".to_owned(),
+        leaning: vec!["The short postmortem".to_owned()],
+        because: "Nothing's changed".to_owned(),
+    })];
+    // A draw records the width, which is what tells the cycle it is wide.
+    screen(&mut app, 120, 40);
+
+    // Every stop the cycle reaches is a panel the screen draws.
+    let mut seen = Vec::new();
+    for _ in 0..6 {
+        app.apply(Action::NextPanel);
+        seen.push(app.focus());
+    }
+    assert!(
+        !seen.contains(&Focus::Threads),
+        "the cycle still stops on the panel the caution replaced: {seen:?}"
+    );
+    assert!(
+        seen.contains(&Focus::Trickle),
+        "the cycle lost a real panel"
+    );
+
+    // And `J`/`K` no longer claim a cursor nothing draws.
+    assert!(!app.mode().thread_cursor);
+
+    // With the caution answered, the stop comes back.
+    app.workspace
+        .conversation
+        .turns
+        .push(crate::tui::model::Turn::Said {
+            time: "15:05".to_owned(),
+            speaker: crate::tui::model::Speaker::Person,
+            text: "Keep it.".to_owned(),
+        });
+    screen(&mut app, 120, 40);
+    let mut seen = Vec::new();
+    for _ in 0..6 {
+        app.apply(Action::NextPanel);
+        seen.push(app.focus());
+    }
+    assert!(seen.contains(&Focus::Threads), "{seen:?}");
+}
+
 /// A terminal narrowed out of the wide layout drops focus back to the
 /// conversation rather than leaving it on a panel the narrow screen does not
 /// draw — the same fault `Tab` used to cause, reached by resizing.

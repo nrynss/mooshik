@@ -246,6 +246,15 @@ impl Focus {
     /// the draft, and moved two cursors the screen never draws.
     pub const NARROW: [Self; 1] = [Self::Conversation];
 
+    /// The panels the wide Today screen draws while a caution is standing.
+    ///
+    /// [`Focus::Threads`] is absent because the caution replaces that panel with
+    /// "What leans on this", which is fixed at the caution frame and takes no
+    /// focus. Leaving it in the cycle meant `Tab Tab` accented nothing at all on
+    /// `--demo caution` — the screen did not change and there was no answer to
+    /// "where am I", which is `1i`'s whole reason for giving focus a colour.
+    pub const CAUTIONED: [Self; 3] = [Self::Conversation, Self::Today, Self::Trickle];
+
     /// The next panel in `cycle`, wrapping. A focus the cycle does not contain
     /// — left behind by a resize out of the wide layout — snaps to its first.
     pub fn next_in(self, cycle: &[Self]) -> Self {
@@ -299,6 +308,11 @@ pub struct Band {
     pub bottom: u16,
     /// The bottom rule's row.
     pub status: u16,
+    /// Whether there is a row for the title rule at all.
+    ///
+    /// False only on a one-row terminal, where it would share [`Band::status`]
+    /// and the two rules would splice into each other.
+    pub title: bool,
     /// Where this screen's chrome sits.
     pub margins: Margins,
 }
@@ -319,6 +333,14 @@ impl Band {
             bottom,
             status,
             margins,
+            // One row cannot hold two rules. It used to hold both, spliced:
+            // ` ✓ oshik^2 week · Esc leave` — the health mark eating the brand
+            // and the hint over the nav. Everywhere else in this app two runs
+            // that cannot both fit resolve by one giving way ("one complete run
+            // says more than two mangled ones"), and this was the one place
+            // they did not. The bottom rule wins because it carries the keys,
+            // including the one that leaves.
+            title: height >= 2,
         }
     }
 

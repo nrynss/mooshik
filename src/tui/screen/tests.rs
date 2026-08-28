@@ -215,9 +215,10 @@ const WIDTHS: std::ops::RangeInclusive<u16> = 16..=200;
 ///
 /// The short end is where the faults are, because that is where a panel with a
 /// fixed height meets a band that cannot hold it: 2 is the smallest screen that
-/// has both a title rule and a bottom rule, and 19 is the height at which the
-/// week screen's lower panels get one row each.
-const HEIGHTS: [u16; 14] = [2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 18, 19, 24, 40];
+/// has both a title rule and a bottom rule, 19 is the height at which the week
+/// screen's lower panels get one row each, and 1 is the case that used to splice
+/// the two rules into each other because the sweep stopped one row above it.
+const HEIGHTS: [u16; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 18, 19, 24, 40];
 
 /// **No rule ever writes two of its runs into the same cells.**
 ///
@@ -275,7 +276,12 @@ fn no_rule_writes_two_runs_into_the_same_cells() {
             };
             for height in HEIGHTS {
                 let buf = draw(&mut app, width, height);
-                whole_and_apart(&buf, 0, &nav, margins, &format!("{name} nav at {width}"));
+                // One row holds the bottom rule alone — the two would otherwise
+                // splice into each other, which is what `Band::title` refuses.
+                // So the title rule is checked only where there is one.
+                if height >= 2 {
+                    whole_and_apart(&buf, 0, &nav, margins, &format!("{name} nav at {width}"));
+                }
                 whole_and_apart(
                     &buf,
                     height - 1,

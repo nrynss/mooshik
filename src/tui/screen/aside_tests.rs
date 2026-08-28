@@ -457,6 +457,29 @@ fn the_leans_list_accounts_for_its_own_count() {
     );
 }
 
+/// The header never states a count the panel does not then account for, at any
+/// height. It used to at a three-row interior — a terminal exactly 24 rows tall,
+/// the documented minimum — where the header fitted and the `... and N more` tail
+/// was written one row past the interior and dropped without a mark.
+#[test]
+fn the_header_never_counts_more_than_the_panel_accounts_for() {
+    let mut one = thread("Block, never drop", [true; 7], "");
+    one.leaned_on = (0..8).map(|n| format!("Dependent {n}")).collect();
+
+    for h in 2..=16u16 {
+        let buf = drawn(48, h, |grid| leans_on(grid, &one, Place::new(0, 0, 48, h)));
+        let text = all_text(&buf);
+        if !text.contains("lean on it:") {
+            continue;
+        }
+        // A count was stated, so at least one name or a tail must follow it.
+        assert!(
+            text.contains("Dependent") || text.contains("more"),
+            "at height {h} the header counts and the panel names nothing: {text}"
+        );
+    }
+}
+
 /// The trickle's ramp bottoms out in absence, and its bullet follows the
 /// line down rather than staying bright over a nearly-gone entry.
 #[test]

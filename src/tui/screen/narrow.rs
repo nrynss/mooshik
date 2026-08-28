@@ -78,13 +78,17 @@ pub fn draw(grid: &mut Grid<'_>, workspace: &Workspace, focus: Focus) {
     // rule cannot splice into each other on a terminal narrower than both.
     let gap = text::get("tui.narrow.nav_gap");
     let items = nav_items();
-    chrome::brand(
-        grid,
-        margins,
-        &subject,
-        chrome::nav_start(width, margins, gap, &items),
-    );
-    chrome::nav(grid, margins, gap, &items);
+    // And not at all on a one-row terminal, where it would share the bottom
+    // rule's row and the two would splice — see [`Band::title`].
+    if height >= 2 {
+        chrome::brand(
+            grid,
+            margins,
+            &subject,
+            chrome::nav_start(width, margins, gap, &items),
+        );
+        chrome::nav(grid, margins, gap, &items);
+    }
 
     let status_row = height.saturating_sub(1);
     let trickle_row = height.saturating_sub(3);

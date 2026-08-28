@@ -128,7 +128,9 @@ pub fn draw(grid: &mut Grid<'_>, workspace: &Workspace, thread_cursor: usize) {
         &[text::get("tui.week_title"), &workspace.week.label],
         text::get("tui.separator"),
     );
-    chrome::title(grid, band.margins, &subject, chrome::View::Week);
+    if band.title {
+        chrome::title(grid, band.margins, &subject, chrome::View::Week);
+    }
 
     let day_rows = DAY_ROWS.min(band.rows());
     let shown = window(&workspace.week, width);

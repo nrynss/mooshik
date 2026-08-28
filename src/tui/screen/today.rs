@@ -129,6 +129,20 @@ impl Tail {
     }
 }
 
+/// Whether the middle panel is showing what leans on a standing caution rather
+/// than the thread list.
+///
+/// Exported because [`App::panels`](crate::tui::app::App::panels) needs the same
+/// answer: `aside::leans_on` is fixed at [`Kind::Caution`] and ignores focus, so
+/// a `Tab` cycle that still contained [`Focus::Threads`] under a standing caution
+/// put focus on a panel that is not on screen — no accent anywhere, and `J`/`K`
+/// moving a cursor nothing draws while the rule promised `J/K a thread`. One
+/// predicate rather than the same condition written twice, because the two
+/// disagreeing is exactly the bug.
+pub fn shows_leans_on(workspace: &Workspace) -> bool {
+    Tail::of(workspace) == Tail::Cautioned && !workspace.threads.is_empty()
+}
+
 /// Draw the Today screen over the whole of `grid`.
 ///
 /// `thread_cursor` is where `J`/`K` have moved the highlight in the thread list.
@@ -145,7 +159,9 @@ pub fn draw(grid: &mut Grid<'_>, workspace: &Workspace, focus: Focus, thread_cur
         &[&workspace.now.long_date, &workspace.now.time],
         text::get("tui.separator"),
     );
-    chrome::title(grid, band.margins, &subject, chrome::View::Today);
+    if band.title {
+        chrome::title(grid, band.margins, &subject, chrome::View::Today);
+    }
 
     conversation::panel(
         grid,
@@ -181,6 +197,8 @@ pub fn draw(grid: &mut Grid<'_>, workspace: &Workspace, focus: Focus, thread_cur
     // contradicted is the one at the top of the list — the design's caution is
     // always about the strongest thing the user keeps returning to.
     match (tail, workspace.threads.first()) {
+        // The same condition [`shows_leans_on`] reports, spelled once here as the
+        // match that needs the thread itself.
         (Tail::Cautioned, Some(thread)) => aside::leans_on(
             grid,
             thread,
