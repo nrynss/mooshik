@@ -129,6 +129,21 @@ impl<'a> Panel<'a> {
     /// The design's `--cw * 2` relative to every panel.
     pub const INSET: u16 = 2;
 
+    /// Whether a panel this size draws a frame at all.
+    ///
+    /// Two cells each way: one row cannot hold both of a frame's rules, so
+    /// [`Panel::draw`] draws none rather than a top rule with nothing closing it.
+    ///
+    /// Public because the `Tab` cycle has to agree. A panel with one row is not a
+    /// panel on screen, and
+    /// [`today::focusable`](crate::tui::screen::today::focusable) offered it as a
+    /// focus stop while this refused to draw it — so at exactly 20 rows `Tab Tab`
+    /// accented nothing. Two places knowing the same arithmetic is how the cycle
+    /// and the screen keep coming to disagree; this is the one place.
+    pub const fn draws(w: u16, h: u16) -> bool {
+        w >= 2 && h >= 2
+    }
+
     /// A panel titled `title`, framed as `kind`.
     ///
     /// `title` is given unpadded — "The conversation", not " The conversation "
@@ -189,7 +204,7 @@ impl<'a> Panel<'a> {
         // wide Today screen does the same at 8. A half-drawn frame is worse than
         // an empty panel — the rule `conversation`'s clipping follows — and two
         // rows already draw a complete empty one, so one row draws nothing.
-        if w < 2 || h < 2 {
+        if !Self::draws(w, h) {
             return grid.sub(col, row, 0, 0);
         }
         grid.widget(

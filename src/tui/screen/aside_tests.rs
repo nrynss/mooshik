@@ -523,6 +523,77 @@ fn the_window_scrolls_without_reordering() {
     );
 }
 
+/// A thread whose dependents were never recorded gets no header at all. It used
+/// to read "0 things lean on it:" — a colon pointing at nothing, and no more a
+/// sentence than the "One things" `header_one` exists to prevent.
+///
+/// Reachable because `Thread::leaned_on` and `Caution::leaning` are separate
+/// fields: a caution can stand beside a thread nobody has recorded dependents
+/// for, and the two panels then contradict each other on screen.
+#[test]
+fn a_thread_with_no_recorded_dependents_states_no_count() {
+    let mut one = thread("Block, never drop", [true; 7], "");
+    assert!(one.leaned_on.is_empty());
+    let buf = drawn(48, 14, |grid| {
+        leans_on(grid, &one, Place::new(0, 0, 48, 14))
+    });
+    let text = all_text(&buf);
+    assert!(
+        text.contains("Block, never drop"),
+        "the head is missing: {text}"
+    );
+    assert!(!text.contains("lean on it"), "a count was stated: {text}");
+    assert!(!text.contains('0'), "{text}");
+
+    // One dependent, and the header is back.
+    one.leaned_on = vec!["The short postmortem".to_owned()];
+    let buf = drawn(48, 14, |grid| {
+        leans_on(grid, &one, Place::new(0, 0, 48, 14))
+    });
+    assert!(all_text(&buf).contains("One thing leans on it:"));
+}
+
+/// The rank colour follows the thread's *absolute* position, not its place in the
+/// window. A window that renumbered would draw whatever it happened to scroll to
+/// as the strongest thing the user returns to.
+#[test]
+fn the_window_never_renumbers_the_ranking() {
+    let list: Vec<Thread> = (0..5)
+        .map(|n| thread(&format!("Thought number {n}"), [true; 7], ""))
+        .collect();
+
+    // Cursor on the last thread in a panel that holds two: the window has
+    // scrolled, so the top row on screen is not rank 0.
+    let buf = drawn(48, 6, |grid| {
+        threads(grid, &list, true, 4, Place::new(0, 0, 48, 6))
+    });
+    let text = all_text(&buf);
+    assert!(
+        !text.contains("Thought number 0"),
+        "the window did not scroll"
+    );
+
+    // The *top row on screen* is the one that discriminates: it is rank 1, and a
+    // window that renumbered would draw it as rank 0 — the strongest thing the
+    // user returns to, which it is not. Ranks 2 and 3 both fall on the ramp's
+    // doubled third step, so neither would show the difference.
+    let col = 1 + THREAD_TEXT;
+    let top = find_row(&buf, "Thought number 1");
+    assert_eq!(
+        style_at(&buf, col, top),
+        Strength::from_rank(1).style(),
+        "the window renumbered the ranking"
+    );
+    assert_ne!(
+        style_at(&buf, col, top),
+        Strength::from_rank(0).style(),
+        "a scrolled-to thread is drawn as the strongest"
+    );
+    // And the cursor's own row is the strongest step because it is the cursor.
+    let cursor_row = find_row(&buf, "Thought number 4");
+    assert_eq!(style_at(&buf, col, cursor_row), Role::Strongest.style());
+}
+
 /// The header never states a count the panel does not then account for, at any
 /// height. It used to at a three-row interior — a terminal exactly 24 rows tall,
 /// the documented minimum — where the header fitted and the `... and N more` tail

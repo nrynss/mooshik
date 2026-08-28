@@ -305,9 +305,6 @@ pub fn leans_on(grid: &mut Grid<'_>, thread: &Thread, at: Place) {
     if thread.leaned_on.is_empty() || at.saturating_add(1) >= height {
         return;
     }
-    if at >= height {
-        return;
-    }
     inner.put(
         LEANING_INDENT,
         at,

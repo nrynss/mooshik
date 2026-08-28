@@ -20,6 +20,7 @@ use crate::{
     tui::{
         grid::{Grid, Place},
         model::{Turn, Workspace},
+        widget::Panel,
     },
 };
 
@@ -162,13 +163,17 @@ pub fn focusable(workspace: &Workspace, width: u16, height: u16) -> Vec<Focus> {
     // The conversation is always a stop: it and the composer share one focus, and
     // between them they are the screen's whole left column.
     let mut panels = vec![Focus::Conversation];
-    if split.today_rows > 0 {
+    // `Panel::draws`, not `> 0`: a one-row panel has rows and still draws no
+    // frame, so it was a `Tab` stop with nothing to accent. That happens at
+    // exactly 20 rows, where the thread panel gets the single row left over after
+    // Today's sixteen — a height the sweep sampled either side of.
+    if Panel::draws(split.right, split.today_rows) {
         panels.push(Focus::Today);
     }
-    if split.threads_rows > 0 && !shows_leans_on(workspace) {
+    if Panel::draws(split.right, split.threads_rows) && !shows_leans_on(workspace) {
         panels.push(Focus::Threads);
     }
-    if split.trickle_rows > 0 {
+    if Panel::draws(split.right, split.trickle_rows) {
         panels.push(Focus::Trickle);
     }
     panels

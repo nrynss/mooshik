@@ -216,9 +216,11 @@ const WIDTHS: std::ops::RangeInclusive<u16> = 16..=200;
 /// The short end is where the faults are, because that is where a panel with a
 /// fixed height meets a band that cannot hold it: 2 is the smallest screen that
 /// has both a title rule and a bottom rule, 19 is the height at which the week
-/// screen's lower panels get one row each, and 1 is the case that used to splice
-/// the two rules into each other because the sweep stopped one row above it.
-const HEIGHTS: [u16; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 18, 19, 24, 40];
+/// screen's lower panels get one row each, 20 is where the *wide* screen's thread
+/// panel gets its single row — the sweep sampled 19 and 24 and stepped straight
+/// over it — and 1 is the case that used to splice the two rules into each other
+/// because the sweep stopped one row above that.
+const HEIGHTS: [u16; 17] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 18, 19, 20, 21, 24, 40];
 
 /// **No rule ever writes two of its runs into the same cells.**
 ///
