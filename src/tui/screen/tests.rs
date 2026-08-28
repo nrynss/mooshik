@@ -10,7 +10,7 @@ use ratatui::{buffer::Buffer, layout::Rect, style::Color};
 use crate::tui::{app::App, grid::Grid, model::Workspace, screen::chrome::View, theme::Role};
 
 /// Every size worth checking: absurdly small, the design's two, and larger.
-const SIZES: [(u16, u16); 9] = [
+const SIZES: [(u16, u16); 14] = [
     (1, 1),
     (2, 2),
     (10, 4),
@@ -20,6 +20,14 @@ const SIZES: [(u16, u16); 9] = [
     (120, 40),
     (200, 60),
     (400, 120),
+    // Bands too short to hold the panels that assume a fixed height. The
+    // composer took its four rows whatever the band was, so at these sizes its
+    // frame, its draft and the bottom rule all landed on the same row.
+    (120, 2),
+    (120, 3),
+    (120, 5),
+    (100, 6),
+    (80, 4),
 ];
 
 fn draw(app: &mut App, width: u16, height: u16) -> Buffer {
@@ -190,7 +198,12 @@ fn row_text(buf: &Buffer, row: u16) -> String {
 /// Every width from a small tmux split to a wide one. Stepped by one, because
 /// the faults this range exists for are off-by-one collisions that appear over a
 /// span of eight or nine columns and are invisible at the round numbers.
-const WIDTHS: std::ops::RangeInclusive<u16> = 40..=200;
+// From 16, not 40. Round four found the title rule splicing its brand into the
+// nav at 22–29 columns and the narrow thread line's hint landing on top of the
+// day marks at 14–21 — both below the documented 80x24 minimum, and both missed
+// because this sweep started above them. The week screen has no narrow variant,
+// so a small tmux split reaches every one of these widths.
+const WIDTHS: std::ops::RangeInclusive<u16> = 16..=200;
 
 /// **No rule ever writes two of its runs into the same cells.**
 ///

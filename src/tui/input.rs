@@ -80,8 +80,9 @@ pub fn action(key: KeyEvent, mode: Mode) -> Action {
     // Alt is claimed for nothing, so every Alt chord is refused here rather than
     // falling through to the arms below — `Alt-h` moved the week's day cursor and
     // `Alt-Enter` put an invisible newline in the draft, neither of which anybody
-    // asked for. Shift is not filtered: crossterm reports a capital as
-    // `Char('J')` with the modifier set, and the design's hints are written `J/K`.
+    // asked for. Shift is *deliberately* not filtered: crossterm reports a capital as
+    // `Char('J')` with the modifier set, and the design's hints are written `J/K`
+    // and `H/L`, so both cases have to arrive at the movement arms below.
     if key.modifiers.contains(KeyModifiers::ALT) {
         return Action::Ignore;
     }
@@ -114,11 +115,27 @@ pub fn action(key: KeyEvent, mode: Mode) -> Action {
         // went on promising `J/K a thread`. The hint stays honest because `Tab
         // panel` precedes it on that rule — the reader is told how to reach the
         // panel the keys belong to.
-        KeyCode::Char('j') if thread_cursor => Action::Next,
-        KeyCode::Char('k') if thread_cursor => Action::Previous,
-        KeyCode::Char('h') => Action::Left,
-        KeyCode::Char('l') => Action::Right,
-        KeyCode::Char('q') => Action::Quit,
+        //
+        // Folded to lowercase first, because the rules are written `J/K a
+        // thread` and `H/L a day` and crossterm delivers a capital as its own
+        // `Char('J')`. Matching only the lowercase arm left the two most
+        // prominent hints in the app naming keystrokes that did nothing — the
+        // same broken promise as an unbound `? keys`, reached from the other
+        // end, and the reason `movement` takes the fold rather than each arm
+        // listing two characters.
+        KeyCode::Char(character) => movement(character, thread_cursor),
+        _ => Action::Ignore,
+    }
+}
+
+/// What a letter means when it is not being typed, in either case.
+fn movement(character: char, thread_cursor: bool) -> Action {
+    match character.to_ascii_lowercase() {
+        'j' if thread_cursor => Action::Next,
+        'k' if thread_cursor => Action::Previous,
+        'h' => Action::Left,
+        'l' => Action::Right,
+        'q' => Action::Quit,
         _ => Action::Ignore,
     }
 }
@@ -159,6 +176,40 @@ mod tests {
     /// Every mode, for the bindings that must mean the same in all of them.
     fn all_modes() -> [Mode; 3] {
         [typing(), cursored(), plain_mode()]
+    }
+
+    /// The rules are written `J/K a thread` and `H/L a day`, so both cases have
+    /// to work. Only the lowercase arms were bound, which left the two most
+    /// prominent hints in the app promising keystrokes that did nothing.
+    #[test]
+    fn the_movement_keys_answer_in_either_case() {
+        for (lower, upper, expected) in [
+            ('j', 'J', Action::Next),
+            ('k', 'K', Action::Previous),
+            ('h', 'H', Action::Left),
+            ('l', 'L', Action::Right),
+        ] {
+            for character in [lower, upper] {
+                assert_eq!(
+                    action(plain(KeyCode::Char(character)), cursored()),
+                    expected,
+                    "{character:?} is not bound"
+                );
+            }
+        }
+        // Crossterm delivers a capital with SHIFT set, which is the case that
+        // actually arrives; the plain-modifier pass above is the belt.
+        let shifted = KeyEvent::new(KeyCode::Char('J'), KeyModifiers::SHIFT);
+        assert_eq!(action(shifted, cursored()), Action::Next);
+        let shifted = KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT);
+        assert_eq!(action(shifted, plain_mode()), Action::Right);
+    }
+
+    /// A capital is still a capital in the draft, not a movement.
+    #[test]
+    fn a_capital_is_typed_when_typing() {
+        let shifted = KeyEvent::new(KeyCode::Char('J'), KeyModifiers::SHIFT);
+        assert_eq!(action(shifted, typing()), Action::Type('J'));
     }
 
     /// A letter is a letter while typing, and a movement when it is not.

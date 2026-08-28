@@ -753,6 +753,32 @@ fn a_column_too_narrow_for_prose_draws_no_prose() {
     );
 }
 
+/// A day the reader cannot see is counted, whether the window left it out or
+/// the seven-column limit did.
+///
+/// `columns` draws at most seven, so an eighth day in the model is off screen
+/// for the same reason a windowed-out one is. Capping the count at seven first
+/// hid it, and the rule then said nothing was missing while a day was.
+#[test]
+fn a_day_past_the_seventh_is_counted_as_off_screen() {
+    let mut workspace = workspace();
+    workspace.week.days.push(day("Day 7", "28", false));
+    workspace.week.days.push(day("Day 8", "29", false));
+    let buf = drawn(120, 40, &workspace);
+    let rule = row_text(&buf, 39);
+    assert!(
+        rule.contains("two more days"),
+        "the two undrawn days are not counted: {rule:?}"
+    );
+    // And they really are undrawn.
+    assert!(!all_text(&buf).contains("Day 7"));
+
+    // A plain seven-day week still says nothing is missing at full width.
+    let buf = drawn(120, 40, &self::workspace());
+    let rule = row_text(&buf, 39);
+    assert!(!rule.contains("more day"), "{rule:?}");
+}
+
 /// Every size draws without panicking.
 #[test]
 fn every_size_draws_without_panicking() {

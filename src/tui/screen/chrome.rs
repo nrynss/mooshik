@@ -148,6 +148,13 @@ pub fn brand(grid: &mut Grid<'_>, margins: Margins, subject: &str, opposite: u16
     } else {
         String::new()
     };
+    // The brand goes too when even it will not fit. Dropping the subject was
+    // half the fix: below about thirty columns `Mooshik` itself ran into the
+    // nav and the rule read `MooshikToday   The week`. One complete run says
+    // more than two mangled ones — the same choice the bottom rules make, and
+    // the nav is the run that survives here because it says which screen this
+    // is, where the brand only says which program.
+    let brand = if width_of(brand) <= room { brand } else { "" };
     grid.run(
         margins.left,
         0,
@@ -386,6 +393,34 @@ mod tests {
                 style_at(&buf, col, 0),
                 Role::Accent.style(),
                 "column {col} is lit while settings is open"
+            );
+        }
+    }
+
+    /// Below about thirty columns even the brand will not fit before the nav, so
+    /// it goes too. Dropping only the subject left the rule reading
+    /// `MooshikToday   The week` — two mangled runs where one complete one says
+    /// more, and the nav is the run that survives because it says which screen
+    /// this is where the brand only says which program.
+    #[test]
+    fn a_title_rule_with_no_room_drops_the_brand_too() {
+        for width in 16..=32u16 {
+            let buf = drawn(width, 1, |grid| {
+                title(grid, Margins::WIDE, "Thursday 27 August", View::Today);
+            });
+            let row = row_text(&buf, 0);
+            let nav = row.find("Today").map(|byte| row[..byte].chars().count());
+            let Some(nav) = nav else { continue };
+            // Whatever is drawn to the left of the nav ends before it, with at
+            // least one clear cell — never running straight into it.
+            let left: String = row.chars().take(nav).collect();
+            assert!(
+                left.trim().is_empty() || left.ends_with(' '),
+                "the title rule splices at {width}: {row:?}"
+            );
+            assert!(
+                !left.contains("Mooshi") || left.contains("Mooshik"),
+                "the brand is drawn cut in half at {width}: {row:?}"
             );
         }
     }

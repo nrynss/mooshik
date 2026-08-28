@@ -278,6 +278,14 @@ impl<'a> Panel<'a> {
         style: ratatui::style::Style,
     ) {
         let room = w.saturating_sub(Self::INSET.saturating_add(1));
+        // A name needs its space either side and at least one character between
+        // them. Below that the padded string contributes only ground-coloured
+        // blanks — at `w = 4`, a single black cell punched into the rule with no
+        // letter to justify it, which is the fault the empty-title guard exists
+        // to prevent, one cell narrower.
+        if room < Self::INSET.saturating_add(1) {
+            return;
+        }
         grid.sub(col.saturating_add(Self::INSET), row, room, 1)
             .put(0, 0, text, style);
     }
@@ -574,6 +582,33 @@ mod tests {
         assert_eq!(buf[(3, 0)].fg, Role::Date.color());
         assert_eq!(buf[(0, 0)].fg, Role::Furniture.color());
         assert_eq!(buf[(0, 0)].symbol(), "┌");
+    }
+
+    /// A frame too narrow to hold a name and its two spaces writes neither, so
+    /// the rule stays whole. At four cells the padded title contributed one
+    /// ground-painted blank and no letter — the same black notch the empty-title
+    /// guard exists to prevent, one cell narrower.
+    #[test]
+    fn a_frame_too_narrow_for_a_name_writes_none() {
+        for w in 3..=5u16 {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 8, 3));
+            let area = buf.area;
+            let mut grid = crate::tui::grid::Grid::new(&mut buf, area);
+            Panel::new("Fri 21", Kind::Idle).draw(&mut grid, Place::new(0, 0, w, 3));
+            for col in 0..w {
+                assert_eq!(
+                    buf[(col, 0)].bg,
+                    ratatui::style::Color::Reset,
+                    "a {w}-cell frame punched ground into its rule at column {col}"
+                );
+            }
+        }
+        // Six cells is the narrowest that can carry a letter between its spaces.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 8, 3));
+        let area = buf.area;
+        let mut grid = crate::tui::grid::Grid::new(&mut buf, area);
+        Panel::new("Fri 21", Kind::Idle).draw(&mut grid, Place::new(0, 0, 6, 3));
+        assert_eq!(buf[(3, 0)].symbol(), "F");
     }
 
     /// Focus is carried by the rule turning accent; the title brightens rather

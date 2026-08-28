@@ -427,6 +427,28 @@ fn a_returning_trickle_line_is_blue_at_any_position() {
     assert_eq!(style_at(&buf, 1 + TRICKLE_TEXT, 2), Role::Returned.style());
 }
 
+/// A cut trickle entry says it was cut. This panel is the only place these
+/// lines appear anywhere in the app, so a clean word-boundary truncation reads
+/// as a sentence the reader has no reason to doubt — and there is no keypress
+/// that recovers the rest.
+#[test]
+fn a_cut_trickle_entry_is_marked_as_cut() {
+    let list = vec![Trickle::new(
+        "A very long thing that will not fit on one row of this narrow panel at all",
+    )];
+    let buf = drawn(48, 7, |grid| {
+        trickle(grid, &list, false, Place::new(0, 0, 48, 7))
+    });
+    assert!(row_text(&buf, 1).contains('…'), "{:?}", row_text(&buf, 1));
+
+    // An entry that fits is not marked.
+    let list = vec![Trickle::new("Call Mum back")];
+    let buf = drawn(48, 7, |grid| {
+        trickle(grid, &list, false, Place::new(0, 0, 48, 7))
+    });
+    assert!(!row_text(&buf, 1).contains('…'), "{:?}", row_text(&buf, 1));
+}
+
 /// A trickle longer than its panel stops at the bottom rule rather than
 /// writing over it.
 ///

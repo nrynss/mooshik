@@ -48,6 +48,7 @@ const TRICKLE_FLOOR: u16 = 30;
 struct Split {
     left: u16,
     right: u16,
+    composer_rows: u16,
     conversation_rows: u16,
     today_rows: u16,
     threads_rows: u16,
@@ -66,6 +67,12 @@ impl Split {
             .unwrap_or(u16::MAX)
             .max(1);
         let rows = band.rows();
+        // The composer takes what the band can spare rather than its four rows
+        // regardless. A band shorter than four gave it four anyway, and its
+        // frame, its draft and the bottom rule all landed on the same row — the
+        // same "squeezed to nothing beats drawn over something else" call
+        // `trickle_rows` makes just below, applied to the panel that was exempt.
+        let composer_rows = COMPOSER_ROWS.min(rows);
         let trickle_rows = if rows >= TRICKLE_FLOOR {
             TRICKLE_ROWS
         } else {
@@ -75,7 +82,8 @@ impl Split {
         Self {
             left,
             right: width.saturating_sub(left),
-            conversation_rows: rows.saturating_sub(COMPOSER_ROWS),
+            composer_rows,
+            conversation_rows: rows.saturating_sub(composer_rows),
             today_rows,
             threads_rows: rows.saturating_sub(today_rows).saturating_sub(trickle_rows),
             trickle_rows,
@@ -154,7 +162,7 @@ pub fn draw(grid: &mut Grid<'_>, workspace: &Workspace, focus: Focus, thread_cur
             0,
             band.top.saturating_add(split.conversation_rows),
             split.left,
-            COMPOSER_ROWS,
+            split.composer_rows,
         ),
     );
 

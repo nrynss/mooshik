@@ -156,6 +156,19 @@ fn thread_line(grid: &mut Grid<'_>, threads: &[Thread], margins: chrome::Margins
     let hint_width = u16::try_from(hint.chars().count()).unwrap_or(0);
     let right = margins.right_edge(grid.width());
 
+    // The hint is right-aligned and drawn last, so on a very narrow row it used
+    // to land on top of the marks — leaving a partial run of them, which is a
+    // false statement about how many days the thread spans rather than a
+    // truncated one. The marks are this row's whole claim, so the hint gives way
+    // instead: it is a keypress the reader can find elsewhere.
+    let marks_end = margins.left.saturating_add(THREAD_TEXT);
+    let hint = if hint_width > 0 && right.saturating_sub(hint_width) > marks_end {
+        hint
+    } else {
+        String::new()
+    };
+    let hint_width = u16::try_from(hint.chars().count()).unwrap_or(0);
+
     grid.run(margins.left, row, marks::compact(thread.days));
     // The thread's sentence and its reason, on one row, cut to what is left
     // after the marks and the hint.
@@ -378,6 +391,25 @@ mod tests {
         let buf = drawn(80, 24, &short);
         let row = row_text(&buf, 20);
         assert!(!row.contains('…'), "a line that fits was marked: {row:?}");
+    }
+
+    /// The "more" hint gives way to the day marks rather than landing on them.
+    ///
+    /// It is right-aligned and drawn last, so on a very narrow row it used to
+    /// overwrite them — and a partial run of marks is a false statement about
+    /// how many days the thread spans, where a missing hint is only a keypress
+    /// the reader has to find elsewhere.
+    #[test]
+    fn the_more_hint_gives_way_to_the_day_marks() {
+        for width in 10..=30u16 {
+            let buf = drawn(width, 24, &workspace());
+            let row = row_text(&buf, 20);
+            let marks: String = row.chars().filter(|c| *c == '▄' || *c == '▁').collect();
+            assert!(
+                marks.is_empty() || marks.chars().count() == 7,
+                "a partial run of marks at {width}: {row:?}"
+            );
+        }
     }
 
     /// A single thread offers no "more" hint, because there is no more.

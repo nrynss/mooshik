@@ -75,9 +75,12 @@ const THREADS_MARGIN: u16 = 0;
 /// `1b` breaks `You still haven't called him back — / it's come up on two days
 /// since.` after the dash, and `You came back to the 512 cap four / times on this
 /// day.` after `four`. The pane has 43 columns past [`DETAIL_TIME`]; both of
-/// those lines fit one more word at 41, so both reflowed. Five is what the
-/// artboard's breaks imply, and the notes are the one run in the pane that is
-/// prose rather than a log line — the extra air is what separates them from it.
+/// those lines fit one more word at 41, so both reflowed. Five is the
+/// *narrowest* margin that forces both of the artboard's breaks — four and below
+/// lose them — and the artboard pins no upper bound here, since six, seven and
+/// eight reproduce the same two. Five is chosen from the low end because the
+/// notes are the one run in the pane that is prose rather than a log line, and
+/// the extra air is what separates them from it.
 const NOTES_MARGIN: u16 = 5;
 
 /// Cells kept clear at the right of the detail pane's log, where the design
@@ -86,13 +89,13 @@ const NOTES_MARGIN: u16 = 5;
 /// `1b` breaks `09:42  The ring overflowed in / production`. The pane has 36
 /// columns past [`DETAIL_TEXT`] and that string is 33 characters, so the shared
 /// two-cell margin left 34 and drew it on one line — at the artboard's own
-/// width, against the artboard's own break. Four is the widest margin that
-/// reproduces every break in the pane: it leaves 32, one short of the 33 that
-/// line needs, while still fitting the pane's two longest lines — `Nothing was
-/// dropped — writers` and `Cancelled drinks with friends`, both 29 — whole.
-/// Three would leave exactly 33 and change nothing; five and upwards break
-/// those two as well. Same arithmetic as [`NOTES_MARGIN`], and the same rule:
-/// take the widest margin the artboard's breaks allow.
+/// width, against the artboard's own break. Four is the *narrowest* margin that
+/// forces it: it leaves 32, one short of the 33 that line needs, where three
+/// leaves exactly 33 and changes nothing. The artboard pins no upper bound —
+/// the pane's two longest lines, `Nothing was dropped — writers` and `Cancelled
+/// drinks with friends`, are both 29, so five, six and seven keep every break
+/// too. Four is chosen from the low end for the reason [`RIGHT_MARGIN`] is two:
+/// a log line is not prose and does not want the air the notes below it do.
 const LOG_MARGIN: u16 = 4;
 /// The column the detail pane starts at on a 120-column screen, as a proportion.
 ///
@@ -138,12 +141,12 @@ pub fn draw(grid: &mut Grid<'_>, workspace: &Workspace, thread_cursor: usize) {
         today_index(workspace),
         Place::new(0, band.top, width, day_rows),
     );
-    let offscreen = workspace
-        .week
-        .days
-        .len()
-        .min(usize::from(DAYS))
-        .saturating_sub(shown.len());
+    // Every day the reader cannot see, not just the ones the window left out:
+    // `columns` draws at most seven, so an eighth day in the model is off screen
+    // for the same reason a windowed-out one is, and capping the count at seven
+    // first hid it. The week is seven days by construction today, which is
+    // exactly why the arithmetic has to hold without relying on that.
+    let offscreen = workspace.week.days.len().saturating_sub(shown.len());
 
     let lower_top = band.top.saturating_add(day_rows);
     let lower_rows = band.rows().saturating_sub(day_rows);

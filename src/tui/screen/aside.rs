@@ -310,12 +310,13 @@ pub fn trickle(grid: &mut Grid<'_>, list: &[Trickle], focused: bool, at: Place) 
         } else {
             Role::Furniture
         };
-        // One line each: the trickle is a glance, not a read, so a long entry
-        // is clipped by the panel rather than pushing the next one down.
-        let text = wrap(&line.text, width)
-            .into_iter()
-            .next()
-            .unwrap_or_default();
+        // One line each: the trickle is a glance, not a read, so a long entry is
+        // cut rather than pushing the next one down — and cut *with a mark*,
+        // because this panel is the only place these lines appear anywhere in
+        // the app. A word-boundary truncation here reads as a sentence the
+        // reader has no reason to doubt and which is not the sentence, with no
+        // keypress that recovers the rest.
+        let text = ellipsised(&line.text, width);
         inner.run(
             GUTTER,
             at,

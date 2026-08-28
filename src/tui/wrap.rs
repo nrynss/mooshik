@@ -114,15 +114,24 @@ pub fn wrap_paragraphs(text: &str, width: u16) -> Vec<String> {
 /// quantum assumes writers wait" as `The 40ms fairness quantum assum` — a name
 /// the reader has no reason to doubt and which is not the name.
 ///
-/// The wrap is one cell short of `room` so the mark itself has somewhere to go.
-/// An entry that fits comes back untouched, mark and all, so a list of short
-/// names is not peppered with ellipses that mean nothing.
+/// The fit is measured at `room` and only the *cut* is wrapped at `room - 1`,
+/// so the mark has somewhere to go without costing a cell that was not needed.
+/// Measuring both at `room - 1` marked a name that exactly filled its slot,
+/// losing a whole trailing word to announce a cut that never had to happen —
+/// and a list of short names peppered with ellipses that mean nothing is the
+/// thing this function exists to avoid.
 pub fn ellipsised(text: &str, room: u16) -> String {
-    let mut lines = wrap(text, room.saturating_sub(1)).into_iter();
-    match (lines.next(), lines.next()) {
-        (Some(line), Some(_)) => format!("{line}{}", crate::tui::widget::marks::ELLIPSIS),
-        (Some(line), None) => line,
-        (None, _) => String::new(),
+    let mut whole = wrap(text, room).into_iter();
+    match (whole.next(), whole.next()) {
+        // One line at the full width: it fits, mark and all.
+        (Some(line), None) => return line,
+        (None, _) => return String::new(),
+        _ => {}
+    }
+    match wrap(text, room.saturating_sub(1)).into_iter().next() {
+        Some(line) => format!("{line}{}", crate::tui::widget::marks::ELLIPSIS),
+        // `room` of 1 or 0 leaves nothing to cut to; the panel clips instead.
+        None => String::new(),
     }
 }
 
@@ -235,6 +244,25 @@ mod tests {
         // No room at all is nothing, not a bare mark.
         assert_eq!(ellipsised("anything", 0), "");
         assert_eq!(ellipsised("", 20), "");
+    }
+
+    /// A name that exactly fills its slot comes back whole. Measuring the fit at
+    /// `room - 1` cut a trailing word to announce a truncation that never had to
+    /// happen, and left a cell unused doing it.
+    #[test]
+    fn an_exact_fit_is_not_marked_as_cut() {
+        assert_eq!(ellipsised("The 512 cap", 11), "The 512 cap");
+        assert_eq!(ellipsised("abcdef", 6), "abcdef");
+        // One cell short, and it is cut and marked.
+        assert_eq!(ellipsised("The 512 cap", 10), "The 512…");
+        // And nothing ever exceeds the room it was given.
+        for room in 0..=20u16 {
+            let shown = ellipsised("The 40ms fairness quantum", room);
+            assert!(
+                shown.chars().count() <= usize::from(room),
+                "{shown:?} exceeds {room}"
+            );
+        }
     }
 
     /// Nothing wrapped ever exceeds the width it was given, at any width.
