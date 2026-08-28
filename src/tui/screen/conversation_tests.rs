@@ -650,8 +650,13 @@ fn a_recall_cards_quote_breaks_where_the_artboard_breaks_it() {
     );
 
     // The card sits at the conversation's text indent and is 54 wide, so on the
-    // buffer its left rule is column 10 and its right rule column 63 — and the
-    // two cells inside that rule stay clear, as the body's margin promises.
+    // buffer its left rule is column 10 and its right rule column 63.
+    //
+    // The clear cell inside that rule is checked but is *not* what pins
+    // `RIGHT_MARGIN`: `1c`'s longest line is 48 characters and its next word
+    // takes it to 52, so both breaks and the clear cell survive even without the
+    // margin. The caution test above is the one that holds it — its lines run to
+    // 54. This assertion catches a frame that moved, not a margin that went.
     let mut body_rows = 0;
     for row in 0..12u16 {
         let line = row_text(&buf, row);

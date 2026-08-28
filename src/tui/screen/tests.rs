@@ -539,7 +539,11 @@ fn eyeball() {
 fn every_cycle_stop_accents_a_panel_on_screen() {
     use crate::tui::app::Action;
 
-    const SAMPLED_WIDTHS: [u16; 5] = [100, 110, 120, 160, 200];
+    // Both sides of `NARROW_BELOW`. The samples used to start at 100, so the
+    // narrow layout's one-stop cycle was never in this sweep at all — the same
+    // shape of gap as the heights that hid rounds seven and eight, on the other
+    // axis.
+    const SAMPLED_WIDTHS: [u16; 10] = [16, 40, 60, 80, 99, 100, 110, 120, 160, 200];
 
     for (name, mut app) in scenes() {
         for width in SAMPLED_WIDTHS {
