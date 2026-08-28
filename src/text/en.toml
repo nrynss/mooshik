@@ -247,7 +247,13 @@ hint_composer = "Nothing here needs saving"
 # header of that module for the whole keymap.
 hint_today = "Tab panel · J/K a thread · ^2 week · Esc leave"
 hint_week = "H/L a day · J/K a thread · ^1 today · Esc leave"
-hint_narrow = "Tab panel · ^2 week · Esc leave"
+# No `Tab panel` here. `1h` collapses the three right-hand panels to two summary
+# rows and drops the third, so the narrow layout has exactly one focus — the
+# conversation and the composer, which share it — and `Tab` deliberately moves
+# nothing. A key that is bound and does nothing is the same broken promise as a
+# key that is not bound at all. `J/K a thread` is absent for the same reason:
+# this screen draws no thread cursor.
+hint_narrow = "^2 week · Esc leave"
 # Not a key hint: how many threads the collapsed line did not have room for.
 # `{count}` is spelled where the artboards spell it — see [tui.numbers].
 narrow_more = "{count} more"
@@ -295,7 +301,15 @@ week_day_header = "  Fri Sat Sun Mon Tue Wed Thu"
 # `{Count}` rather than `{count}`: this sentence starts with the number, so the
 # word needs its capital — `1d` writes " Eight things lean on it:". A locale that
 # does not capitalise there uses `{count}` and gets the plain word.
+#
+# Two keys, for the reason `week_offscreen` has two: English inflects the noun,
+# and a thread with one dependent is ordinary data — `today.rs`'s own fixture is
+# exactly that — so the single form is reached without anything unusual
+# happening. "One things lean on it:" is not a sentence anybody wrote. A locale
+# with three plural forms adds its own keys here and reads them in
+# `aside::leans_on`.
 header = "{Count} things lean on it:"
+header_one = "One thing leans on it:"
 
 # The 80-column nav, which abbreviates rather than wrapping. Artboard `1h`.
 [tui.narrow]

@@ -631,7 +631,11 @@ the CLI and this is cut, which is a decision rather than a failure.
 
 **Status: the surface is built; the data behind it is not.** `mooshik tui` opens a `ratatui`
 interface ported from a nine-artboard design (kept in `scratch_design/` while the port is in
-progress). What landed:
+progress). Six of the nine are ported — `1a`, `1b`, `1c`, `1d`, `1h` and the `1i` palette;
+**`1e` (first run), `1f` (changing the database) and `1g` (its no-warning counterpart) are
+deliberately out of scope**, because they are settings and lifecycle screens rather than the
+companion surface this milestone is about, and every capability behind them is already reachable
+from `mooshik configure` and the vault commands. What landed:
 
 * **Today** (the default), **the week**, and an 80x24 narrow layout, all drawing from one plain-data
   view model, plus the two states the design makes the argument with — a thing the user said on

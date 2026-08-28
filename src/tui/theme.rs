@@ -223,7 +223,7 @@ mod tests {
     /// design commits to.
     #[test]
     fn every_role_is_a_named_ansi_slot() {
-        for role in ALL_ROLES {
+        for role in all_roles() {
             match role.color() {
                 Color::Rgb(..) | Color::Indexed(_) => {
                     panic!("{role:?} escapes the 16-colour palette")
@@ -244,7 +244,7 @@ mod tests {
             Color::LightBlue,
             Color::LightCyan,
         ];
-        for role in ALL_ROLES {
+        for role in all_roles() {
             assert!(
                 !HELD_BACK.contains(&role.color()),
                 "{role:?} spends a colour the design holds back"
@@ -266,7 +266,7 @@ mod tests {
     /// with colour 0.
     #[test]
     fn styles_never_carry_a_background() {
-        for role in ALL_ROLES {
+        for role in all_roles() {
             assert_eq!(role.style().bg, None, "{role:?} paints a background");
         }
         assert_eq!(Role::Accent.on_ground().bg, Some(Color::Black));
@@ -316,19 +316,73 @@ mod tests {
         assert_ne!(Strength::from_rank(99).role(), Role::Absence);
     }
 
-    const ALL_ROLES: [Role; 13] = [
-        Role::Ground,
-        Role::Furniture,
-        Role::Absence,
-        Role::Body,
-        Role::Fading,
-        Role::Strongest,
-        Role::Accent,
-        Role::Returned,
-        Role::Date,
-        Role::Caution,
-        Role::Affirm,
-        Role::Danger,
-        Role::Keypress,
-    ];
+    /// How many variants [`Role`] has, pinned so the walk below can be checked
+    /// against it. Bumping this is the second half of adding a role; the first
+    /// half is the compile error in [`after`].
+    const ROLES: usize = 13;
+
+    /// Every [`Role`], walked through an exhaustive `match`.
+    ///
+    /// This used to be a hand-written `[Role; 13]`, and the palette rules that
+    /// carry `1i` iterate it — `every_role_is_a_named_ansi_slot`,
+    /// `the_held_back_brights_are_unspent`, `styles_never_carry_a_background`.
+    /// A fourteenth role simply not added to that array would have escaped all
+    /// of them: the tests would still pass and the palette rule they claim to
+    /// hold would not be held.
+    ///
+    /// [`after`] is exhaustive, so a role added tomorrow does not compile until
+    /// somebody says where it sits in the walk, and sitting anywhere in the walk
+    /// is what puts it in this list. What the compiler cannot force is that the
+    /// new arm is *reachable* — an arm returning `None` beside `Keypress`'s
+    /// leaves the role off the end — so `the_walk_reaches_every_role` pins the
+    /// count too, and the two together mean a role can only escape by two
+    /// deliberate edits against a comment that says not to.
+    fn all_roles() -> Vec<Role> {
+        /// The next role after this one, or `None` at the end of the walk. The
+        /// order is the palette's own: ground, then the four-step ramp, then the
+        /// meanings.
+        const fn after(role: Role) -> Option<Role> {
+            match role {
+                Role::Ground => Some(Role::Furniture),
+                Role::Furniture => Some(Role::Absence),
+                Role::Absence => Some(Role::Body),
+                Role::Body => Some(Role::Fading),
+                Role::Fading => Some(Role::Strongest),
+                Role::Strongest => Some(Role::Accent),
+                Role::Accent => Some(Role::Returned),
+                Role::Returned => Some(Role::Date),
+                Role::Date => Some(Role::Caution),
+                Role::Caution => Some(Role::Affirm),
+                Role::Affirm => Some(Role::Danger),
+                Role::Danger => Some(Role::Keypress),
+                Role::Keypress => None,
+            }
+        }
+        let mut roles = vec![Role::Ground];
+        // Stopping on a repeat rather than trusting the arms: a walk written
+        // into a cycle would otherwise spin here, and the test below is what
+        // reports it as a short list.
+        while let Some(next) = after(*roles.last().expect("the walk starts at Ground")) {
+            if roles.contains(&next) {
+                break;
+            }
+            roles.push(next);
+        }
+        roles
+    }
+
+    /// The walk visits every role exactly once, so the palette rules that
+    /// iterate it are iterating all of them.
+    #[test]
+    fn the_walk_reaches_every_role() {
+        let roles = all_roles();
+        assert_eq!(
+            roles.len(),
+            ROLES,
+            "a role is off the end of the walk, or `ROLES` was not bumped"
+        );
+        for (index, role) in roles.iter().enumerate() {
+            assert!(!roles[..index].contains(role), "{role:?} is walked twice");
+        }
+    }
 }

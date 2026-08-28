@@ -35,6 +35,14 @@
 //! no nodes, no relevance, no promotion or decay. A thread's strength is only
 //! ever justified with the user's own history, which is why
 //! [`Justification`] holds prose rather than a figure.
+//!
+//! **Every type here refuses unknown fields.** `demo*.toml` is the fidelity
+//! spec — it is what the layout tests assert the artboards against — and with
+//! `#[serde(default)]` alone a mistyped key in it was silently dropped and
+//! `demo_toml_parses` still passed. A `weathr` on a week day would have left
+//! that column with no weather and nothing to say so. So the fixture-facing
+//! types are strict about names and permissive about absence, which is the pair
+//! that makes a fixture checkable.
 
 use serde::Deserialize;
 
@@ -67,7 +75,7 @@ pub enum Speaker {
 
 /// The clock in the title bar: "Mooshik · Thursday 27 August · 14:22".
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Stamp {
     /// "Thursday 27 August" on a wide terminal.
     pub long_date: String,
@@ -80,7 +88,7 @@ pub struct Stamp {
 /// One line of a day: a time, and what happened. The time is optional because
 /// the week screen's day columns are too narrow for it and drop it.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Entry {
     /// "09:04", or `None` in a narrow day column.
     pub time: Option<String>,
@@ -175,6 +183,7 @@ impl Load {
 /// `level = 0` in `demo.toml` still yields a drawable bar rather than a hole in
 /// the ribbon.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LoadWire {
     #[serde(default)]
     level: u8,
@@ -191,7 +200,7 @@ impl From<LoadWire> for Load {
 /// How a day felt, in the day's own words: "A good day", "Mixed", "A rough
 /// day". Never computed into a rating — the text is the whole content.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Mood {
     /// "A rough day".
     pub text: String,
@@ -228,7 +237,7 @@ impl Mood {
 /// One day, at every size the design asks for it: a 17-column week gutter, the
 /// 48-column Today panel, and the 46-column week detail pane.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Day {
     /// "Thu 27" — the week panel's title.
     pub short_label: String,
@@ -269,7 +278,7 @@ pub struct Day {
 /// Why a thread is as strong as it is, said in the user's own history rather
 /// than as a figure: "Every day this week · eight other notes lean on it".
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Justification {
     /// The reason, unwrapped.
     pub text: String,
@@ -307,7 +316,7 @@ impl Justification {
 /// Ordered by how often, and never labelled with how often — the position in
 /// [`Workspace::threads`] is the encoding.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Thread {
     /// The thought itself, unwrapped.
     pub summary: String,
@@ -332,7 +341,7 @@ impl Thread {
 /// A line in "Just remembered": what Mooshik has picked up in the last little
 /// while, freshest first, fading down the ramp to the oldest.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Trickle {
     /// The line itself.
     pub text: String,
@@ -361,7 +370,7 @@ impl Trickle {
 /// A thing the user said on another day, quoted back with its source and the
 /// reason it surfaced. Artboard `1c` — "The model forgot; the memory didn't."
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Recall {
     /// The panel title: " From Monday 24 August ".
     pub source: String,
@@ -382,7 +391,7 @@ pub struct Recall {
 /// unread; a locale that translated `panel_caution` would have seen no change on
 /// screen.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Caution {
     /// The opening, unwrapped. The quoted commitment inside it is emphasised by
     /// the renderer finding the quotation marks, not marked up here.
@@ -396,7 +405,7 @@ pub struct Caution {
 
 /// One thing in the conversation.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Turn {
     /// Somebody spoke.
     Said {
@@ -415,7 +424,7 @@ pub enum Turn {
 
 /// The input line, and the line under it that says nothing needs saving.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Composer {
     /// What has been typed so far. The cursor renders after it.
     pub draft: String,
@@ -423,7 +432,7 @@ pub struct Composer {
 
 /// The conversation panel's contents.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Conversation {
     /// The elision marker at the top — "... earlier today" — when there is more
     /// above than fits.
@@ -436,7 +445,7 @@ pub struct Conversation {
 
 /// The one-word state on the status bar, and how much is behind it.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Health {
     /// "Keeping up" — one word or two, never a sentence, and green only when
     /// `well` is set.
@@ -457,7 +466,7 @@ pub struct Health {
 
 /// The seven-day view.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Week {
     /// "21-27 August".
     pub label: String,
@@ -478,16 +487,16 @@ impl Day {
     }
 }
 
-impl Week {
-    /// The day the detail pane is showing, if the week is not empty.
-    pub fn selected_day(&self) -> Option<&Day> {
-        self.days.get(self.selected)
-    }
-}
+// `Week` deliberately has no `selected_day`. It had one, and it was a trap: the
+// index it read is not clamped to the seven days the week screen draws — the
+// model may hold more, and `H`/`L` clamp to `days.len()` — so it returned days
+// no column was showing and the detail pane described one of them. Which day is
+// on screen is a question about the *window*, and only the screen knows the
+// width that window comes from, so `week::selected_in` answers it there.
 
 /// Everything on screen.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Workspace {
     /// Whose words are the brightest thing in the conversation.
     pub person: String,
@@ -581,17 +590,5 @@ mod tests {
         let log = day.detail_entries();
         assert_eq!(log.len(), 1);
         assert_eq!(log[0].time.as_deref(), Some("09:42"));
-    }
-
-    /// An out-of-range selection reads as "nothing selected" rather than
-    /// panicking — the week screen then draws its detail pane empty.
-    #[test]
-    fn an_empty_week_has_no_selected_day() {
-        let mut week = Week::default();
-        assert!(week.selected_day().is_none());
-        week.days.push(Day::default());
-        assert!(week.selected_day().is_some());
-        week.selected = 9;
-        assert!(week.selected_day().is_none());
     }
 }

@@ -239,17 +239,30 @@ fn a_panel_with_no_marker_starts_on_its_first_row() {
     assert!(row_text(&buf, 2).contains("Only turn"));
 }
 
-/// A conversation that fits leaves the panel filled from the bottom without
-/// pushing anything off the top.
+/// A conversation that fits keeps every turn, and says nothing about history it
+/// did not have to drop.
+///
+/// The doc here used to claim the panel was "filled from the bottom", which was
+/// the bottom-anchored behaviour reverted in round two, and the body asserted
+/// nothing about anchoring — it repeated the setup of the test above it. What is
+/// worth pinning is the other half of [`fit`]: it drops from the front only when
+/// it has to, so a short day is drawn whole with no elision marker invented for
+/// it.
 #[test]
-fn a_short_conversation_is_not_clipped() {
-    let conversation = conversation_of(vec![said("09:04", Speaker::Person, "Only turn")]);
-    let buf = drawn(72, 12, |grid| {
-        panel(grid, "Neom", &conversation, false, Place::new(0, 0, 72, 12));
+fn a_conversation_that_fits_keeps_every_turn() {
+    let turns: Vec<Turn> = (0..4)
+        .map(|n| said(&format!("09:0{n}"), Speaker::Person, &format!("Turn {n}")))
+        .collect();
+    let conversation = conversation_of(turns);
+    let buf = drawn(72, 14, |grid| {
+        panel(grid, "Neom", &conversation, false, Place::new(0, 0, 72, 14));
     });
-    let all: String = (0..12).map(|r| row_text(&buf, r)).collect();
-    assert!(all.contains("Only turn"));
-    assert!(all.contains("Neom"));
+    let all: String = (0..14).map(|r| row_text(&buf, r)).collect();
+    for n in 0..4 {
+        assert!(all.contains(&format!("Turn {n}")), "turn {n} was dropped");
+    }
+    // And no marker: the fixture set none, and the panel does not invent one.
+    assert!(!all.contains("earlier today"), "{all}");
 }
 
 /// A recall card is framed in the returning colour with its reason punched
@@ -299,6 +312,34 @@ fn a_caution_is_a_yellow_frame_in_the_scroll() {
     assert!(all.contains(title));
     assert!(all.contains("The short postmortem"));
     assert!(all.contains("say the word and I'll follow"));
+}
+
+/// A dependency too long for the card is ellipsised, not cut mid-word with no
+/// mark at all.
+///
+/// The list went straight through `Grid::lines`, which clips at the card's edge
+/// and says nothing about it: at 45 to 60 columns `1d`'s own "The 40ms fairness
+/// quantum assumes writers wait" came out as "The 40ms fairness quantum assum",
+/// which reads as a name rather than as a truncation.
+#[test]
+fn a_long_dependency_in_a_caution_says_it_was_cut() {
+    let conversation = conversation_of(vec![Turn::Cautioned(Caution {
+        lead: "You've held to it.".to_owned(),
+        leaning: vec![
+            "The 40ms fairness quantum assumes writers wait".to_owned(),
+            "Short".to_owned(),
+        ],
+        because: "Nothing's changed".to_owned(),
+    })]);
+    let buf = drawn(45, 14, |grid| {
+        panel(grid, "Neom", &conversation, false, Place::new(0, 0, 45, 14));
+    });
+    let all: String = (0..14).map(|r| row_text(&buf, r)).collect();
+    assert!(all.contains('…'), "the cut is unmarked: {all}");
+    assert!(!all.contains("assumes writers wait"), "{all}");
+    // A name that fits keeps its whole self and gains no mark.
+    let short = find_row(&buf, "Short");
+    assert!(!row_text(&buf, short).contains('…'), "{all}");
 }
 
 /// The quoted commitment inside a caution is brightened, and nothing is

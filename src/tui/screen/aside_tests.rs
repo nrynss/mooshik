@@ -352,6 +352,49 @@ fn the_leans_panel_is_a_caution_frame_with_a_count() {
     assert!(text.contains("The oncall runbook"));
 }
 
+/// One dependent is "One thing leans on it:", not "One things lean on it:".
+///
+/// A single-element `leaned_on` is ordinary data — `today.rs`'s own fixture is
+/// exactly that — so this is reached without anything unusual happening, and
+/// English inflects the noun. `week_offscreen`/`week_offscreen_one` got the same
+/// two-key treatment for the same reason.
+#[test]
+fn one_dependent_reads_as_one() {
+    let mut one = thread("Block, never drop", [true; 7], "");
+    one.leaned_on = vec!["The short postmortem".to_owned()];
+    let buf = drawn(48, 14, |grid| {
+        leans_on(grid, &one, Place::new(0, 0, 48, 14))
+    });
+    let text = all_text(&buf);
+    assert!(text.contains("One thing leans on it:"), "{text}");
+    assert!(!text.contains("things lean on it"), "{text}");
+}
+
+/// A dependent too long for the panel is ellipsised, not cut mid-word with no
+/// mark at all.
+///
+/// The list used to go straight through `Grid::lines`, which clips at the panel
+/// edge and says nothing about it: `1d`'s own "The 40ms fairness quantum assumes
+/// writers wait" came out as "The 40ms fairness quantum assum" — a name the
+/// reader has no reason to doubt, and not the name.
+#[test]
+fn a_long_dependent_says_it_was_cut() {
+    let mut one = thread("Block, never drop", [true; 7], "");
+    one.leaned_on = vec![
+        "The 40ms fairness quantum assumes writers wait".to_owned(),
+        "Short".to_owned(),
+    ];
+    let buf = drawn(30, 14, |grid| {
+        leans_on(grid, &one, Place::new(0, 0, 30, 14))
+    });
+    let text = all_text(&buf);
+    assert!(text.contains('…'), "the cut is unmarked: {text}");
+    assert!(!text.contains("assumes writers wait"), "{text}");
+    // And an entry that fits is left alone — no ellipsis on a whole name.
+    let short = find_row(&buf, "Short");
+    assert!(!row_text(&buf, short).contains('…'), "{text}");
+}
+
 /// The trickle's ramp bottoms out in absence, and its bullet follows the
 /// line down rather than staying bright over a nearly-gone entry.
 #[test]

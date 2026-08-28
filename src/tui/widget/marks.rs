@@ -60,6 +60,12 @@ pub const HEALTH_MARK: &str = "✓";
 pub const HEALTH_BEHIND: &str = "·";
 /// The bullet the trickle's entries hang from, spaced as artboard `1a` sets it.
 pub const TRICKLE_BULLET: &str = " · ";
+/// What marks a line that had to be cut. Notation, not prose: it means "there
+/// was more" in every locale, and a row ending "…quantum assum" reads as a
+/// truncation where the same row without it reads as a short name. See
+/// [`wrap::ellipsised`](crate::tui::wrap::ellipsised), which is the only thing
+/// that writes it.
+pub const ELLIPSIS: &str = "…";
 
 /// Cells between one day column and the next on the week screen: three for
 /// "Fri" plus the space after it.

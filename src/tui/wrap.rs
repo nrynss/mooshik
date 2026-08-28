@@ -104,6 +104,28 @@ pub fn wrap_paragraphs(text: &str, width: u16) -> Vec<String> {
     lines
 }
 
+/// `text` on **one** line, marked with [`marks::ELLIPSIS`] where it was cut.
+///
+/// For the places the design gives a list one row per item — the collapsed
+/// thread line on `1h`, and the dependency lists inside `1d`'s caution card and
+/// its "What leans on this" panel. Those were written straight through
+/// [`Grid::lines`](crate::tui::grid::Grid::lines), which clips at the panel edge
+/// and leaves no mark, so a 45-column terminal drew `1d`'s "The 40ms fairness
+/// quantum assumes writers wait" as `The 40ms fairness quantum assum` — a name
+/// the reader has no reason to doubt and which is not the name.
+///
+/// The wrap is one cell short of `room` so the mark itself has somewhere to go.
+/// An entry that fits comes back untouched, mark and all, so a list of short
+/// names is not peppered with ellipses that mean nothing.
+pub fn ellipsised(text: &str, room: u16) -> String {
+    let mut lines = wrap(text, room.saturating_sub(1)).into_iter();
+    match (lines.next(), lines.next()) {
+        (Some(line), Some(_)) => format!("{line}{}", crate::tui::widget::marks::ELLIPSIS),
+        (Some(line), None) => line,
+        (None, _) => String::new(),
+    }
+}
+
 /// Split `word` into `width`-character pieces.
 fn chunks(word: &str, width: usize) -> Vec<String> {
     let characters: Vec<char> = word.chars().collect();
@@ -193,6 +215,26 @@ mod tests {
                 "You still haven't called him back.",
             ]
         );
+    }
+
+    /// A one-line fit is left alone; anything longer says it was cut, and never
+    /// spills past the room it was given.
+    ///
+    /// The mark matters: `Grid::lines` clipped these at the panel edge and said
+    /// nothing, so `1d`'s "The 40ms fairness quantum assumes writers wait" read
+    /// as a name ending in "assum".
+    #[test]
+    fn an_ellipsis_marks_a_line_that_had_to_be_cut() {
+        assert_eq!(ellipsised("Short name", 20), "Short name");
+        // Exactly the room, less the cell the mark would need: still whole.
+        assert_eq!(ellipsised("Short name", 11), "Short name");
+        let cut = ellipsised("The 40ms fairness quantum assumes writers wait", 20);
+        assert!(cut.ends_with('…'), "{cut:?}");
+        assert!(cut.chars().count() <= 20, "{cut:?}");
+        assert!(!cut.contains("writers"), "{cut:?}");
+        // No room at all is nothing, not a bare mark.
+        assert_eq!(ellipsised("anything", 0), "");
+        assert_eq!(ellipsised("", 20), "");
     }
 
     /// Nothing wrapped ever exceeds the width it was given, at any width.

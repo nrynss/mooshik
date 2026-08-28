@@ -61,6 +61,22 @@ impl Margins {
     }
 }
 
+/// Cells kept clear between the two runs of a rule, so they never abut.
+///
+/// Every rule in the app is two runs written independently — one from the left
+/// margin, one placed against the right — and nothing about either knows how
+/// wide the other is. Small, because at the design's own width the runs are
+/// columns apart; this is the floor that keeps them apart when the terminal is
+/// narrower, and `no_rule_writes_two_runs_into_the_same_cells` is what holds it
+/// on every screen at once.
+pub const RULE_GAP: u16 = 2;
+
+/// `text`'s width in cells, saturating. Characters rather than columns, for the
+/// reason [`Grid::put_ending_at`](crate::tui::grid::Grid::put_ending_at) states.
+fn width_of(text: &str) -> u16 {
+    u16::try_from(text.chars().count()).unwrap_or(u16::MAX)
+}
+
 /// Draw the whole title rule: the brand and `subject` at the left margin, the
 /// wide nav right-aligned opposite.
 ///
@@ -68,29 +84,75 @@ impl Margins {
 /// week  ·  21-27 August" on the week screen — and is drawn as furniture beside
 /// the brand, which is the only bright thing on the rule.
 pub fn title(grid: &mut Grid<'_>, margins: Margins, subject: &str, view: View) {
-    brand(grid, margins, subject);
-    nav(grid, margins, text::get("tui.nav_gap"), &wide_items(view));
+    let gap = text::get("tui.nav_gap");
+    let items = wide_items(view);
+    // The brand first and the nav over it: the nav is the run that says which
+    // view is showing, so if the clamp below were ever wrong the damage would
+    // land on the subject rather than on the navigation.
+    brand(
+        grid,
+        margins,
+        subject,
+        nav_start(grid.width(), margins, gap, &items),
+    );
+    nav(grid, margins, gap, &items);
+}
+
+/// The column a nav drawn with [`nav`] starts at.
+///
+/// Split out so the brand can be clamped against it. Both are derived from the
+/// same width sum rather than the caller guessing one from the other.
+pub fn nav_start(width: u16, margins: Margins, gap: &str, items: &[(&str, Role)]) -> u16 {
+    let run: usize = items
+        .iter()
+        .map(|(label, _)| label.chars().count())
+        .sum::<usize>()
+        + gap.chars().count() * items.len().saturating_sub(1);
+    margins
+        .right_edge(width)
+        .saturating_sub(u16::try_from(run).unwrap_or(u16::MAX))
 }
 
 /// Draw the left half of the title rule: `Mooshik  ·  Thursday 27 August`.
 ///
 /// Split out from [`title`] because the narrow screen writes the same run with
 /// its own subject and its own nav — `1h` abbreviates the nav but not the brand.
-pub fn brand(grid: &mut Grid<'_>, margins: Margins, subject: &str) {
+///
+/// `opposite` is the column the run on the right starts at, and the subject is
+/// **dropped** rather than clipped when there is no room for it before that.
+/// The two runs used to be written with nothing between them, so a narrow
+/// terminal spliced one into the other: the week screen at 40 columns drew
+/// `  Mooshik  ·  Your wToday   The weekgust`, and at 60 the two abutted. That
+/// is below the documented 80x24 minimum on the Today screen, but the week has
+/// no narrow variant at all, so a small tmux split reaches it. Dropping the
+/// subject is the same choice [`health_rule`] makes about the scope and
+/// [`week::bottom_rule`](super::week) makes about the week label: one complete
+/// run says more than two mangled ones, and the brand is the run that names the
+/// app.
+pub fn brand(grid: &mut Grid<'_>, margins: Margins, subject: &str, opposite: u16) {
     let separator = text::get("tui.separator");
     // The separator only where there is a subject to separate the brand from. The
     // live workspace has no date source yet, and `format!("{separator}{subject}")`
     // opened `mooshik tui` on a trailing bullet with nothing after it.
+    let brand = text::get("tui.brand");
+    let room = opposite
+        .saturating_sub(RULE_GAP)
+        .saturating_sub(margins.left);
     let tail = if subject.trim().is_empty() {
         String::new()
     } else {
         format!("{separator}{subject}")
     };
+    let tail = if width_of(brand).saturating_add(width_of(&tail)) <= room {
+        tail
+    } else {
+        String::new()
+    };
     grid.run(
         margins.left,
         0,
         [
-            Span::styled(text::get("tui.brand"), Role::Strongest.style()),
+            Span::styled(brand, Role::Strongest.style()),
             Span::styled(tail, Role::Furniture.style()),
         ],
     );
@@ -126,15 +188,7 @@ fn wide_items(view: View) -> [(&'static str, Role); 2] {
 /// week`, and the width sum, the right-edge offset and the span loop were
 /// duplicated verbatim in the narrow screen until they were not.
 pub fn nav(grid: &mut Grid<'_>, margins: Margins, gap: &str, items: &[(&str, Role)]) {
-    let width: usize = items
-        .iter()
-        .map(|(label, _)| label.chars().count())
-        .sum::<usize>()
-        + gap.chars().count() * items.len().saturating_sub(1);
-    let start = margins
-        .right_edge(grid.width())
-        .saturating_sub(u16::try_from(width).unwrap_or(u16::MAX));
-
+    let start = nav_start(grid.width(), margins, gap, items);
     let mut spans = Vec::with_capacity(items.len() * 2);
     for (index, (label, role)) in items.iter().enumerate() {
         if index > 0 {
@@ -155,6 +209,22 @@ pub fn nav(grid: &mut Grid<'_>, margins: Margins, gap: &str, items: &[(&str, Rol
 /// different forms of it — "214 things remembered, back to 21 August" wide and
 /// "214 remembered" narrow — and both are written, not truncated. See
 /// [`Health::short_scope`](crate::tui::model::Health::short_scope).
+///
+/// **The left run gives way, the keys never do.** The two runs are written from
+/// opposite ends and neither knows how wide the other is, so this rule used to
+/// overwrite itself exactly as `week::bottom_rule` did before it was clamped —
+/// found on the week screen in round two and fixed only there. With
+/// `demo.toml`'s scope the left run ends at column 59 and the hints start at
+/// `width - 49`, so every terminal from 100 to 108 columns drew
+/// `✓ Keeping up  ·  214 things remembered, back to 21 AugusTab panel · …` —
+/// and 100 is [`NARROW_BELOW`](crate::tui::app::NARROW_BELOW), the wide
+/// layout's own lower bound, so this is the screen the user leaves open all day
+/// showing a mid-word splice. The narrow layout reached it below about 67.
+///
+/// So the scope is dropped first and the state after it: "Keeping up" beside
+/// the mark is still `1i`'s "one mark, one word", while a count with no state
+/// is a number nobody asked about. The keys are what a hint promises, and a
+/// promise half-drawn is worse than one that fits.
 pub fn health_rule(
     grid: &mut Grid<'_>,
     margins: Margins,
@@ -173,9 +243,28 @@ pub fn health_rule(
     } else {
         (marks::HEALTH_BEHIND, Role::Furniture)
     };
+    keys_rule(grid, margins, row, keys);
+
+    // What is left of the rule once the keys and the gap have taken their cells.
+    let room = margins
+        .right_edge(grid.width())
+        .saturating_sub(width_of(keys))
+        .saturating_sub(RULE_GAP)
+        .saturating_sub(margins.left);
+    // The mark and the space after it come before any word, so a rule with room
+    // for neither draws nothing rather than a bare tick against the keys.
+    let Some(for_words) = room.checked_sub(MARK_CELLS) else {
+        return;
+    };
     // Joined, for the reason `brand` joins: a live workspace with no scope yet
     // must not draw the bullet that would have separated it from the state.
-    let words = super::joined(&[&health.state, scope], separator);
+    let both = super::joined(&[&health.state, scope], separator);
+    let words = [both.as_str(), health.state.as_str(), ""]
+        .into_iter()
+        .find(|form| width_of(form) <= for_words)
+        // Unreachable — the empty form fits any width — but `find` cannot know
+        // that, and an `expect` here would be a panic on a drawing path.
+        .unwrap_or("");
     grid.run(
         margins.left,
         row,
@@ -184,8 +273,10 @@ pub fn health_rule(
             Span::styled(format!(" {words}"), Role::Furniture.style()),
         ],
     );
-    keys_rule(grid, margins, row, keys);
 }
+
+/// Cells the health mark and the space after it take, before a word of state.
+const MARK_CELLS: u16 = 2;
 
 /// Draw a right-aligned key hint on `row`.
 pub fn keys_rule(grid: &mut Grid<'_>, margins: Margins, row: u16, keys: &str) {
@@ -362,6 +453,100 @@ mod tests {
             title(grid, Margins::NARROW, "Thu 27 Aug", View::Today);
         });
         assert!(row_text(&buf, 0).starts_with(" Mooshik"));
+    }
+
+    /// A title rule with no room for both runs drops the subject and keeps the
+    /// brand and the nav whole.
+    ///
+    /// The two used to be written with nothing between them, so the week screen
+    /// at 40 columns drew `  Mooshik  ·  Your wToday   The weekgust` and at 60
+    /// they abutted with no space. The brand names the app and the nav says which
+    /// view is showing; the subject is the one of the three that repeats
+    /// something the screen already shows.
+    #[test]
+    fn a_narrow_title_rule_drops_the_subject_rather_than_splicing_it() {
+        let nav = format!(
+            "{}{}{}",
+            text::get("tui.nav_today"),
+            text::get("tui.nav_gap"),
+            text::get("tui.nav_week")
+        );
+        for width in [40u16, 50, 60, 70] {
+            let buf = drawn(width, 1, |grid| {
+                title(
+                    grid,
+                    Margins::WIDE,
+                    "Your week  ·  21-27 August",
+                    View::Week,
+                );
+            });
+            let row = row_text(&buf, 0);
+            assert!(row.contains("Mooshik"), "the brand was lost at {width}");
+            let at = row
+                .find(&nav)
+                .unwrap_or_else(|| panic!("the nav was overwritten at {width}: {row:?}"));
+            assert_eq!(
+                row[..at].chars().next_back(),
+                Some(' '),
+                "the two runs abut at {width}: {row:?}"
+            );
+        }
+        // And where there is room, the subject is there in full.
+        let buf = drawn(120, 1, |grid| {
+            title(
+                grid,
+                Margins::WIDE,
+                "Your week  ·  21-27 August",
+                View::Week,
+            );
+        });
+        assert!(row_text(&buf, 0).contains("Your week  ·  21-27 August"));
+    }
+
+    /// A bottom rule with no room for both runs drops the scope, then the state,
+    /// and never writes either into the keys.
+    ///
+    /// With `demo.toml`'s scope the left run ends at column 59 and the hint
+    /// starts at `width - 49`, so every terminal from 100 to 108 columns drew
+    /// `…back to 21 AugusTab panel · …`. 100 is the wide layout's own lower
+    /// bound, so this was the screen the user leaves open all day.
+    #[test]
+    fn a_narrow_bottom_rule_drops_the_scope_rather_than_splicing_it() {
+        let health = Health {
+            state: "Keeping up".to_owned(),
+            scope: "214 things remembered, back to 21 August".to_owned(),
+            short_scope: "214 remembered".to_owned(),
+            well: true,
+        };
+        let keys = "Tab panel · J/K a thread · ^2 week · Esc leave";
+        for width in [70u16, 90, 100, 104, 108, 109, 120] {
+            let buf = drawn(width, 1, |grid| {
+                health_rule(grid, Margins::WIDE, 0, &health, &health.scope, keys);
+            });
+            let row = row_text(&buf, 0);
+            let at = row
+                .find(keys)
+                .unwrap_or_else(|| panic!("the keys were overwritten at {width}: {row:?}"));
+            assert_eq!(
+                row[..at].chars().next_back(),
+                Some(' '),
+                "the two runs abut at {width}: {row:?}"
+            );
+            assert!(row.contains('✓'), "the mark was lost at {width}: {row:?}");
+            // The state survives wherever the mark does; the scope is what goes.
+            assert!(row.contains("Keeping up"), "{row:?}");
+        }
+        // At the design's width the whole scope is there — `1a` draws exactly it.
+        let buf = drawn(120, 1, |grid| {
+            health_rule(grid, Margins::WIDE, 0, &health, &health.scope, keys);
+        });
+        assert!(row_text(&buf, 0).contains("back to 21 August"));
+        // At 100 it is not, and nothing of it is spliced into the keys either.
+        let buf = drawn(100, 1, |grid| {
+            health_rule(grid, Margins::WIDE, 0, &health, &health.scope, keys);
+        });
+        let row = row_text(&buf, 0);
+        assert!(!row.contains("214"), "{row:?}");
     }
 
     /// A grid too narrow for a right-aligned run clips it at the left edge

@@ -23,7 +23,7 @@ use crate::{
         model::{Day, Entry, Thread, Tone, Trickle},
         theme::{Role, Strength},
         widget::{marks, Kind, Panel},
-        wrap::wrap,
+        wrap::{ellipsised, wrap},
     },
 };
 
@@ -235,16 +235,50 @@ pub fn leans_on(grid: &mut Grid<'_>, thread: &Thread, at: Place) {
     if at >= height {
         return;
     }
-    // Spelled and capitalised, because `1d` writes " Eight things lean on it:".
-    let header = text::get("tui.leans.header")
-        .replace("{Count}", &super::spelled_leading(thread.leaned_on.len()));
-    inner.put(LEANING_INDENT, at, &header, Role::Furniture.style());
+    inner.put(
+        LEANING_INDENT,
+        at,
+        &leans_header(thread.leaned_on.len()),
+        Role::Furniture.style(),
+    );
+    // Ellipsised rather than clipped, the way `narrow`'s thread line is. These
+    // are names of other notes and they can be as long as anything the user
+    // wrote: `1d`'s own "The 40ms fairness quantum assumes writers wait" is 45
+    // characters, and `Grid::lines` cut it at the panel's edge with no mark, so
+    // a 45-column terminal read "The 40ms fairness quantum assum" as if that
+    // were the whole name.
+    //
+    // The list sits at its own indent, not at `THREAD_TEXT`, so it has its own
+    // room: the panel's shared margin is enough, because no list item in `1d`
+    // comes near the rule and the ellipsis is what handles the ones that would.
+    let leaning_width = inner
+        .width()
+        .saturating_sub(LEANING_INDENT)
+        .saturating_sub(RIGHT_MARGIN);
+    let leaning: Vec<String> = thread
+        .leaned_on
+        .iter()
+        .map(|name| ellipsised(name, leaning_width))
+        .collect();
     inner.lines(
         LEANING_INDENT,
         at.saturating_add(1),
-        &thread.leaned_on,
+        &leaning,
         Role::Fading.style(),
     );
+}
+
+/// The generated header over a caution's dependency list.
+///
+/// Spelled and capitalised, because `1d` writes " Eight things lean on it:" —
+/// and two keys, because English inflects the noun. One dependent is ordinary
+/// data, so the single form is reached without anything unusual happening;
+/// `en.toml` says the rest.
+fn leans_header(count: usize) -> String {
+    if count == 1 {
+        return text::get("tui.leans.header_one").to_owned();
+    }
+    text::get("tui.leans.header").replace("{Count}", &super::spelled_leading(count))
 }
 
 /// Draw "Just remembered": what Mooshik has picked up, freshest first.

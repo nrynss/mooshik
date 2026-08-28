@@ -12,13 +12,23 @@
 //! | [`grid`]   | absolute character placement in the design's coordinates  |
 //! | [`wrap`]   | word wrapping, because prose renders at three widths      |
 //! | [`widget`] | the frame component and the strength notations            |
-//! | [`screen`] | one module per artboard                                   |
+//! | [`screen`] | one module per ported artboard                            |
 //! | [`app`]    | what is showing, and what a key does to it                |
 //! | [`input`]  | keys to actions — only the bindings the artboards print   |
 //!
+//! **Six of the nine artboards are ported.** `1a`, `1b`, `1c`, `1d`, `1h` and
+//! `1i` — the companion surface itself and the palette that governs it. `1e`
+//! (first run), `1f` (changing the database) and `1g` (the same field edited
+//! without a warning) are deliberately out of scope for M11: they are settings
+//! and lifecycle screens rather than the pane the user leaves open, they answer
+//! to configuration this milestone does not touch, and every capability behind
+//! them is already reachable from the CLI. [`theme::Role::Danger`] and
+//! [`widget::Kind::Danger`] are kept for `1f`'s two red uses, unspent and
+//! guarded by tests, so the palette rule survives the gap.
+//!
 //! **What is wired, and what is not.** The render and interaction layers are
-//! complete: every artboard draws from [`model::Workspace`], and `mooshik tui
-//! --demo` shows the ported ones with the design's own content — `--demo` is
+//! complete for those six: each draws from [`model::Workspace`], and `mooshik
+//! tui --demo` shows them with the design's own content — `--demo` is
 //! `1a`, `--demo recall` adds `1c`'s quoted words and `--demo caution` adds
 //! `1d`'s one careful sentence, because those two artboards are states of the
 //! conversation and there is no other way to reach them until the chat loop
@@ -116,6 +126,7 @@ impl Scene {
 /// three artboards, and duplicating them would mean three files to keep in
 /// agreement about a day that only differs in what was said.
 #[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Overlay {
     /// The clock in the title rule, which moves on between artboards — `1a` is
     /// 14:22, `1c` 14:31, `1d` 15:03.
@@ -264,7 +275,7 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, workspace: Workspace) -> 
         // next draw reads `frame.area()` and the screens derive their whole
         // layout from it, which is what the grid's clipping is for.
         if let Event::Key(key) = event::read()? {
-            let action = input::action(key, app.is_typing());
+            let action = input::action(key, app.mode());
             app.apply(action);
         }
     }
@@ -293,6 +304,33 @@ mod tests {
         let workspace = demo(Scene::Today);
         assert_eq!(workspace.person, "Neom");
         assert_eq!(workspace.now.time, "14:22");
+    }
+
+    /// A mistyped key in a fixture is an error, not a silently dropped field.
+    ///
+    /// `demo*.toml` is what the layout tests assert the artboards against, and
+    /// with `#[serde(default)]` alone a `weathr` on a week day parsed fine, left
+    /// that column with no weather, and said nothing about it. Both the top
+    /// level and the nested tables are checked, because that is where the
+    /// fixture's bulk is.
+    #[test]
+    fn a_mistyped_fixture_key_is_refused() {
+        for source in [
+            "persn = \"Neom\"",
+            "[now]\nlong_dat = \"Thursday\"",
+            "[[week.days]]\nweathr = \"Rain, 15°\"",
+            "[[threads]]\nsummry = \"The 512 cap\"",
+        ] {
+            assert!(
+                toml::from_str::<Workspace>(source).is_err(),
+                "{source:?} parsed as a Workspace"
+            );
+        }
+        // And an overlay's own keys are just as strict.
+        assert!(toml::from_str::<Overlay>("tme = \"15:03\"\nturns = []").is_err());
+        // The correctly spelled versions still parse, so this is about names and
+        // not about strictness in general.
+        assert!(toml::from_str::<Workspace>("person = \"Neom\"").is_ok());
     }
 
     /// The demo carries the artboards' own content, at the shape the screens

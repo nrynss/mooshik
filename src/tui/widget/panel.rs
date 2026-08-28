@@ -204,8 +204,9 @@ impl<'a> Panel<'a> {
         // bare ` What keeps coming back ` floated on the blank row above the bottom
         // rule with no frame around it. At `h = 1` the title and the badge shared
         // one row and the badge won. And at `w = 2` the title was written from the
-        // inset — past the frame's own right rule and into whatever panel sat
-        // beside it, because `grid.put` clips to the grid and not to the frame.
+        // inset, past the frame's own right rule and into whatever panel sat
+        // beside it — the general form of which is [`Panel::punch`]'s job now, and
+        // this guard is only the "no interior at all" case it leaves behind.
         if w < 3 || h < 3 {
             return grid.sub(col, row, 0, 0);
         }
@@ -222,17 +223,14 @@ impl<'a> Panel<'a> {
         // which reads as a rendering fault. The week screen's detail pane draws
         // exactly this when no day is selected.
         if !self.title.is_empty() {
-            grid.put(
-                col.saturating_add(Self::INSET),
-                row,
-                &format!(" {} ", self.title),
-                title_style,
-            );
+            self.punch(grid, col, row, w, &format!(" {} ", self.title), title_style);
         }
         if let Some(badge) = self.badge {
-            grid.put(
-                col.saturating_add(Self::INSET),
+            self.punch(
+                grid,
+                col,
                 row.saturating_add(h.saturating_sub(1)),
+                w,
                 &format!(" {badge} "),
                 self.kind.badge().on_ground(),
             );
@@ -246,6 +244,43 @@ impl<'a> Panel<'a> {
             h.saturating_sub(2),
         )
     }
+
+    /// Punch `text` through the rule on `row`, at the inset, **clipped to the
+    /// frame** rather than to the grid.
+    ///
+    /// The clip is the whole point, and it is structural: the text is written
+    /// into a sub-grid that is exactly the cells between the inset and the
+    /// frame's own right rule, so there is no arithmetic at the call site that
+    /// could be got wrong and no way for a long title to reach past it.
+    ///
+    /// It used to be a bare `grid.put`, which clips to the *grid* and not to the
+    /// frame — so a title or badge longer than `w - 4` overwrote the panel's own
+    /// right rule and carried on into whatever sat beside it. That is reachable
+    /// on the demo path: `--demo caution` at 100 to 103 columns lost the card's
+    /// bottom-right corner to a 48-character badge, and the week screen — which
+    /// has no narrow variant — lost the detail pane's `┐` at 60 columns and had
+    /// the thread panel's title spill out of it at 40. `1i` makes the frame
+    /// load-bearing ("A light frame is a panel. Accent frame means focused"), so
+    /// a missing corner is a broken signal rather than a cosmetic loss, and a
+    /// clipped name is the cheaper of the two.
+    ///
+    /// The room is `w - (INSET + 1)`: the inset takes two cells off the left and
+    /// the right rule keeps the last one. At `w = 3` that is zero cells and
+    /// nothing is written, which is right — a three-wide frame has one interior
+    /// column and no room to name itself.
+    fn punch(
+        &self,
+        grid: &mut Grid<'_>,
+        col: u16,
+        row: u16,
+        w: u16,
+        text: &str,
+        style: ratatui::style::Style,
+    ) {
+        let room = w.saturating_sub(Self::INSET.saturating_add(1));
+        grid.sub(col.saturating_add(Self::INSET), row, room, 1)
+            .put(0, 0, text, style);
+    }
 }
 
 #[cfg(test)]
@@ -255,13 +290,65 @@ mod tests {
 
     use crate::tui::theme::Role;
 
-    const ALL_KINDS: [Kind; 5] = [
-        Kind::Idle,
-        Kind::Focused,
-        Kind::Caution,
-        Kind::Returned,
-        Kind::Danger,
-    ];
+    /// How many variants [`Kind`] has, pinned so the walk below can be checked
+    /// against it. Bumping this is the second half of adding a variant; the
+    /// first half is the compile error in [`after`].
+    const KINDS: usize = 5;
+
+    /// Every [`Kind`], walked through an exhaustive `match`.
+    ///
+    /// This used to be a hand-written `[Kind; 5]`, and three of `1i`'s frame
+    /// rules iterate it — `only_danger_is_double_ruled`, `only_danger_is_red`
+    /// and the badge test. A sixth variant simply not added to that array would
+    /// have escaped all three without failing anything, which is a rule the
+    /// tests claim to hold and quietly would not.
+    ///
+    /// [`after`] is exhaustive, so `Kind::Whatever` added tomorrow does not
+    /// compile until somebody says where it sits in the walk, and sitting
+    /// anywhere in the walk is what puts it in this list. What the compiler
+    /// still cannot force is that the new arm is *reachable* — an arm returning
+    /// `None` beside `Danger`'s leaves the variant off the end — so
+    /// `the_walk_reaches_every_kind` pins the count as well, and the two
+    /// together mean a variant can only escape by two deliberate edits against
+    /// a comment that says not to.
+    fn all_kinds() -> Vec<Kind> {
+        /// The next kind after this one, or `None` at the end of the walk.
+        const fn after(kind: Kind) -> Option<Kind> {
+            match kind {
+                Kind::Idle => Some(Kind::Focused),
+                Kind::Focused => Some(Kind::Caution),
+                Kind::Caution => Some(Kind::Returned),
+                Kind::Returned => Some(Kind::Danger),
+                Kind::Danger => None,
+            }
+        }
+        let mut kinds = vec![Kind::Idle];
+        // Stopping on a repeat rather than trusting the arms: a walk written
+        // into a cycle would otherwise spin here, and the test below is what
+        // reports it as a short list.
+        while let Some(next) = after(*kinds.last().expect("the walk starts at Idle")) {
+            if kinds.contains(&next) {
+                break;
+            }
+            kinds.push(next);
+        }
+        kinds
+    }
+
+    /// The walk visits every kind exactly once, so the three rules that iterate
+    /// it are iterating all of them.
+    #[test]
+    fn the_walk_reaches_every_kind() {
+        let kinds = all_kinds();
+        assert_eq!(
+            kinds.len(),
+            KINDS,
+            "a variant is off the end of the walk, or `KINDS` was not bumped"
+        );
+        for (index, kind) in kinds.iter().enumerate() {
+            assert!(!kinds[..index].contains(kind), "{kind:?} is walked twice");
+        }
+    }
 
     fn row_text(buf: &Buffer, row: u16) -> String {
         (0..buf.area.width)
@@ -273,7 +360,7 @@ mod tests {
     /// irreversible action and nothing else can draw it.
     #[test]
     fn only_danger_is_double_ruled() {
-        for kind in ALL_KINDS {
+        for kind in all_kinds() {
             assert_eq!(
                 kind.is_double(),
                 kind == Kind::Danger,
@@ -286,7 +373,7 @@ mod tests {
     /// it — a caution is yellow, and a focused panel is the accent.
     #[test]
     fn only_danger_is_red() {
-        for kind in ALL_KINDS {
+        for kind in all_kinds() {
             let is_red = kind.border() == Role::Danger;
             assert_eq!(
                 is_red,
@@ -339,12 +426,38 @@ mod tests {
         assert_eq!(row_text(&buf, 2), "└─ three times ────┘    ");
     }
 
+    /// A title or a badge longer than the frame is clipped at the frame, not at
+    /// the grid — so the panel keeps its right rule and its corners, and nothing
+    /// reaches the panel beside it.
+    ///
+    /// This is the fault [`Panel::punch`] exists for. `--demo caution` at 100 to
+    /// 103 columns lost the recall card's bottom-right corner to a 48-character
+    /// badge, and the week screen lost the detail pane's `┐` at 60 columns. `1i`
+    /// makes the frame the signal — "A light frame is a panel. Accent frame means
+    /// focused" — so a missing corner says something false about focus.
+    #[test]
+    fn a_long_title_or_badge_is_clipped_at_the_frame() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 4));
+        let area = buf.area;
+        let mut grid = crate::tui::grid::Grid::new(&mut buf, area);
+        Panel::new("A title far longer than this frame", Kind::Idle)
+            .badge("and a badge that is longer still")
+            .draw(&mut grid, Place::new(0, 0, 14, 3));
+        // The frame is whole at both ends of both rules, and the cells past it
+        // are untouched.
+        assert_eq!(row_text(&buf, 0), "┌─ A title fa┐                ");
+        assert_eq!(row_text(&buf, 2), "└─ and a badg┘                ");
+        // The right rule of the interior row is intact too, which is what the
+        // panel beside this one would otherwise have lost.
+        assert_eq!(buf[(13, 1)].symbol(), "│");
+    }
+
     /// A caution's badge is furniture, not yellow — `1d` draws its badge div in
     /// `var(--d)` while its title and rule are yellow. Every other frame colours
     /// the badge the same as its title, `1c`'s blue recall badge included.
     #[test]
     fn only_a_cautions_badge_leaves_its_frames_colour() {
-        for kind in ALL_KINDS {
+        for kind in all_kinds() {
             let expected = if kind == Kind::Caution {
                 Role::Furniture
             } else {

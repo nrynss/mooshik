@@ -165,6 +165,196 @@ fn the_bottom_rule_is_always_the_last_row() {
     }
 }
 
+/// Every scene worth sweeping a width range over: the three screens plus the two
+/// conversation states, which carry the widest strings in the app — `1d`'s badge
+/// is 48 characters of reassurance punched through a card's bottom rule.
+fn scenes() -> Vec<(&'static str, App)> {
+    let mut all = apps();
+    for (name, scene) in [
+        ("recall", crate::tui::Scene::Recall),
+        ("caution", crate::tui::Scene::Caution),
+    ] {
+        let mut app = App::new(crate::tui::demo(scene));
+        app.view = View::Today;
+        all.push((name, app));
+    }
+    all
+}
+
+fn row_text(buf: &Buffer, row: u16) -> String {
+    (0..buf.area.width)
+        .map(|col| buf[(col, row)].symbol().chars().next().unwrap_or(' '))
+        .collect()
+}
+
+/// Every width from a small tmux split to a wide one. Stepped by one, because
+/// the faults this range exists for are off-by-one collisions that appear over a
+/// span of eight or nine columns and are invisible at the round numbers.
+const WIDTHS: std::ops::RangeInclusive<u16> = 40..=200;
+
+/// **No rule ever writes two of its runs into the same cells.**
+///
+/// Every rule in the app is two runs written independently from opposite ends,
+/// and neither knows how wide the other is. Round two found this on the week's
+/// bottom rule and clamped it there; the identical fault was still on the Today
+/// and narrow bottom rules — `✓ Keeping up  ·  214 things remembered, back to 21
+/// AugusTab panel · …` at every width from 100 to 108, which is the wide
+/// layout's own lower bound — and on the title rule of every screen, where the
+/// week at 40 drew `  Mooshik  ·  Your wToday   The weekgust`. So it is checked
+/// here, on every screen at once, rather than on the screen it happened to be
+/// noticed on.
+///
+/// The check is that the run which must survive is present **whole** and has a
+/// space or the row's edge on either side of it. That is exactly the invariant:
+/// a splice either destroys the run or leaves it touching the other one, and
+/// both are caught. Widths at which the run genuinely cannot fit are skipped —
+/// there the rule is a clipped run and not two colliding ones.
+#[test]
+fn no_rule_writes_two_runs_into_the_same_cells() {
+    use crate::tui::{app::NARROW_BELOW, screen::chrome::Margins};
+
+    for (name, mut app) in scenes() {
+        for width in WIDTHS {
+            let narrow = app.view != View::Week && width < NARROW_BELOW;
+            let margins = if narrow {
+                Margins::NARROW
+            } else {
+                Margins::WIDE
+            };
+            let (nav, hint) = if narrow {
+                (
+                    format!(
+                        "{}{}{}",
+                        crate::text::get("tui.nav_today"),
+                        crate::text::get("tui.narrow.nav_gap"),
+                        crate::text::get("tui.narrow.nav_week")
+                    ),
+                    crate::text::get("tui.hint_narrow"),
+                )
+            } else {
+                (
+                    format!(
+                        "{}{}{}",
+                        crate::text::get("tui.nav_today"),
+                        crate::text::get("tui.nav_gap"),
+                        crate::text::get("tui.nav_week")
+                    ),
+                    if app.view == View::Week {
+                        crate::text::get("tui.hint_week")
+                    } else {
+                        crate::text::get("tui.hint_today")
+                    },
+                )
+            };
+            for height in [24u16, 40] {
+                let buf = draw(&mut app, width, height);
+                whole_and_apart(&buf, 0, &nav, margins, &format!("{name} nav at {width}"));
+                whole_and_apart(
+                    &buf,
+                    height - 1,
+                    hint,
+                    margins,
+                    &format!("{name} hint at {width}"),
+                );
+            }
+        }
+    }
+}
+
+/// Assert `run` appears whole on `row` with nothing but space beside it.
+///
+/// Skipped where the rule has no room for it: below that the run is legitimately
+/// clipped, and a clipped run is not the fault this is looking for.
+fn whole_and_apart(
+    buf: &Buffer,
+    row: u16,
+    run: &str,
+    margins: crate::tui::screen::chrome::Margins,
+    what: &str,
+) {
+    let width = buf.area.width;
+    let room = margins
+        .right_edge(width)
+        .saturating_sub(margins.left)
+        .saturating_sub(crate::tui::screen::chrome::RULE_GAP);
+    if u16::try_from(run.chars().count()).unwrap_or(u16::MAX) > room {
+        return;
+    }
+    let line = row_text(buf, row);
+    let at = line
+        .find(run)
+        .unwrap_or_else(|| panic!("{what}: the run was overwritten — {line:?}"));
+    let before = line[..at].chars().next_back();
+    assert!(
+        before.is_none_or(|c| c == ' '),
+        "{what}: another run abuts it — {line:?}"
+    );
+    let after = line[at + run.len()..].chars().next();
+    assert!(
+        after.is_none_or(|c| c == ' '),
+        "{what}: another run abuts it — {line:?}"
+    );
+}
+
+/// **No panel writes outside its own frame.**
+///
+/// A panel's title and badge are punched through its own rules at an inset, and
+/// they used to be written straight onto the grid — which clips at the grid and
+/// not at the frame. So a title or badge longer than `w - 4` overwrote the
+/// panel's right rule and carried on into whatever sat beside it: `--demo
+/// caution` lost the recall card's bottom-right corner between 100 and 103
+/// columns, the week's detail pane lost its `┐` at 60, and the week's thread
+/// panel spilled out of itself at 40. `1i` makes the frame the signal — "A light
+/// frame is a panel. Accent frame means focused" — so a missing corner says
+/// something false about focus rather than merely looking untidy.
+///
+/// Checked as corner balance per row: on any row, every `┌`/`└` is closed by a
+/// `┐`/`┘` before the next one opens, and none is left open at the end. A title
+/// that ate its own right rule takes that corner with it, and a badge that
+/// spilled into the panel beside it opens a second frame before the first has
+/// closed.
+#[test]
+fn no_panel_writes_over_its_own_frame() {
+    for (name, mut app) in scenes() {
+        for width in WIDTHS {
+            for height in [12u16, 24, 40] {
+                let buf = draw(&mut app, width, height);
+                for row in 0..height {
+                    let mut open = false;
+                    for col in 0..width {
+                        match buf[(col, row)].symbol() {
+                            "┌" | "└" => {
+                                assert!(
+                                    !open,
+                                    "{name} at {width}x{height} row {row}: a frame opens at \
+                                     column {col} while another is still open — {:?}",
+                                    row_text(&buf, row)
+                                );
+                                open = true;
+                            }
+                            "┐" | "┘" => {
+                                assert!(
+                                    open,
+                                    "{name} at {width}x{height} row {row}: a frame closes at \
+                                     column {col} with none open — {:?}",
+                                    row_text(&buf, row)
+                                );
+                                open = false;
+                            }
+                            _ => {}
+                        }
+                    }
+                    assert!(
+                        !open,
+                        "{name} at {width}x{height} row {row}: a frame never closes — {:?}",
+                        row_text(&buf, row)
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Nothing scrolls sideways: no screen writes a single cell outside the grid it
 /// was handed, at any size — which is what makes a 120x40 layout safe to draw in
 /// an 80-column terminal.

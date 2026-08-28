@@ -1,4 +1,4 @@
-//! The artboards, one module each, and the geometry they share.
+//! The ported artboards, one module each, and the geometry they share.
 //!
 //! | Module               | Artboards  | What it draws                        |
 //! | -------------------- | ---------- | ------------------------------------ |
@@ -8,6 +8,10 @@
 //! | [`today`]            | 1a, 1c, 1d | the default screen                   |
 //! | [`week`]             | 1b         | seven days and the threads across    |
 //! | [`narrow`]           | 1h         | the same day at 80x24                |
+//!
+//! `1e`, `1f` and `1g` have no module because they are not ported — they are
+//! settings and lifecycle screens rather than the companion surface, and
+//! [`crate::tui`]'s header says why.
 //!
 //! `1c` and `1d` have no module of their own on purpose. They are not modes: the
 //! recall card and the caution are [`Turn`](super::model::Turn) variants inside
@@ -112,19 +116,35 @@ use chrome::Margins;
 /// **The margins are per panel, and the artboards say which.** They are
 /// recoverable from where each artboard's lines break, and they do not agree:
 /// `1a`'s conversation leaves two, `1a`'s thread panel four, `1b`'s thread panel
-/// **none at all**, and `1b`'s detail notes five. This used to be one constant
-/// used everywhere, and three artboard lines reflowed as a result — `1a`'s
-/// `Every day this week · eight / other notes lean on it` broke after `other`,
-/// `The Quillstone cache lives on the / NAS` after `the`, and `1b`'s `Three days
-/// · Monday, Tuesday, / Thursday` is 38 characters with 39 available and was cut
-/// to 37. So this is the *default*, and the three panels that differ name their
-/// own margin beside the artboard line that fixes it: `aside::THREAD_MARGIN`,
-/// `week::THREADS_MARGIN` and `week::NOTES_MARGIN`.
+/// **none at all**, `1b`'s detail log four and its detail notes five. This used
+/// to be one constant used everywhere, and four artboard lines reflowed as a
+/// result — `1a`'s `Every day this week · eight / other notes lean on it` broke
+/// after `other`, `The Quillstone cache lives on the / NAS` after `the`, `1b`'s
+/// `Three days · Monday, Tuesday, / Thursday` is 38 characters with 39 available
+/// and was cut to 37, and `1b`'s `09:42  The ring overflowed in / production` is
+/// 33 with 34 available and came out on one line. So this is the *default*, and
+/// the four panels that differ name their own margin beside the artboard line
+/// that fixes it: `aside::THREAD_MARGIN`, `week::THREADS_MARGIN`,
+/// `week::LOG_MARGIN` and `week::NOTES_MARGIN`.
 ///
 /// Two is not slack where it is right: `1a`'s conversation has 61 columns
 /// available for a longest line of 59 — `writers block, we don't drop. Shipping
 /// the doc after lunch.` — and wrapping to the full width put that line's final
 /// stop against the rule, which reads as text running into the frame.
+///
+/// **`1b`'s day columns contradict themselves, and this is the side that was
+/// taken.** Every column there is 17 cells, so 15 of interior. Tuesday's
+/// "Cobalt Lantern retries, jitter" breaks as `Cobalt Lantern / retries,
+/// jitter`, and `retries, jitter` is 15 characters — the whole interior, margin
+/// zero. Wednesday's "Mum called mid-incident — not called back" breaks as `Mum
+/// called / mid-incident / — not called / back`, which needs a width of 13,
+/// because at 15 it comes out in three lines as `mid-incident —` and `not called
+/// back`. No single margin reproduces both, and the artboard is the only
+/// authority there is. Two is chosen — Wednesday's — because it keeps prose off
+/// the rule everywhere, which is the rule this constant exists to hold; the
+/// cost is that Tuesday renders in four lines where `1b` gives it two. A margin
+/// of zero would reproduce Tuesday and put Wednesday's dash against the frame on
+/// the screen's hardest day.
 pub const RIGHT_MARGIN: u16 = 2;
 
 /// Join `parts` with `separator`, skipping the empty ones.

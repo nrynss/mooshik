@@ -33,7 +33,7 @@ use crate::{
         model::{Thread, Trickle, Workspace},
         theme::Role,
         widget::marks,
-        wrap::wrap,
+        wrap::ellipsised,
     },
 };
 
@@ -67,8 +67,17 @@ pub fn draw(grid: &mut Grid<'_>, workspace: &Workspace, focus: Focus) {
         &[&workspace.now.short_date, &workspace.now.time],
         text::get("tui.separator"),
     );
-    chrome::brand(grid, margins, &subject);
-    chrome::nav(grid, margins, text::get("tui.narrow.nav_gap"), &nav_items());
+    // The brand is clamped against the nav's own start, so the two runs of this
+    // rule cannot splice into each other on a terminal narrower than both.
+    let gap = text::get("tui.narrow.nav_gap");
+    let items = nav_items();
+    chrome::brand(
+        grid,
+        margins,
+        &subject,
+        chrome::nav_start(width, margins, gap, &items),
+    );
+    chrome::nav(grid, margins, gap, &items);
 
     let status_row = height.saturating_sub(1);
     let trickle_row = height.saturating_sub(3);
@@ -171,13 +180,15 @@ fn thread_line(grid: &mut Grid<'_>, threads: &[Thread], margins: chrome::Margins
         )
     };
     // An ellipsis when the sentence was cut, so a row ending "…overflow blocks,
-    // never" reads as truncation rather than as an unfinished thought.
-    let mut lines = wrap(&sentence, available.saturating_sub(1)).into_iter();
-    if let Some(line) = lines.next() {
-        let clipped = lines.next().is_some();
-        let shown = if clipped { format!("{line}…") } else { line };
-        grid.put(text_col, row, &shown, Role::Body.style());
-    }
+    // never" reads as truncation rather than as an unfinished thought. Shared
+    // with the two dependency lists, which had the same fault and no mark; see
+    // `wrap::ellipsised`.
+    grid.put(
+        text_col,
+        row,
+        &ellipsised(&sentence, available),
+        Role::Body.style(),
+    );
     if !hint.is_empty() {
         grid.put_ending_at(right, row, &hint, Role::Furniture.style());
     }
@@ -443,6 +454,26 @@ mod tests {
         let row = row_text(&buf, 23);
         assert!(row.contains("214 remembered"), "{row:?}");
         assert!(!row.contains("back to 21 August"));
+    }
+
+    /// This rule promises no key that does nothing here.
+    ///
+    /// It offered `Tab panel`, and `1h` has one focus — the conversation and the
+    /// composer share it, so `Tab` deliberately moves nothing and
+    /// `tab_on_the_narrow_layout_keeps_the_conversation_focused` asserts five
+    /// presses move nothing. A key that is bound and inert is the same broken
+    /// promise as one that is not bound at all, which is the rule that stripped
+    /// `Alt-Enter` from the composer and `? keys` from the nav. `J/K a thread` is
+    /// absent for the same reason: this screen draws no thread cursor.
+    #[test]
+    fn the_narrow_rule_promises_no_key_that_does_nothing_here() {
+        let buf = drawn(80, 24, &workspace());
+        let row = row_text(&buf, 23);
+        assert!(!row.contains("Tab"), "{row:?}");
+        assert!(!row.contains("J/K"), "{row:?}");
+        // What it does promise is bound and does something.
+        assert!(row.contains("^2 week"), "{row:?}");
+        assert!(row.contains("Esc leave"), "{row:?}");
     }
 
     /// The nav abbreviates rather than wrapping, and Today is lit.

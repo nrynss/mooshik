@@ -102,8 +102,17 @@ impl Tail {
     /// Read the conversation's last turn.
     ///
     /// Only the *last* turn counts: a caution from an hour ago has been answered
-    /// and should not still be reshaping the screen, and `1d` shows the caution
-    /// as the most recent thing said.
+    /// and should not still be reshaping the screen.
+    ///
+    /// **This diverges from `1d`, deliberately.** The artboard draws two further
+    /// turns after the caution — "Keep it. I'll widen the ring instead." and
+    /// "Noted. Nothing changed." — and still shows "What leans on this" in the
+    /// middle panel, so on `1d` the caution is *not* the most recent thing said
+    /// and the panel has outlived it. The argument `1d` is making is about the
+    /// moment the caution stands, and a panel that keeps standing after the user
+    /// has answered is a modal in everything but name. So the screen reads the
+    /// tail, and `demo_caution.toml` stops at the caution to draw the artboard;
+    /// its own header says the same thing from the fixture's side.
     fn of(workspace: &Workspace) -> Self {
         match workspace.conversation.turns.last() {
             Some(Turn::Cautioned(_)) => Self::Cautioned,

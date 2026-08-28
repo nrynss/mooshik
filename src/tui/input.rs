@@ -31,16 +31,33 @@
 //! and it is why [`Action`] carries `Type(char)` rather than the app inspecting
 //! key events: the decision about what a letter means is made once, here, and
 //! the app only ever receives the resolved intent.
+//!
+//! **And why the mode is two facts rather than one.** `j`/`k` used to resolve to
+//! a cursor move from anywhere they were not a letter, so on the Today screen
+//! they moved the thread highlight from all four focus states while
+//! [`aside::threads`](super::screen::aside::threads) draws that highlight from
+//! exactly one of them. `hint_today` promises `J/K a thread`; in three of the
+//! four the keys did something the reader could not see, which is the same
+//! broken promise as an unbound hint, reached from the other end. So the mode
+//! carries whether the cursor is on screen as well as whether the draft is, and
+//! `j`/`k` are [`Action::Ignore`] where nothing would move visibly. The hint
+//! stays honest because `Tab panel` precedes it on the same rule.
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use super::app::Action;
+use super::app::{Action, Mode};
 
 /// Resolve `key` into an action.
 ///
-/// `typing` says whether keystrokes should reach the draft — see
-/// [`App::is_typing`](super::app::App::is_typing).
-pub fn action(key: KeyEvent, typing: bool) -> Action {
+/// `mode` is what the screen underneath makes of the keyboard — see
+/// [`Mode`](super::app::Mode). It carries two facts rather than one because two
+/// of the bindings are conditional: whether keystrokes reach the draft, and
+/// whether the panel that draws the thread cursor holds focus.
+pub fn action(key: KeyEvent, mode: Mode) -> Action {
+    let Mode {
+        typing,
+        thread_cursor,
+    } = mode;
     // Windows terminals report both press and release; acting on both would
     // double every keystroke.
     if key.kind == KeyEventKind::Release {
@@ -90,8 +107,15 @@ pub fn action(key: KeyEvent, typing: bool) -> Action {
 
         // A letter is a letter while typing, and a movement otherwise.
         KeyCode::Char(character) if typing => Action::Type(character),
-        KeyCode::Char('j') => Action::Next,
-        KeyCode::Char('k') => Action::Previous,
+        // `j`/`k` only where a cursor is drawn. They are the one binding whose
+        // effect is invisible from the wrong screen: the Today screen draws the
+        // thread cursor only on the focused panel, so from the other three focus
+        // states these keys moved a highlight nobody could see while the rule
+        // went on promising `J/K a thread`. The hint stays honest because `Tab
+        // panel` precedes it on that rule — the reader is told how to reach the
+        // panel the keys belong to.
+        KeyCode::Char('j') if thread_cursor => Action::Next,
+        KeyCode::Char('k') if thread_cursor => Action::Previous,
         KeyCode::Char('h') => Action::Left,
         KeyCode::Char('l') => Action::Right,
         KeyCode::Char('q') => Action::Quit,
@@ -112,14 +136,73 @@ mod tests {
         KeyEvent::new(code, modifiers)
     }
 
+    /// The three modes the app actually produces: typing into the draft, on a
+    /// screen that draws the thread cursor, and on one that draws neither.
+    fn typing() -> Mode {
+        Mode {
+            typing: true,
+            thread_cursor: false,
+        }
+    }
+
+    fn cursored() -> Mode {
+        Mode {
+            typing: false,
+            thread_cursor: true,
+        }
+    }
+
+    fn plain_mode() -> Mode {
+        Mode::default()
+    }
+
+    /// Every mode, for the bindings that must mean the same in all of them.
+    fn all_modes() -> [Mode; 3] {
+        [typing(), cursored(), plain_mode()]
+    }
+
     /// A letter is a letter while typing, and a movement when it is not.
     #[test]
     fn letters_are_modal() {
-        assert_eq!(action(plain(KeyCode::Char('j')), true), Action::Type('j'));
-        assert_eq!(action(plain(KeyCode::Char('j')), false), Action::Next);
-        assert_eq!(action(plain(KeyCode::Char('k')), false), Action::Previous);
-        assert_eq!(action(plain(KeyCode::Char('h')), false), Action::Left);
-        assert_eq!(action(plain(KeyCode::Char('l')), false), Action::Right);
+        assert_eq!(
+            action(plain(KeyCode::Char('j')), typing()),
+            Action::Type('j')
+        );
+        assert_eq!(action(plain(KeyCode::Char('j')), cursored()), Action::Next);
+        assert_eq!(
+            action(plain(KeyCode::Char('k')), cursored()),
+            Action::Previous
+        );
+        assert_eq!(action(plain(KeyCode::Char('h')), cursored()), Action::Left);
+        assert_eq!(action(plain(KeyCode::Char('l')), cursored()), Action::Right);
+    }
+
+    /// `j`/`k` move the thread cursor only where that cursor is drawn.
+    ///
+    /// `hint_today` promises `J/K a thread` in all four of the Today screen's
+    /// focus states, and `aside::threads` draws the highlight in exactly one of
+    /// them — so from the other three the keys moved something invisible. They
+    /// are refused there instead, and `Tab panel` on the same rule is how the
+    /// reader reaches the panel they belong to.
+    #[test]
+    fn the_thread_keys_only_move_a_cursor_that_is_drawn() {
+        assert_eq!(action(plain(KeyCode::Char('j')), cursored()), Action::Next);
+        assert_eq!(
+            action(plain(KeyCode::Char('k')), cursored()),
+            Action::Previous
+        );
+        for key in ['j', 'k'] {
+            assert_eq!(
+                action(plain(KeyCode::Char(key)), plain_mode()),
+                Action::Ignore,
+                "{key} moved a cursor nothing draws"
+            );
+        }
+        // The arrows are unconditional and stay so: they are the design's
+        // unambiguous pair, and `H`/`L` still move the week's day cursor from
+        // any screen the same way.
+        assert_eq!(action(plain(KeyCode::Down), plain_mode()), Action::Next);
+        assert_eq!(action(plain(KeyCode::Up), plain_mode()), Action::Previous);
     }
 
     /// Enter sends. `Alt-Enter` is bound to nothing: it pushed a `'\n'` the
@@ -127,12 +210,12 @@ mod tests {
     /// show — and the rule that advertised it no longer does either.
     #[test]
     fn enter_sends_and_alt_enter_is_unbound() {
-        assert_eq!(action(plain(KeyCode::Enter), true), Action::Send);
-        for typing in [true, false] {
+        assert_eq!(action(plain(KeyCode::Enter), typing()), Action::Send);
+        for mode in all_modes() {
             assert_eq!(
-                action(with(KeyCode::Enter, KeyModifiers::ALT), typing),
+                action(with(KeyCode::Enter, KeyModifiers::ALT), mode),
                 Action::Ignore,
-                "Alt-Enter is bound while typing={typing}"
+                "Alt-Enter is bound in {mode:?}"
             );
         }
     }
@@ -157,8 +240,8 @@ mod tests {
                 KeyModifiers::CONTROL,
                 KeyModifiers::SHIFT,
             ] {
-                for typing in [true, false] {
-                    if let Action::Type(character) = action(with(code, modifiers), typing) {
+                for mode in all_modes() {
+                    if let Action::Type(character) = action(with(code, modifiers), mode) {
                         assert!(
                             !character.is_control(),
                             "{code:?} with {modifiers:?} types {character:?}"
@@ -172,45 +255,45 @@ mod tests {
     /// A chord means the same thing mid-sentence as it does anywhere else.
     #[test]
     fn chords_survive_typing() {
-        for typing in [true, false] {
+        for mode in all_modes() {
             assert_eq!(
-                action(with(KeyCode::Char('2'), KeyModifiers::CONTROL), typing),
+                action(with(KeyCode::Char('2'), KeyModifiers::CONTROL), mode),
                 Action::ShowWeek
             );
             assert_eq!(
-                action(with(KeyCode::Char('1'), KeyModifiers::CONTROL), typing),
+                action(with(KeyCode::Char('1'), KeyModifiers::CONTROL), mode),
                 Action::ShowToday
             );
             assert_eq!(
-                action(with(KeyCode::Char('c'), KeyModifiers::CONTROL), typing),
+                action(with(KeyCode::Char('c'), KeyModifiers::CONTROL), mode),
                 Action::Quit
             );
         }
         // And a digit on its own is still a digit in the draft.
-        assert_eq!(action(plain(KeyCode::Char('2')), true), Action::Type('2'));
+        assert_eq!(
+            action(plain(KeyCode::Char('2')), typing()),
+            Action::Type('2')
+        );
     }
 
     /// Tab cycles panels from either mode — it is the design's own binding and
     /// there is no tab character in a draft.
     #[test]
     fn tab_cycles_from_either_mode() {
-        for typing in [true, false] {
-            assert_eq!(action(plain(KeyCode::Tab), typing), Action::NextPanel);
-            assert_eq!(
-                action(plain(KeyCode::BackTab), typing),
-                Action::PreviousPanel
-            );
+        for mode in all_modes() {
+            assert_eq!(action(plain(KeyCode::Tab), mode), Action::NextPanel);
+            assert_eq!(action(plain(KeyCode::BackTab), mode), Action::PreviousPanel);
         }
     }
 
     /// The arrows move the cursor whatever has focus.
     #[test]
     fn the_arrows_work_in_either_mode() {
-        for typing in [true, false] {
-            assert_eq!(action(plain(KeyCode::Down), typing), Action::Next);
-            assert_eq!(action(plain(KeyCode::Up), typing), Action::Previous);
-            assert_eq!(action(plain(KeyCode::Left), typing), Action::Left);
-            assert_eq!(action(plain(KeyCode::Right), typing), Action::Right);
+        for mode in all_modes() {
+            assert_eq!(action(plain(KeyCode::Down), mode), Action::Next);
+            assert_eq!(action(plain(KeyCode::Up), mode), Action::Previous);
+            assert_eq!(action(plain(KeyCode::Left), mode), Action::Left);
+            assert_eq!(action(plain(KeyCode::Right), mode), Action::Right);
         }
     }
 
@@ -218,15 +301,27 @@ mod tests {
     /// cannot silently delete something on a navigation screen.
     #[test]
     fn backspace_only_edits_the_draft() {
-        assert_eq!(action(plain(KeyCode::Backspace), true), Action::Backspace);
-        assert_eq!(action(plain(KeyCode::Backspace), false), Action::Ignore);
+        assert_eq!(
+            action(plain(KeyCode::Backspace), typing()),
+            Action::Backspace
+        );
+        assert_eq!(
+            action(plain(KeyCode::Backspace), plain_mode()),
+            Action::Ignore
+        );
     }
 
     /// `q` quits when it is not a letter being typed — and types when it is.
     #[test]
     fn q_quits_only_outside_the_draft() {
-        assert_eq!(action(plain(KeyCode::Char('q')), false), Action::Quit);
-        assert_eq!(action(plain(KeyCode::Char('q')), true), Action::Type('q'));
+        assert_eq!(
+            action(plain(KeyCode::Char('q')), plain_mode()),
+            Action::Quit
+        );
+        assert_eq!(
+            action(plain(KeyCode::Char('q')), typing()),
+            Action::Type('q')
+        );
     }
 
     /// A key release is ignored, so terminals that report both press and release
@@ -238,19 +333,19 @@ mod tests {
             KeyModifiers::NONE,
             KeyEventKind::Release,
         );
-        assert_eq!(action(release, true), Action::Ignore);
+        assert_eq!(action(release, typing()), Action::Ignore);
         let press =
             KeyEvent::new_with_kind(KeyCode::Char('a'), KeyModifiers::NONE, KeyEventKind::Press);
-        assert_eq!(action(press, true), Action::Type('a'));
+        assert_eq!(action(press, typing()), Action::Type('a'));
     }
 
     /// An unmapped key does nothing rather than falling through to something.
     #[test]
     fn unmapped_keys_do_nothing() {
-        assert_eq!(action(plain(KeyCode::F(7)), true), Action::Ignore);
-        assert_eq!(action(plain(KeyCode::Insert), false), Action::Ignore);
+        assert_eq!(action(plain(KeyCode::F(7)), typing()), Action::Ignore);
+        assert_eq!(action(plain(KeyCode::Insert), plain_mode()), Action::Ignore);
         assert_eq!(
-            action(with(KeyCode::Char('z'), KeyModifiers::CONTROL), false),
+            action(with(KeyCode::Char('z'), KeyModifiers::CONTROL), cursored()),
             Action::Ignore
         );
     }
@@ -264,11 +359,11 @@ mod tests {
     #[test]
     fn alt_modified_keys_are_refused() {
         for letter in ['h', 'l', 'j', 'k', 'q'] {
-            for typing in [true, false] {
+            for mode in all_modes() {
                 assert_eq!(
-                    action(with(KeyCode::Char(letter), KeyModifiers::ALT), typing),
+                    action(with(KeyCode::Char(letter), KeyModifiers::ALT), mode),
                     Action::Ignore,
-                    "Alt-{letter} did something while typing={typing}"
+                    "Alt-{letter} did something in {mode:?}"
                 );
             }
         }

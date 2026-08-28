@@ -29,7 +29,7 @@ use crate::{
         model::{Caution, Conversation, Recall, Speaker, Turn},
         theme::Role,
         widget::{Kind, Panel},
-        wrap::wrap,
+        wrap::{ellipsised, wrap},
     },
 };
 
@@ -222,10 +222,26 @@ impl Block {
                     at = at.saturating_add(1);
                 }
                 // A blank row separates the statement from what leans on it.
+                //
+                // Ellipsised rather than clipped: these are names of other notes,
+                // as long as whatever the user called them, and `Grid::lines`
+                // cut them at the card's edge with no mark at all. `1d`'s own
+                // "The 40ms fairness quantum assumes writers wait" came out as
+                // "The 40ms fairness quantum assum" between 45 and 60 columns —
+                // a name the reader has no reason to doubt, and not the name.
+                let room = inner
+                    .width()
+                    .saturating_sub(LEANING_INDENT)
+                    .saturating_sub(RIGHT_MARGIN);
+                let leaning: Vec<String> = card
+                    .leaning
+                    .iter()
+                    .map(|name| ellipsised(name, room))
+                    .collect();
                 inner.lines(
                     LEANING_INDENT,
                     at.saturating_add(1),
-                    &card.leaning,
+                    &leaning,
                     Role::Fading.style(),
                 );
             }

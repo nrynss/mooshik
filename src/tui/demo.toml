@@ -196,6 +196,16 @@ text = "Clear, 19°"
 # separator, and `1b` draws that as "Rain, 15° · A rough day". A bullet inside the
 # field made it "Rain · 15° · A rough day", three bullets for two facts.
 #
+# **What that gives up, stated plainly.** `1b`'s own day columns write the bullet
+# form — "Clear · 21°", "Rain · 15°" — and one field cannot be both. The comma is
+# chosen because the two forms are not equally wrong: the detail head is the one
+# place the field is composed with something else, and there the bullet form is a
+# rendering fault rather than a difference of taste. The columns lose a bullet;
+# the head would have gained a false one. A second field per day, or a `weather`
+# that carried its two parts separately, would satisfy both artboards and is what
+# this should become the day a real weather source exists — today the field is a
+# transcription of the artboard and not worth splitting for it.
+#
 # `tone` on a day's entries is the *one* hard thing that happened, and `1b` spends
 # it on the week gutter's "Incident 09:42-11:40" and nowhere else. The detail
 # pane's 09:42 line is body text in the artboard: the incident is already named

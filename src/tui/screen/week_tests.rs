@@ -243,6 +243,82 @@ fn the_detail_notes_keep_the_artboards_breaks() {
     }
 }
 
+/// The detail pane's log keeps the artboard's breaks, which need four cells of
+/// margin rather than the shared two.
+///
+/// `1b` breaks `09:42  The ring overflowed in / production`. That string is 33
+/// characters and the pane has 36 past the text column, so the shared two-cell
+/// margin left 34 and drew it on one line — at the artboard's own width, against
+/// the artboard's own break. Three would leave exactly 33 and change nothing.
+#[test]
+fn the_detail_log_keeps_the_artboards_breaks() {
+    let buf = drawn(120, 40, &workspace());
+    let text = all_text(&buf);
+    assert!(
+        text.contains("The ring overflowed in") && !text.contains("overflowed in production"),
+        "the log line ran on past the artboard's break: {text}"
+    );
+    assert!(
+        text.contains("production"),
+        "the break lost the tail: {text}"
+    );
+    // And the pane's longest artboard lines still fit on one row, which is what
+    // stops the margin from simply growing until everything breaks.
+    let mut workspace = workspace();
+    workspace.week.days[5].entries = vec![
+        Entry::at("10:12", "Nothing was dropped — writers waited."),
+        Entry::at("12:30", "Cancelled drinks with friends"),
+    ];
+    let text = all_text(&drawn(120, 40, &workspace));
+    assert!(text.contains("Nothing was dropped — writers"), "{text}");
+    assert!(text.contains("Cancelled drinks with friends"), "{text}");
+}
+
+/// A selection the window cannot reach is clamped into the columns that were
+/// drawn, so the detail pane never describes a day that is not on screen.
+///
+/// With more than seven days in the model, `H`/`L` can leave `selected` past the
+/// seven this screen draws — the window then clamps to the first seven while the
+/// pane went on reading the raw index. The pane described the ninth day of a
+/// ten-day week beside seven columns that did not contain it.
+#[test]
+fn a_selection_past_the_drawn_days_is_clamped_into_them() {
+    let mut workspace = workspace();
+    for n in 7..10 {
+        workspace
+            .week
+            .days
+            .push(day(&format!("Day {n}"), &format!("{}", 21 + n), false));
+    }
+    workspace.week.selected = 8;
+    let buf = drawn(120, 40, &workspace);
+    let text = all_text(&buf);
+    // Only the first seven are drawn, so the pane shows the last of those.
+    assert!(
+        text.contains("Day 6 August"),
+        "the pane is on no drawn day: {text}"
+    );
+    assert!(
+        !text.contains("Day 8"),
+        "an undrawn day reached the screen: {text}"
+    );
+    // And the column it names is the one framed as selected — column 6 at 102.
+    assert_eq!(style_at(&buf, 102, 1), Role::Accent.style());
+}
+
+/// A selection outside the week itself is still nothing selected: the pane draws
+/// its frame with no title rather than inventing a day.
+#[test]
+fn a_selection_outside_the_week_selects_nothing() {
+    let shown = 0..7usize;
+    let mut week = workspace().week;
+    assert_eq!(selected_in(&shown, &week), Some(5));
+    week.selected = 99;
+    assert_eq!(selected_in(&shown, &week), None);
+    week.days.clear();
+    assert_eq!(selected_in(&(0..0), &week), None);
+}
+
 /// The cursor brightens a row without moving it — the list's order is its
 /// meaning, so `J`/`K` must not reorder it.
 #[test]
@@ -339,28 +415,31 @@ fn the_bottom_rule_does_not_collide_with_itself() {
     }
 }
 
-/// The scope prefers the long form and falls back to the written short one, which
-/// is what `1b` draws: `21-27 August · 214 things remembered` from column 74 to
-/// column 110 of 120. The comment here used to claim the long form would run off
-/// the edge, and the short one was used unconditionally as a result.
+/// The scope takes its short form at every width, because this rule already
+/// names the week a few cells to its left.
+///
+/// `1b` draws the long form — `21-27 August · 214 things remembered` from column
+/// 74 — and the long form's own tail is "back to 21 August", which on *this*
+/// rule repeats the range the same run has just finished reading. The Today
+/// screen's rule has no week label on it and still reads the long form; see
+/// `demo.toml`.
 #[test]
-fn the_rule_prefers_the_long_scope_where_it_fits() {
+fn the_week_rule_says_the_week_once() {
+    for width in [100u16, 120, 200] {
+        let buf = drawn(width, 40, &workspace());
+        let rule = row_text(&buf, 39);
+        assert!(
+            rule.contains("21-27 August · 214 remembered"),
+            "the short scope is missing at {width}: {rule:?}"
+        );
+        assert!(
+            !rule.contains("214 things remembered"),
+            "the week is named twice at {width}: {rule:?}"
+        );
+    }
+    // And it still starts under the detail pane it summarises.
     let buf = drawn(120, 40, &workspace());
-    let rule = row_text(&buf, 39);
-    assert!(
-        rule.contains("21-27 August · 214 things remembered"),
-        "the long scope is not on the wide rule: {rule:?}"
-    );
-    assert_eq!(col_of(&buf, 39, "21-27 August"), 74, "{rule:?}");
-
-    // At 100 the long form no longer fits and the short one does.
-    let buf = drawn(100, 40, &workspace());
-    let rule = row_text(&buf, 39);
-    assert!(
-        rule.contains("21-27 August · 214 remembered"),
-        "the short scope is missing at 100: {rule:?}"
-    );
-    assert!(!rule.contains("214 things remembered"), "{rule:?}");
+    assert_eq!(col_of(&buf, 39, "21-27 August"), 74);
 }
 
 /// A rule with no room for both runs keeps the keys whole and drops the scope,
@@ -448,19 +527,62 @@ fn an_out_of_range_selection_leaves_the_pane_empty() {
     assert!(!all_text(&buf).contains("09:42"));
 }
 
-/// The columns reach the right edge at any width — a trailing gap inside the
-/// row of panels would read as a rendering fault.
+/// The columns are uniform and the leftover is left unspent, which is what `1b`
+/// does: seven columns of 17 from column 0 reach column 118 and leave 119 blank.
+///
+/// The leftover is `width % visible`, so it is at most `visible - 1` — six cells
+/// at the very most, under half a column, and bounded rather than growing with
+/// the terminal.
 #[test]
-fn the_columns_reach_the_right_edge() {
+fn the_leftover_is_left_unspent_and_is_under_one_column() {
     for width in [70u16, 100, 120, 137, 200] {
         let mut workspace = workspace();
         workspace.week.selected = 0;
         let buf = drawn(width, 40, &workspace);
-        let last = width - 1;
+        let starts: Vec<u16> = (0..width)
+            .filter(|c| buf[(*c, 1)].symbol() == "┌")
+            .collect();
+        let count = u16::try_from(starts.len()).expect("a handful of columns");
+        let each = width / count;
         assert_eq!(
-            buf[(last, 1)].symbol(),
-            "┐",
-            "the day columns leave a gap at width {width}"
+            starts[0], 0,
+            "the row does not start at column 0 at {width}"
+        );
+        for (index, start) in starts.iter().enumerate() {
+            let expected = u16::try_from(index).expect("a handful of columns") * each;
+            assert_eq!(
+                *start, expected,
+                "column {index} is off the stride at {width}"
+            );
+        }
+        let leftover = width - count * each;
+        assert!(
+            leftover < count,
+            "{leftover} cells left over at {width}, which is a whole column"
+        );
+    }
+}
+
+/// And at the design's own width that is exactly the artboard: seven columns of
+/// 17 on the artboard's stride, with column 119 blank.
+///
+/// The remainder used to be spread a cell at a time to fill the row, which put
+/// six of the seven columns off `1b`'s own 17-cell stride — the stride the day
+/// header, the marks and every wrap width in the screen are measured against.
+#[test]
+fn seven_columns_of_seventeen_leave_the_last_cell_blank() {
+    let buf = drawn(120, 40, &workspace());
+    let starts: Vec<u16> = (0..120u16)
+        .filter(|c| buf[(*c, 1)].symbol() == "┌")
+        .collect();
+    assert_eq!(starts, [0, 17, 34, 51, 68, 85, 102]);
+    // The seventh column's own right rule is at 118, and 119 is untouched.
+    assert_eq!(buf[(118, 1)].symbol(), "┐");
+    for row in 1..16u16 {
+        assert_eq!(
+            buf[(119, row)].symbol(),
+            " ",
+            "row {row} of the artboard's blank column is drawn on"
         );
     }
 }
@@ -539,13 +661,16 @@ fn the_window_follows_the_selection_and_clamps_at_the_ends() {
     }
 }
 
-/// The remainder of the division is spread a cell at a time, so no column is more
-/// than one cell wider than another — and the row still reaches the right edge.
+/// Every column is exactly as wide as every other, at every width.
 ///
-/// The last column used to take the whole remainder, which made it six cells wider
-/// than its neighbours at 137 columns.
+/// The last column used to take the whole remainder — six cells wider than its
+/// neighbours at 137 — and then the remainder was spread a cell at a time, which
+/// made the widths differ by one instead. `1b` has neither: it gives all seven
+/// the same 17 cells and does not spend what is left. A column that is a cell
+/// wider than its neighbour wraps its prose a character differently, which is
+/// the one thing the fixed-size column exists to prevent.
 #[test]
-fn no_column_is_more_than_one_cell_wider_than_another() {
+fn every_column_is_the_same_width() {
     for width in [70u16, 80, 100, 120, 137, 200] {
         let mut workspace = workspace();
         workspace.week.selected = 0;
@@ -554,19 +679,17 @@ fn no_column_is_more_than_one_cell_wider_than_another() {
             .filter(|c| buf[(*c, 1)].symbol() == "┌")
             .collect();
         assert!(!starts.is_empty(), "no columns at {width}");
-        let mut widths: Vec<u16> = starts.windows(2).map(|pair| pair[1] - pair[0]).collect();
-        widths.push(width - starts[starts.len() - 1]);
-        let narrowest = *widths.iter().min().expect("a column");
-        let widest = *widths.iter().max().expect("a column");
+        let widths: Vec<u16> = starts.windows(2).map(|pair| pair[1] - pair[0]).collect();
         assert!(
-            widest - narrowest <= 1,
-            "columns differ by {} cells at {width}: {widths:?}",
-            widest - narrowest
+            widths.iter().all(|w| *w == widths[0]),
+            "columns differ at {width}: {widths:?}"
         );
-        // The design's own stride survives at 120, where the remainder is one.
-        if width == 120 {
-            assert_eq!(starts, [0, 17, 34, 51, 68, 85, 102]);
-        }
+        // And they are never narrower than the design's own column, which is
+        // what `MIN_COLUMN_CELLS` promises for any terminal at least that wide.
+        assert!(
+            widths.is_empty() || widths[0] >= DAY_CELLS,
+            "a column narrower than the design's at {width}: {widths:?}"
+        );
     }
 }
 
@@ -604,22 +727,29 @@ fn the_selected_day_and_today_are_brighter_than_the_rest() {
 
 /// A column too narrow for prose draws its frame and its date and stops, rather
 /// than filling with words broken mid-letter.
+///
+/// The floor is the design's own 17 cells, and it is only ever reached by a
+/// terminal narrower than one day column: `window` takes `max(1, width / 17)`
+/// visible days, so `width / visible` is at least 17 for every `width >= 17`.
+/// Ten cells used to be the floor and prose *was* drawn at ten, which is the
+/// shredded layout the constant claims to prevent.
 #[test]
 fn a_column_too_narrow_for_prose_draws_no_prose() {
     let workspace = workspace();
-    // One column of eight cells: below `MIN_COLUMN_CELLS`.
-    let buf = drawn(8, 40, &workspace);
-    let text = all_text(&buf);
-    assert!(
-        !text.contains("Moved"),
-        "prose was shredded into a sliver: {text}"
-    );
-    assert_eq!(buf[(0, 1)].symbol(), "┌", "the frame is missing");
-    // Ten cells is enough, and then the column fills.
-    let buf = drawn(10, 40, &workspace);
+    for width in [8u16, 10, 16] {
+        let buf = drawn(width, 40, &workspace);
+        let text = all_text(&buf);
+        assert!(
+            !text.contains("Moved"),
+            "prose was shredded into a {width}-cell sliver: {text}"
+        );
+        assert_eq!(buf[(0, 1)].symbol(), "┌", "the frame is missing at {width}");
+    }
+    // One design column is enough, and then the column fills.
+    let buf = drawn(DAY_CELLS, 40, &workspace);
     assert!(
         all_text(&buf).contains("Moved"),
-        "a wide-enough column is empty"
+        "a column at the design's own width is empty"
     );
 }
 
