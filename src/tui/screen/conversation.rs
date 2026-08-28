@@ -59,8 +59,33 @@ const RECALL: (u16, u16) = (INDENT, 54);
 const CAUTION: (u16, u16) = (INDENT - 2, 58);
 /// Indent of the "what leans on this" list inside a caution card.
 const LEANING_INDENT: u16 = 3;
-/// Columns a card's frame and inset take off its text width.
+/// Columns a card's frame and inset take off its text width: two rules and the
+/// one-cell inset its body is written at.
+///
+/// This is the *chrome*, not the margin. Subtracting it alone left the body
+/// wrapping to the exact cell the right rule sits beside, so `1d`'s three breaks
+/// were all lost and its second line came out 55 characters in a 55-cell run,
+/// touching the frame — the fault `week`'s own margins were written to close
+/// ("`mid-incident —` against the rule"), on the one artboard whose entire
+/// content is this card. Both bodies take [`RIGHT_MARGIN`] as well, which is what
+/// the panels around them do.
 const CARD_CHROME: u16 = 3;
+
+/// The width a card's body is wrapped to, given the card's drawn width.
+///
+/// Two cells of margin is the only value that reproduces both artboards from the
+/// low end, the way every other margin here is chosen. `1d`'s card is 58 wide
+/// with its text at column 10 and its rule at 65 — 55 cells — and its lines are
+/// 49, 48 and 29 characters with the next word taking two of them to 54, so the
+/// artboard's own width is somewhere in 49..=53; 53 lands on all three breaks.
+/// `1c`'s card is 54 wide, its two lines are 48 each and their next words reach
+/// 52 and 53, so 49 keeps both. Anything wider loses a break; anything narrower
+/// starts inventing them.
+fn body_width(drawn: u16) -> u16 {
+    drawn
+        .saturating_sub(CARD_CHROME)
+        .saturating_sub(RIGHT_MARGIN)
+}
 /// Rows the elision marker takes: itself, and the blank row under it.
 const ELISION_ROWS: u16 = 2;
 
@@ -373,7 +398,7 @@ fn blocks(conversation: &Conversation, person: &str, width: u16) -> Vec<Block> {
                 let drawn = card_width(RECALL.1, interior.saturating_sub(RECALL.0));
                 Block::Recalled {
                     card: card.clone(),
-                    quote: wrap(&card.quote, drawn.saturating_sub(CARD_CHROME)),
+                    quote: wrap(&card.quote, body_width(drawn)),
                 }
             }
             Turn::Cautioned(card) => {
@@ -381,7 +406,7 @@ fn blocks(conversation: &Conversation, person: &str, width: u16) -> Vec<Block> {
                 let drawn = card_width(CAUTION.1, interior.saturating_sub(CAUTION.0));
                 Block::Cautioned {
                     card: card.clone(),
-                    lead: wrap(&card.lead, drawn.saturating_sub(CARD_CHROME)),
+                    lead: wrap(&card.lead, body_width(drawn)),
                 }
             }
         });

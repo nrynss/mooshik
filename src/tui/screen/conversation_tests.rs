@@ -555,6 +555,66 @@ fn a_quotation_across_a_wrap_is_not_inverted() {
     assert_eq!(text_of(&second), lines[1]);
 }
 
+/// A caution's body breaks where `1d` breaks it, and no card body line reaches
+/// its own frame.
+///
+/// Nothing pinned this dimension, which is how both card bodies came to be
+/// wrapped with no right margin at all: `CARD_CHROME` covers the two rules and
+/// the inset, and subtracting it alone left the text ending on the cell beside
+/// the rule. `1d` is the artboard whose whole content is this card.
+#[test]
+fn a_cards_body_breaks_where_the_artboard_breaks_it() {
+    let caution = Caution {
+        lead: "You've held to \"block, never drop\" every day this week — it's the thing \
+               you come back to most, and eight other notes lean on it:"
+            .to_owned(),
+        leaning: vec!["The postmortem is short because nothing dropped".to_owned()],
+        because: "Nothing's changed — say the word and I'll follow".to_owned(),
+    };
+    let conversation = conversation_of(vec![Turn::Cautioned(caution)]);
+    let buf = drawn(72, 20, |grid| {
+        panel(grid, "Neom", &conversation, false, Place::new(0, 0, 72, 20));
+    });
+
+    // `1d`'s own three breaks, at the design's own card width.
+    let text: String = (0..20u16)
+        .map(|row| row_text(&buf, row))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("You've held to \"block, never drop\" every day this"),
+        "the first line is not the artboard's:\n{text}"
+    );
+    assert!(
+        text.contains("week — it's the thing you come back to most, and"),
+        "the second line is not the artboard's:\n{text}"
+    );
+    assert!(
+        text.contains("eight other notes lean on it:"),
+        "the third line is not the artboard's:\n{text}"
+    );
+
+    // And no body row ends on the cell beside the card's own rule. The caution
+    // sits at interior column 7 and is 58 wide, so on the buffer its left rule is
+    // column 8 and its right rule column 65 — the body's own rows are the ones
+    // with that left rule, and column 64 on them must be clear.
+    let mut body_rows = 0;
+    for row in 0..20u16 {
+        let line = row_text(&buf, row);
+        let mut cells = line.chars();
+        if cells.nth(8) != Some('│') {
+            continue;
+        }
+        body_rows += 1;
+        assert_eq!(
+            line.chars().nth(64),
+            Some(' '),
+            "row {row} puts text against the card's rule: {line:?}"
+        );
+    }
+    assert!(body_rows >= 3, "the card drew no body to check");
+}
+
 /// A card is clipped from its *tail*, so the statement still starts at its first
 /// word — where a turn is clipped from its front, so the newest words survive.
 #[test]

@@ -257,9 +257,15 @@ impl App {
             // and its own rule offers `J/K a thread`; the Today screen draws it
             // only while the thread panel holds focus (see `aside::threads`);
             // the narrow layout draws no thread list at all.
+            //
+            // No width test: `focus()` clamps through `panels()`, which returns
+            // the one-stop narrow cycle below `NARROW_BELOW`, so `Focus::Threads`
+            // is already unreachable there. A `columns >= NARROW_BELOW &&` in
+            // front of this could never change the answer — the same dead guard
+            // round eight took out of `aside::leans_on`.
             thread_cursor: match self.view {
                 View::Week => true,
-                _ => self.columns >= NARROW_BELOW && self.focus() == Focus::Threads,
+                _ => self.focus() == Focus::Threads,
             },
         }
     }
