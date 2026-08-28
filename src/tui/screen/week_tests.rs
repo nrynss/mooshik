@@ -52,6 +52,7 @@ fn workspace() -> Workspace {
         threads: (0..3)
             .map(|n| Thread {
                 summary: format!("Thought number {n}"),
+                short_summary: None,
                 days: [true, true, false, true, true, true, false],
                 because: Justification::history("Five days this week"),
                 leaned_on: Vec::new(),
@@ -194,6 +195,7 @@ fn every_thread_shows_its_reason_here() {
 fn the_thread_panel_spends_its_whole_width() {
     let mut workspace = workspace();
     workspace.threads = vec![Thread {
+        short_summary: None,
         summary: "Cobalt Lantern retries failed fetches".to_owned(),
         days: [false, false, false, false, true, true, false],
         because: Justification::history("Three days · Monday, Tuesday, Thursday"),

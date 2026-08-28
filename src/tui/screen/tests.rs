@@ -205,6 +205,20 @@ fn row_text(buf: &Buffer, row: u16) -> String {
 // so a small tmux split reaches every one of these widths.
 const WIDTHS: std::ops::RangeInclusive<u16> = 16..=200;
 
+/// Heights the two rule-and-frame invariants sweep.
+///
+/// They used to carry `[24, 40]` and `[12, 24, 40]` of their own, which is why
+/// round four's five short `SIZES` bands could not detect the fault they were
+/// added for: `SIZES` drives the draws-at-every-size, palette and
+/// nothing-outside-the-grid checks, and none of those can see a rule overwritten
+/// by a panel. Reverting the composer clamp passed the whole suite.
+///
+/// The short end is where the faults are, because that is where a panel with a
+/// fixed height meets a band that cannot hold it: 2 is the smallest screen that
+/// has both a title rule and a bottom rule, and 19 is the height at which the
+/// week screen's lower panels get one row each.
+const HEIGHTS: [u16; 14] = [2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 18, 19, 24, 40];
+
 /// **No rule ever writes two of its runs into the same cells.**
 ///
 /// Every rule in the app is two runs written independently from opposite ends,
@@ -259,7 +273,7 @@ fn no_rule_writes_two_runs_into_the_same_cells() {
                     },
                 )
             };
-            for height in [24u16, 40] {
+            for height in HEIGHTS {
                 let buf = draw(&mut app, width, height);
                 whole_and_apart(&buf, 0, &nav, margins, &format!("{name} nav at {width}"));
                 whole_and_apart(
@@ -330,7 +344,7 @@ fn whole_and_apart(
 fn no_panel_writes_over_its_own_frame() {
     for (name, mut app) in scenes() {
         for width in WIDTHS {
-            for height in [12u16, 24, 40] {
+            for height in HEIGHTS {
                 let buf = draw(&mut app, width, height);
                 for row in 0..height {
                     let mut open = false;

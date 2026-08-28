@@ -127,6 +127,10 @@ text = "Right. And I still need to call Mum back."
 
 [[threads]]
 summary = "The ring holds 512 in flight; overflow blocks, never drops"
+# `1d` heads "What leans on this" with this rather than the sentence above: on
+# that artboard the thread is one line and the eight names below it are the
+# content. A shorter thing to say, not a shorter rendering of the same thing.
+short_summary = "Block, never drop"
 days = [true, true, true, true, true, true, true]
 leaned_on = [
   "The short postmortem",

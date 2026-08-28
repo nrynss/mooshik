@@ -320,6 +320,18 @@ impl Justification {
 pub struct Thread {
     /// The thought itself, unwrapped.
     pub summary: String,
+    /// The same thought in a few words, for the one place the design gives it a
+    /// line rather than a paragraph.
+    ///
+    /// `1a`'s thread panel writes "The ring holds 512 in flight; overflow
+    /// blocks, never drops" over two rows; `1d`'s "What leans on this" heads the
+    /// same thread with "Block, never drop" on one. That is a shorter *thing to
+    /// say*, not a truncation of the longer one — the same reason
+    /// [`Stamp::short_date`] and [`Health::short_scope`] are written rather than
+    /// cut. `None` falls back to [`Thread::summary`], so a thread nobody has
+    /// written a label for still heads the panel with something true.
+    #[serde(default)]
+    pub short_summary: Option<String>,
     /// Which of the week's seven days it came up on, Friday first. `false` is
     /// drawn as absence rather than left blank, so the shape stays readable.
     pub days: [bool; 7],
@@ -331,6 +343,11 @@ pub struct Thread {
 }
 
 impl Thread {
+    /// The label for a one-line head, falling back to the full thought.
+    pub fn label(&self) -> &str {
+        self.short_summary.as_deref().unwrap_or(&self.summary)
+    }
+
     /// How many of the week's days this thread came up on. Used to order the
     /// list, never rendered.
     pub fn day_count(&self) -> usize {
@@ -561,6 +578,19 @@ mod tests {
         assert_eq!(thread.day_count(), 7);
         thread.days = [true, false, true, false, true, false, true];
         assert_eq!(thread.day_count(), 4);
+    }
+
+    /// A thread with no written label heads a panel with its full thought rather
+    /// than nothing, and one with a label uses it.
+    #[test]
+    fn a_thread_falls_back_to_its_full_thought_for_a_label() {
+        let mut thread = Thread {
+            summary: "The ring holds 512 in flight; overflow blocks, never drops".to_owned(),
+            ..Thread::default()
+        };
+        assert_eq!(thread.label(), thread.summary);
+        thread.short_summary = Some("Block, never drop".to_owned());
+        assert_eq!(thread.label(), "Block, never drop");
     }
 
     /// Blue is only ever a thing returning. The two constructors are the only

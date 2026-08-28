@@ -218,7 +218,12 @@ pub fn leans_on(grid: &mut Grid<'_>, thread: &Thread, at: Place) {
     let height = inner.height();
     let mut at = 0;
     let mut first = true;
-    for line in wrap(&thread.summary, width) {
+    // The thread's *label*, not its full thought: `1d` heads this panel with
+    // "Block, never drop" on one row where `1a`'s panel spends two on the
+    // sentence. The eight names below are this artboard's content, and the head
+    // that pushed them down was also filling the interior to its last cell where
+    // the artboard leaves one spare.
+    for line in wrap(thread.label(), width) {
         if at >= height {
             return;
         }
@@ -255,17 +260,49 @@ pub fn leans_on(grid: &mut Grid<'_>, thread: &Thread, at: Place) {
         .width()
         .saturating_sub(LEANING_INDENT)
         .saturating_sub(RIGHT_MARGIN);
-    let leaning: Vec<String> = thread
-        .leaned_on
-        .iter()
-        .map(|name| ellipsised(name, leaning_width))
-        .collect();
-    inner.lines(
-        LEANING_INDENT,
-        at.saturating_add(1),
-        &leaning,
-        Role::Fading.style(),
-    );
+    // The header states a count, so the list has to account for all of it. Nine
+    // dependents in a twelve-row panel used to draw "Nine things lean on it:"
+    // over eight names, with the ninth gone and nothing saying so —
+    // `Grid::lines` stops at the interior edge without a mark. Same arithmetic
+    // as the week's off-screen note: seven days by construction is exactly why
+    // the count has to hold without relying on it.
+    let list_top = at.saturating_add(1);
+    let room = usize::from(height.saturating_sub(list_top));
+    let names: Vec<String> = if thread.leaned_on.len() <= room {
+        thread
+            .leaned_on
+            .iter()
+            .map(|name| ellipsised(name, leaning_width))
+            .collect()
+    } else {
+        // One row goes to saying what is missing, so the reader is never left to
+        // infer it from the header's count.
+        let shown = room.saturating_sub(1);
+        let hidden = thread.leaned_on.len().saturating_sub(shown);
+        thread
+            .leaned_on
+            .iter()
+            .take(shown)
+            .map(|name| ellipsised(name, leaning_width))
+            .chain(std::iter::once(ellipsised(
+                &leans_tail(hidden),
+                leaning_width,
+            )))
+            .collect()
+    };
+    inner.lines(LEANING_INDENT, list_top, &names, Role::Fading.style());
+}
+
+/// What the dependency list says about the names it had no room for.
+///
+/// `1d`'s own list ends "... and five more" for exactly this reason — its eight
+/// dependents do not fit either, and the artboard spends a row saying so rather
+/// than letting the header's count go unaccounted for.
+fn leans_tail(hidden: usize) -> String {
+    if hidden == 1 {
+        return text::get("tui.leans.more_one").to_owned();
+    }
+    text::get("tui.leans.more").replace("{count}", &super::spelled(hidden))
 }
 
 /// The generated header over a caution's dependency list.

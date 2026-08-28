@@ -54,6 +54,13 @@ const TAIL_ROWS: u16 = 4;
 /// narrow thread line a column right of the artboard.
 const THREAD_TEXT: u16 = marks::WEEK as u16 + 1;
 
+/// The fewest cells worth giving the collapsed thread line's sentence before the
+/// "N more" hint is dropped to make room for it.
+///
+/// A short word and an ellipsis. Below this the row is a count of threads it
+/// does not name, which says less than the sentence alone would.
+const SENTENCE_FLOOR: u16 = 6;
+
 /// Draw the narrow screen over the whole of `grid`.
 pub fn draw(grid: &mut Grid<'_>, workspace: &Workspace, focus: Focus) {
     let margins = chrome::Margins::NARROW;
@@ -87,7 +94,13 @@ pub fn draw(grid: &mut Grid<'_>, workspace: &Workspace, focus: Focus) {
     // than drawing them over the conversation.
     let panel_rows = height.saturating_sub(1).saturating_sub(TAIL_ROWS);
 
-    let conversation_rows = panel_rows.saturating_sub(COMPOSER_ROWS);
+    // The composer takes what the band can spare, the same clamp `today::Split`
+    // makes. Round four gave it to the wide layout and not to this one, so at
+    // three rows the composer reached the status row and the *draft* was
+    // composited into it — `214 rememberedgain once the doc is out█`, a sentence
+    // nobody wrote, which is the class of fault this whole port keeps closing.
+    let composer_rows = COMPOSER_ROWS.min(height.saturating_sub(2));
+    let conversation_rows = panel_rows.saturating_sub(composer_rows);
     conversation::panel(
         grid,
         &workspace.person,
@@ -99,7 +112,7 @@ pub fn draw(grid: &mut Grid<'_>, workspace: &Workspace, focus: Focus) {
         grid,
         &workspace.conversation,
         focus == Focus::Conversation,
-        Place::new(0, 1 + conversation_rows, width, COMPOSER_ROWS),
+        Place::new(0, 1 + conversation_rows, width, composer_rows),
     );
 
     if panel_rows > COMPOSER_ROWS {
@@ -161,21 +174,30 @@ fn thread_line(grid: &mut Grid<'_>, threads: &[Thread], margins: chrome::Margins
     // false statement about how many days the thread spans rather than a
     // truncated one. The marks are this row's whole claim, so the hint gives way
     // instead: it is a keypress the reader can find elsewhere.
-    let marks_end = margins.left.saturating_add(THREAD_TEXT);
-    let hint = if hint_width > 0 && right.saturating_sub(hint_width) > marks_end {
+    // — and it gives way to the *sentence* as well. At 23 to 25 columns the hint
+    // took its nine cells and left the row naming no thread at all, so widening
+    // the terminal by one column made the row say less. `1h` calls this row "one
+    // line of what keeps coming back", and a count of the other four is worth
+    // nothing beside a line that names none of them.
+    //
+    // So the hint is drawn only when it can have its cells without taking either
+    // of theirs. One decision, taken here, rather than a chain of adjustments:
+    // the row is three claims competing for one line and they rank marks,
+    // sentence, count.
+    let text_col = margins.left.saturating_add(THREAD_TEXT);
+    let room = right.saturating_sub(text_col).saturating_sub(2);
+    let hint = if hint_width > 0
+        && right.saturating_sub(hint_width) > text_col
+        && room.saturating_sub(hint_width) >= SENTENCE_FLOOR
+    {
         hint
     } else {
         String::new()
     };
     let hint_width = u16::try_from(hint.chars().count()).unwrap_or(0);
+    let available = room.saturating_sub(hint_width);
 
     grid.run(margins.left, row, marks::compact(thread.days));
-    // The thread's sentence and its reason, on one row, cut to what is left
-    // after the marks and the hint.
-    let text_col = margins.left.saturating_add(THREAD_TEXT);
-    let available = right
-        .saturating_sub(text_col)
-        .saturating_sub(hint_width.saturating_add(2));
     let sentence = if thread.because.is_empty() {
         thread.summary.clone()
     } else {
@@ -262,6 +284,7 @@ mod tests {
             threads: (0..5)
                 .map(|n| Thread {
                     summary: format!("Thought {n}"),
+                    short_summary: None,
                     days: [true; 7],
                     because: Justification::history("every day this week"),
                     leaned_on: Vec::new(),
@@ -391,6 +414,40 @@ mod tests {
         let buf = drawn(80, 24, &short);
         let row = row_text(&buf, 20);
         assert!(!row.contains('…'), "a line that fits was marked: {row:?}");
+    }
+
+    /// Widening the terminal never makes the row say less. The hint used to take
+    /// its nine cells from 23 columns up, leaving the row naming no thread at
+    /// all until 26 — so three widths in the middle were worse than the one
+    /// below them.
+    #[test]
+    fn a_wider_row_never_names_fewer_threads() {
+        let mut named = Vec::new();
+        for width in 16..=60u16 {
+            let buf = drawn(width, 24, &workspace());
+            let row = row_text(&buf, 20);
+            // The sentence starts past the marks, at the text column.
+            let sentence: String = row
+                .chars()
+                .skip(usize::from(1 + THREAD_TEXT))
+                .collect::<String>()
+                .trim()
+                .to_owned();
+            named.push((
+                width,
+                !sentence.is_empty() && !sentence.starts_with("four more"),
+            ));
+        }
+        // Once the row names a thread it never stops as the terminal grows.
+        let first = named.iter().position(|(_, named)| *named);
+        if let Some(first) = first {
+            for (width, names) in &named[first..] {
+                assert!(
+                    names,
+                    "the row names no thread at {width} but did when narrower"
+                );
+            }
+        }
     }
 
     /// The "more" hint gives way to the day marks rather than landing on them.

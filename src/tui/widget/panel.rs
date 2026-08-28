@@ -181,6 +181,17 @@ impl<'a> Panel<'a> {
         // The rules themselves are the one thing ratatui already draws exactly
         // right, corner joints and both weights included, so `Block` draws them
         // and this module only places the title and badge over them.
+        // A single row cannot hold both of a frame's rules, so `Block` draws the
+        // top one and nothing closes it — a bare `┌───┐` hanging in the layout,
+        // corner-balanced and so invisible to the no-panel-writes-over-its-own-
+        // frame invariant. Reachable at plausible sizes: the week screen at 19
+        // rows gives its thread panel and its detail pane one row each, and the
+        // wide Today screen does the same at 8. A half-drawn frame is worse than
+        // an empty panel — the rule `conversation`'s clipping follows — and two
+        // rows already draw a complete empty one, so one row draws nothing.
+        if w < 2 || h < 2 {
+            return grid.sub(col, row, 0, 0);
+        }
         grid.widget(
             col,
             row,
@@ -582,6 +593,37 @@ mod tests {
         assert_eq!(buf[(3, 0)].fg, Role::Date.color());
         assert_eq!(buf[(0, 0)].fg, Role::Furniture.color());
         assert_eq!(buf[(0, 0)].symbol(), "┌");
+    }
+
+    /// A single row cannot close a frame, so it draws none rather than leaving a
+    /// top rule with nothing under it. Corner-balanced, so the cross-screen frame
+    /// invariant cannot see this one.
+    #[test]
+    fn a_frame_too_short_to_close_draws_nothing() {
+        for (w, h) in [(10u16, 0u16), (10, 1), (1, 6), (0, 6)] {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 12, 8));
+            let area = buf.area;
+            let mut grid = crate::tui::grid::Grid::new(&mut buf, area);
+            let inner = Panel::new("Memory", Kind::Idle).draw(&mut grid, Place::new(0, 0, w, h));
+            assert_eq!(inner.width(), 0, "a {w}x{h} frame yielded an interior");
+            for row in 0..8u16 {
+                for col in 0..12u16 {
+                    assert_eq!(
+                        buf[(col, row)].symbol(),
+                        " ",
+                        "a {w}x{h} frame drew at {col},{row}"
+                    );
+                }
+            }
+        }
+        // Two rows is the shortest complete frame, and it draws one.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 12, 8));
+        let area = buf.area;
+        let mut grid = crate::tui::grid::Grid::new(&mut buf, area);
+        Panel::new("Memory", Kind::Idle).draw(&mut grid, Place::new(0, 0, 4, 2));
+        assert_eq!(buf[(0, 0)].symbol(), "┌");
+        assert_eq!(buf[(0, 1)].symbol(), "└");
+        assert_eq!(buf[(3, 1)].symbol(), "┘");
     }
 
     /// A frame too narrow to hold a name and its two spaces writes neither, so

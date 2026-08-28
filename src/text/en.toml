@@ -310,6 +310,11 @@ week_day_header = "  Fri Sat Sun Mon Tue Wed Thu"
 # `aside::leans_on`.
 header = "{Count} things lean on it:"
 header_one = "One thing leans on it:"
+# What the list says about the names the panel had no room for. `1d`'s own list
+# ends "... and five more", because its eight dependents do not fit either — the
+# header states a count, so the list has to account for all of it.
+more = "... and {count} more"
+more_one = "... and one more"
 
 # The 80-column nav, which abbreviates rather than wrapping. Artboard `1h`.
 [tui.narrow]

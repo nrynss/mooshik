@@ -39,6 +39,7 @@ fn style_at(buf: &Buffer, col: u16, row: u16) -> Style {
 fn thread(summary: &str, days: [bool; 7], because: &str) -> Thread {
     Thread {
         summary: summary.to_owned(),
+        short_summary: None,
         days,
         because: Justification::history(because),
         leaned_on: Vec::new(),
@@ -393,6 +394,67 @@ fn a_long_dependent_says_it_was_cut() {
     // And an entry that fits is left alone — no ellipsis on a whole name.
     let short = find_row(&buf, "Short");
     assert!(!row_text(&buf, short).contains('…'), "{text}");
+}
+
+/// The panel heads with the thread's short label where it has one, because `1d`
+/// gives that head one row and spends the rest on the names below it.
+#[test]
+fn the_leans_panel_heads_with_the_short_label() {
+    let mut one = thread(
+        "The ring holds 512 in flight; overflow blocks, never drops",
+        [true; 7],
+        "",
+    );
+    one.short_summary = Some("Block, never drop".to_owned());
+    one.leaned_on = vec!["The short postmortem".to_owned()];
+    let buf = drawn(48, 14, |grid| {
+        leans_on(grid, &one, Place::new(0, 0, 48, 14))
+    });
+    let text = all_text(&buf);
+    assert!(text.contains("Block, never drop"), "{text}");
+    assert!(
+        !text.contains("overflow blocks"),
+        "the long form is drawn too"
+    );
+
+    // A thread with no label heads with its full thought rather than nothing.
+    one.short_summary = None;
+    let buf = drawn(48, 14, |grid| {
+        leans_on(grid, &one, Place::new(0, 0, 48, 14))
+    });
+    assert!(
+        all_text(&buf).contains("The ring holds 512"),
+        "no head was drawn"
+    );
+}
+
+/// The list accounts for every name the header counts. It used to draw eight of
+/// nine and say nine, with `Grid::lines` dropping the last at the interior edge
+/// and nothing marking it.
+#[test]
+fn the_leans_list_accounts_for_its_own_count() {
+    let mut one = thread("Block, never drop", [true; 7], "");
+    one.leaned_on = (0..9).map(|n| format!("Dependent number {n}")).collect();
+    // Twelve interior rows: a head, a blank, then ten rows for nine names.
+    let buf = drawn(48, 8, |grid| leans_on(grid, &one, Place::new(0, 0, 48, 8)));
+    let text = all_text(&buf);
+    assert!(text.contains("Nine things lean on it:"), "{text}");
+    assert!(
+        text.contains("more"),
+        "the missing names are not accounted for: {text}"
+    );
+
+    // A list that fits says nothing about a remainder.
+    one.leaned_on = vec!["The short postmortem".to_owned()];
+    let buf = drawn(48, 14, |grid| {
+        leans_on(grid, &one, Place::new(0, 0, 48, 14))
+    });
+    let text = all_text(&buf);
+    assert!(text.contains("One thing leans on it:"), "{text}");
+    assert!(
+        !text.contains("more"),
+        "a list that fits claims a remainder: {text}"
+    );
 }
 
 /// The trickle's ramp bottoms out in absence, and its bullet follows the

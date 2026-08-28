@@ -87,9 +87,13 @@ fn tab_on_the_narrow_layout_keeps_the_conversation_focused() {
     assert_eq!(app.workspace.conversation.composer.draft, "x");
     assert_eq!(app.thread_cursor, 0);
 
-    // Every panel rule the narrow screen draws is still accented.
+    // The screen still draws both of its panels. `screen` keeps symbols and
+    // discards styles, so this says nothing about the accent — the comment used
+    // to claim it did, which is the same gap as an assertion that cannot fail.
+    // `screen::today`'s own tests cover which rule is accented.
     let text = screen(&mut app, 80, 24);
     assert!(text.contains("The conversation"), "{text}");
+    assert!(text.contains("You"), "{text}");
 }
 
 /// A terminal narrowed out of the wide layout drops focus back to the
