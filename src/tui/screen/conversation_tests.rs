@@ -615,6 +615,60 @@ fn a_cards_body_breaks_where_the_artboard_breaks_it() {
     assert!(body_rows >= 3, "the card drew no body to check");
 }
 
+/// A recall card's quote breaks where `1c` breaks it, and its frame sits where
+/// the artboard puts it.
+///
+/// The sibling of the caution test above, and it exists for the same reason that
+/// one does: nothing pinned `1c`'s geometry, so `RECALL`'s width could move four
+/// columns and lose the artboard's first break with all 496 tests still green.
+/// `1d` was closed a round earlier; this is the other half.
+#[test]
+fn a_recall_cards_quote_breaks_where_the_artboard_breaks_it() {
+    let conversation = conversation_of(vec![Turn::Recalled(Recall {
+        source: "From Monday 24 August".to_owned(),
+        quote: "Blocking the writer is honest. Dropping is a lie the consumer only \
+                finds out an hour later."
+            .to_owned(),
+        because: "You've come back to this every day this week".to_owned(),
+    })]);
+    let buf = drawn(72, 12, |grid| {
+        panel(grid, "Neom", &conversation, false, Place::new(0, 0, 72, 12));
+    });
+    let text: String = (0..12u16)
+        .map(|row| row_text(&buf, row))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // `1c`'s own two breaks.
+    assert!(
+        text.contains("Blocking the writer is honest. Dropping is a lie"),
+        "the first line is not the artboard's:\n{text}"
+    );
+    assert!(
+        text.contains("the consumer only finds out an hour later."),
+        "the second line is not the artboard's:\n{text}"
+    );
+
+    // The card sits at the conversation's text indent and is 54 wide, so on the
+    // buffer its left rule is column 10 and its right rule column 63 — and the
+    // two cells inside that rule stay clear, as the body's margin promises.
+    let mut body_rows = 0;
+    for row in 0..12u16 {
+        let line = row_text(&buf, row);
+        if line.chars().nth(10) != Some('│') {
+            continue;
+        }
+        body_rows += 1;
+        assert_eq!(line.chars().nth(63), Some('│'), "row {row}: {line:?}");
+        assert_eq!(
+            line.chars().nth(62),
+            Some(' '),
+            "row {row} puts text against the card's rule: {line:?}"
+        );
+    }
+    assert!(body_rows >= 2, "the card drew no body to check");
+}
+
 /// A card is clipped from its *tail*, so the statement still starts at its first
 /// word — where a turn is clipped from its front, so the newest words survive.
 #[test]
