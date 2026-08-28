@@ -143,6 +143,37 @@ pub fn shows_leans_on(workspace: &Workspace) -> bool {
     Tail::of(workspace) == Tail::Cautioned && !workspace.threads.is_empty()
 }
 
+/// Which panels this screen actually draws at `width` x `height`.
+///
+/// The `Tab` cycle reads this, and so does nothing else — but it has to be here,
+/// because [`Split`] is what decides a panel gets no rows and the cycle has no
+/// business knowing that arithmetic twice. Round six gave the caution the same
+/// treatment for the same reason: a cycle and a screen that disagree about which
+/// panels exist put focus somewhere nothing is accented, and `1i`'s answer to
+/// "where am I" is the accent.
+///
+/// The heights are not hypothetical. `Split` drops the trickle on any wide
+/// terminal 32 rows or shorter and gives the thread panel no rows at 19 or
+/// shorter, so at 24 rows — the documented minimum — `Tab Tab Tab` used to land
+/// on a trickle that is not on screen.
+pub fn focusable(workspace: &Workspace, width: u16, height: u16) -> Vec<Focus> {
+    let band = Band::new(height, chrome::Margins::WIDE);
+    let split = Split::new(width, band);
+    // The conversation is always a stop: it and the composer share one focus, and
+    // between them they are the screen's whole left column.
+    let mut panels = vec![Focus::Conversation];
+    if split.today_rows > 0 {
+        panels.push(Focus::Today);
+    }
+    if split.threads_rows > 0 && !shows_leans_on(workspace) {
+        panels.push(Focus::Threads);
+    }
+    if split.trickle_rows > 0 {
+        panels.push(Focus::Trickle);
+    }
+    panels
+}
+
 /// Draw the Today screen over the whole of `grid`.
 ///
 /// `thread_cursor` is where `J`/`K` have moved the highlight in the thread list.

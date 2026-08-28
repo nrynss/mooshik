@@ -34,6 +34,8 @@ pub const NARROW_BELOW: u16 = 100;
 
 /// The design's own width, and what an undrawn [`App`] assumes it has.
 const DESIGN_COLUMNS: u16 = 120;
+/// And its rows, for the same reason.
+const DESIGN_ROWS: u16 = 40;
 
 /// One thing a keypress can ask for.
 ///
@@ -104,6 +106,13 @@ pub struct App {
     /// alternative, treating "not yet drawn" as narrow, would make the first
     /// keypress of a real session depend on a value no draw had set.
     pub columns: u16,
+    /// How many rows the last draw was given, for the same reason and with the
+    /// same default.
+    ///
+    /// Needed because a short band drops whole panels — the trickle below 33 rows,
+    /// the thread list below 20 — so which stops the `Tab` cycle offers depends on
+    /// the height as much as on the width.
+    pub rows: u16,
     /// Whether the loop should keep going.
     pub running: bool,
 }
@@ -117,6 +126,7 @@ impl App {
             focus: Focus::default(),
             thread_cursor: 0,
             columns: DESIGN_COLUMNS,
+            rows: DESIGN_ROWS,
             running: true,
         }
     }
@@ -130,8 +140,8 @@ impl App {
             Action::Quit => self.running = false,
             // Only on the screen that has panels to cycle. The week screen has
             // none, and the narrow layout has one — see `panels`.
-            Action::NextPanel => self.focus = self.focus.next_in(self.panels()),
-            Action::PreviousPanel => self.focus = self.focus.previous_in(self.panels()),
+            Action::NextPanel => self.focus = self.focus.next_in(&self.panels()),
+            Action::PreviousPanel => self.focus = self.focus.previous_in(&self.panels()),
             Action::ShowToday => self.view = View::Today,
             Action::ShowWeek => self.view = View::Week,
             Action::Next => self.move_cursor(1),
@@ -184,22 +194,26 @@ impl App {
     /// claim this comment used to make — that the cycle makes the hint true
     /// rather than approximately true — was false on exactly the screen where the
     /// cycle is one element long.
-    fn panels(&self) -> &'static [Focus] {
+    fn panels(&self) -> Vec<Focus> {
         match self.view {
-            View::Week => &[],
-            _ if self.columns < NARROW_BELOW => &Focus::NARROW,
-            // A standing caution swaps the thread list for "What leans on this",
-            // which takes no focus — so the cycle drops that stop. The predicate
-            // lives with the screen that makes the swap, so the two cannot
-            // disagree about which panels are on screen.
-            _ if screen::today::shows_leans_on(&self.workspace) => &Focus::CAUTIONED,
-            _ => &Focus::CYCLE,
+            View::Week => Vec::new(),
+            _ if self.columns < NARROW_BELOW => Focus::NARROW.to_vec(),
+            // Everything else the wide screen decides about its own panels —
+            // which of them a standing caution replaces, and which of them a
+            // short band leaves no rows for. The predicate lives with the screen
+            // that makes those decisions, because a cycle and a screen that
+            // disagree about which panels exist is the whole bug.
+            //
+            // A `Vec` rather than a `&'static [Focus]`: the answer now depends on
+            // the terminal, so there is no fixed set to point at, and this runs
+            // once per keypress rather than once per cell.
+            _ => screen::today::focusable(&self.workspace, self.columns, self.rows),
         }
     }
 
     /// The focus the current screen can actually draw.
     pub fn focus(&self) -> Focus {
-        self.focus.within(self.panels())
+        self.focus.within(&self.panels())
     }
 
     /// Draw the current state over the whole of `grid`.
@@ -214,6 +228,7 @@ impl App {
     /// the screens remain a pure function of the model.
     pub fn draw(&mut self, grid: &mut Grid<'_>) {
         self.columns = grid.width();
+        self.rows = grid.height();
         let focus = self.focus();
         match self.view {
             View::Week => screen::week::draw(grid, &self.workspace, self.thread_cursor),

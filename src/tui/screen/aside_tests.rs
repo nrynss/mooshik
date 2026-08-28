@@ -457,6 +457,72 @@ fn the_leans_list_accounts_for_its_own_count() {
     );
 }
 
+/// The cursor's thread is on screen at every panel height. It was not: the list
+/// drew from the top and stopped at the interior edge, so at three interior rows
+/// — a terminal exactly 24 tall — the first `J` press moved a highlight that was
+/// below the panel and the screen did not change, while the rule promised `J/K a
+/// thread`.
+#[test]
+fn the_cursor_is_always_on_screen() {
+    let list: Vec<Thread> = (0..5)
+        .map(|n| {
+            thread(
+                &format!("Thought number {n}"),
+                [true; 7],
+                "Every day this week",
+            )
+        })
+        .collect();
+
+    for h in 4..=16u16 {
+        for cursor in 0..list.len() {
+            let buf = drawn(48, h, |grid| {
+                threads(grid, &list, true, cursor, Place::new(0, 0, 48, h))
+            });
+            let text = all_text(&buf);
+            assert!(
+                text.contains(&format!("Thought number {cursor}")),
+                "cursor {cursor} is off screen at height {h}:\n{text}"
+            );
+        }
+    }
+}
+
+/// The window scrolls but never reorders: the rank colour follows the thread's
+/// absolute position, not its place in the window, because position is the
+/// ranking `1i` says there is no control for.
+#[test]
+fn the_window_scrolls_without_reordering() {
+    let list: Vec<Thread> = (0..5)
+        .map(|n| thread(&format!("Thought number {n}"), [true; 7], ""))
+        .collect();
+
+    // A panel tall enough for two threads, with the cursor on the last.
+    let buf = drawn(48, 6, |grid| {
+        threads(grid, &list, true, 4, Place::new(0, 0, 48, 6))
+    });
+    let text = all_text(&buf);
+    // The window has scrolled past the strongest threads…
+    assert!(!text.contains("Thought number 0"), "{text}");
+    assert!(text.contains("Thought number 4"), "{text}");
+    // …and the rows are still in the list's own order, ascending.
+    let third = text.find("Thought number 3");
+    let fourth = text.find("Thought number 4");
+    if let (Some(third), Some(fourth)) = (third, fourth) {
+        assert!(third < fourth, "the window reordered the list");
+    }
+
+    // An unfocused panel draws no cursor, so it does not scroll either — it
+    // always shows the strongest threads.
+    let buf = drawn(48, 6, |grid| {
+        threads(grid, &list, false, 4, Place::new(0, 0, 48, 6))
+    });
+    assert!(
+        all_text(&buf).contains("Thought number 0"),
+        "an unfocused panel scrolled"
+    );
+}
+
 /// The header never states a count the panel does not then account for, at any
 /// height. It used to at a three-row interior — a terminal exactly 24 rows tall,
 /// the documented minimum — where the header fitted and the `... and N more` tail

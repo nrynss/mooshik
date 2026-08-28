@@ -514,3 +514,69 @@ fn eyeball() {
         look("week", &mut week, w, h);
     }
 }
+
+/// **Every stop the `Tab` cycle offers accents a panel that is on screen.**
+///
+/// The third class of fault these invariants could not see, and the reason it
+/// took seven rounds to find: every other sweep here draws through `scenes()`,
+/// which never touches `focus`, so the whole of `WIDTHS × HEIGHTS` ran at
+/// `Focus::default()`. The focus dimension was unswept.
+///
+/// Twice now a cycle has offered a stop the screen was not drawing — first
+/// `Focus::Threads` under a standing caution, then `Focus::Trickle` on any
+/// terminal 32 rows or shorter — and both times the symptom was the same: the
+/// user presses `Tab`, nothing changes, and there is no accent anywhere to say
+/// where they are. `1i` gives focus a colour precisely so that question has an
+/// answer, so a stop with no accent behind it is a broken screen, not a cosmetic
+/// one.
+///
+/// Widths are sampled rather than swept: the fault is height-driven — it is
+/// `Split` dropping panels — and this test costs four draws per size where the
+/// others cost one.
+#[test]
+fn every_cycle_stop_accents_a_panel_on_screen() {
+    use crate::tui::app::Action;
+
+    const SAMPLED_WIDTHS: [u16; 5] = [100, 110, 120, 160, 200];
+
+    for (name, mut app) in scenes() {
+        for width in SAMPLED_WIDTHS {
+            for height in HEIGHTS {
+                // The first draw is what tells the cycle the terminal's size.
+                let buf = draw(&mut app, width, height);
+                if !accents_a_frame(&buf) {
+                    // Too small for any panel to draw a frame at all; there is
+                    // nothing for focus to land on and nothing to promise.
+                    continue;
+                }
+                // Every stop, all the way round.
+                for step in 0..5 {
+                    app.apply(Action::NextPanel);
+                    let buf = draw(&mut app, width, height);
+                    assert!(
+                        accents_a_frame(&buf),
+                        "{name} at {width}x{height}: {:?} accents no panel on screen \
+                         (Tab press {})",
+                        app.focus(),
+                        step + 1
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Whether any panel frame on screen is drawn in the accent.
+///
+/// Box-drawing glyphs only: the nav's lit item and the composer's prompt and
+/// cursor are also the accent and are unconditional chrome, so counting every
+/// accent cell would call a screen focused when nothing is.
+fn accents_a_frame(buf: &Buffer) -> bool {
+    buf.content.iter().any(|cell| {
+        cell.fg == Role::Accent.color()
+            && matches!(
+                cell.symbol(),
+                "┌" | "┐" | "└" | "┘" | "─" | "│" | "╔" | "╗" | "╚" | "╝" | "═" | "║"
+            )
+    })
+}

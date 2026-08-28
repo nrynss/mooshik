@@ -166,9 +166,24 @@ pub fn threads(grid: &mut Grid<'_>, list: &[Thread], focused: bool, cursor: usiz
         .saturating_sub(THREAD_TEXT)
         .saturating_sub(THREAD_MARGIN);
     let height = inner.height();
+    // The list scrolls to keep the cursor's thread on screen. At 24 rows — the
+    // documented minimum and the tmux pane the comments keep naming — this panel
+    // gets three interior rows, which the first thread fills on its own, so
+    // `J`/`K` moved a highlight that was simply below the interior and the screen
+    // did not change while the rule promised `J/K a thread`.
+    //
+    // Scrolling, not reordering: `1i` says the list "is always ordered by how
+    // often you return to something [so] there is no sort control", and the rank
+    // colour below is taken from the absolute position, not the window's. The
+    // week screen's day columns already window on exactly this argument.
+    let first_shown = if focused {
+        window_start(list, cursor, width, height)
+    } else {
+        0
+    };
     let mut at = 0;
 
-    for (rank, thread) in list.iter().enumerate() {
+    for (rank, thread) in list.iter().enumerate().skip(first_shown) {
         let style = if focused && rank == cursor {
             Role::Strongest.style()
         } else {
@@ -186,6 +201,9 @@ pub fn threads(grid: &mut Grid<'_>, list: &[Thread], focused: bool, cursor: usiz
             inner.put(THREAD_TEXT, at, &line, style);
             at = at.saturating_add(1);
         }
+        // Only the top thread's reason, and only while it is on screen: the
+        // reason belongs to rank 0, so a window that has scrolled past it draws
+        // none rather than promoting the next thread's.
         if rank == 0 && !thread.because.is_empty() {
             let role = if thread.because.returned {
                 Role::Returned
@@ -201,6 +219,39 @@ pub fn threads(grid: &mut Grid<'_>, list: &[Thread], focused: bool, cursor: usiz
             }
         }
     }
+}
+
+/// How many rows a thread costs in the list, reason included where it has one.
+fn thread_rows(list: &[Thread], rank: usize, width: u16) -> u16 {
+    let Some(thread) = list.get(rank) else {
+        return 0;
+    };
+    let summary = u16::try_from(wrap(&thread.summary, width).len()).unwrap_or(u16::MAX);
+    if rank == 0 && !thread.because.is_empty() {
+        let reason = u16::try_from(wrap(&thread.because.text, width).len()).unwrap_or(u16::MAX);
+        return summary.saturating_add(reason);
+    }
+    summary
+}
+
+/// The first thread to draw so that `cursor`'s own rows fit in `height`.
+///
+/// Scrolls forward only as far as it must, so the strongest threads stay on
+/// screen for as long as the cursor allows — the list's order is its meaning, and
+/// a window that jumped the cursor to the top would hide that.
+fn window_start(list: &[Thread], cursor: usize, width: u16, height: u16) -> usize {
+    let cursor = cursor.min(list.len().saturating_sub(1));
+    let mut start = 0;
+    while start < cursor {
+        let needed: u16 = (start..=cursor)
+            .map(|rank| thread_rows(list, rank, width))
+            .fold(0u16, u16::saturating_add);
+        if needed <= height {
+            break;
+        }
+        start += 1;
+    }
+    start
 }
 
 /// Draw "What leans on this" — artboard `1d`'s replacement for the thread list.
@@ -245,7 +296,13 @@ pub fn leans_on(grid: &mut Grid<'_>, thread: &Thread, at: Place) {
     // interior, where `Grid::lines` drops it without a mark. Better to show the
     // head alone, as a one- or two-row interior already does, and let the count
     // reappear with the list it is counting.
-    if at.saturating_add(1) >= height && !thread.leaned_on.is_empty() {
+    // …and it does not earn it at all when there is nothing to count. An empty
+    // list fell through to the header and read "0 things lean on it:" — a colon
+    // pointing at nothing, and no more a sentence anybody wrote than the "One
+    // things" that `header_one` exists to prevent. `Thread::leaned_on` and
+    // `Caution::leaning` are separate fields, so a caution can stand beside a
+    // thread whose dependents were never recorded.
+    if thread.leaned_on.is_empty() || at.saturating_add(1) >= height {
         return;
     }
     if at >= height {

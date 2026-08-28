@@ -246,14 +246,12 @@ impl Focus {
     /// the draft, and moved two cursors the screen never draws.
     pub const NARROW: [Self; 1] = [Self::Conversation];
 
-    /// The panels the wide Today screen draws while a caution is standing.
-    ///
-    /// [`Focus::Threads`] is absent because the caution replaces that panel with
-    /// "What leans on this", which is fixed at the caution frame and takes no
-    /// focus. Leaving it in the cycle meant `Tab Tab` accented nothing at all on
-    /// `--demo caution` — the screen did not change and there was no answer to
-    /// "where am I", which is `1i`'s whole reason for giving focus a colour.
-    pub const CAUTIONED: [Self; 3] = [Self::Conversation, Self::Today, Self::Trickle];
+    // There is no constant for the wide screen's other shapes. A standing caution
+    // takes one stop away and a short band takes one or two more, so the set
+    // depends on the terminal and on the conversation — see
+    // [`today::focusable`](super::today::focusable), which derives it from the
+    // same `Split` that decides a panel gets no rows. A fixed set here was how
+    // the cycle and the screen came to disagree twice.
 
     /// The next panel in `cycle`, wrapping. A focus the cycle does not contain
     /// — left behind by a resize out of the wide layout — snaps to its first.
