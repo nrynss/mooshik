@@ -305,11 +305,34 @@ An LLM extractor paraphrases, so one verbatim sentence becomes many concepts
 and recurrence spreads across them rather than accumulating on one. Accepted:
 Mooshik does not lean on canonization.
 
-**The residue is a recall concern, and now it is measured.** Fourteen nodes
-for one fact against `top_k` 5 means near-duplicates can fill the window and
-crowd out genuinely different memories. Worth deciding on recall's terms —
-either the extractor emits stable identity for a repeated fact, or matching
-works when embeddings lag — but not urgent, and not canonization's problem.
+**It is NOT a recall concern. That claim was wrong, and measuring killed it.**
+
+The "fourteen nodes for one fact" figure counted concepts matching a text
+*pattern* — every extraction mentioning Zephyr's quantum. Those are not
+restatements. They are distinct facts pulled from different documents:
+round-robin scheduling, trivial-task overhead, why a fixed 40 ms is
+inefficient. Text-pattern counting conflated "about the same subject" with
+"says the same thing"; the vector space does not.
+
+Measured on the clean graph with pgvector, over 40 sampled concepts:
+
+```
+nearest-neighbour distance    median 0.031
+mean distance to everything   median 0.353      -> 11.5x separation
+concepts within 0.02 (true paraphrase radius)   0.53 on average
+```
+
+Half a concept, on average, sits within genuine paraphrase distance. A
+`top_k` of 5 is not eaten by duplicates. Nearest neighbours of a seed are
+topically coherent and individually distinct — and the personal seed proves
+the domains separate: querying near the novel returns the gig, five-a-side
+football, a friend between jobs, the postponed visits, cleanly apart from the
+Zephyr and Cobalt Lantern clusters.
+
+So the paraphrase behaviour costs **canonization** (recurrence spreads across
+nodes instead of accumulating, which is why nothing climbs past Candidate)
+and costs recall nothing. Since Mooshik leans on recall and not on
+canonization, the accepted trade is cheaper than this document first claimed.
 
 ## What the whole episode was
 
