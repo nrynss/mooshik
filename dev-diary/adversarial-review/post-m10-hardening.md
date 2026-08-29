@@ -268,3 +268,55 @@ durability gate reporting durable over an incomplete graph; and a corpus whose
 recurrence was an assumption nobody had measured. Each looked healthy, and
 each masked the next — which is why they could only be found one at a time,
 in that order, against the live store.
+
+---
+
+# The clean run, 2026-08-29
+
+Graph wiped (6292 rows), image rebuilt from merged `main` at lambo
+`4c6fc93`, one ingest into session `mooshik`. First run with all four causes
+fixed at once, so the first numbers that measure the system rather than a
+defect.
+
+```
+                    M8 graph      clean run
+concepts                  44            748
+event_time stamped      0/16        106/106   across 7 days
+embedding coverage     59.1%          85.8%
+shadow twins               -              0   (was 170 on mooshik-v3)
+ingest outcome             -      succeeded   (no timeout, no failure)
+```
+
+**The `parent_of` fix is the headline.** Zero shadow twins: the unembedded
+`Entity` duplicate that used to accompany every concept is gone. Coverage now
+reflects the embedder instead of a structural defect — which settles what
+M9's 59.3% warning was firing on. Not embedder lag. Duplication nobody had
+found.
+
+**The ladder still stops at Candidate**, and no bug is responsible:
+
+```
+windpipe 512     8 nodes, best 3 days -> Candidate
+zephyr 40ms     14 nodes, best 2 days -> Candidate
+quillstone NAS   8 nodes, best 1 day  -> None
+```
+
+An LLM extractor paraphrases, so one verbatim sentence becomes many concepts
+and recurrence spreads across them rather than accumulating on one. Accepted:
+Mooshik does not lean on canonization.
+
+**The residue is a recall concern, and now it is measured.** Fourteen nodes
+for one fact against `top_k` 5 means near-duplicates can fill the window and
+crowd out genuinely different memories. Worth deciding on recall's terms —
+either the extractor emits stable identity for a repeated fact, or matching
+works when embeddings lag — but not urgent, and not canonization's problem.
+
+## What the whole episode was
+
+Six defects, and **not one was a crash.** A wire dropping a field; a policy
+defaulting to one unusable for a single writer; a decode failing only on the
+store the product runs on; a write error read as success; a durability gate
+reporting durable over an incomplete graph; and provenance wiring minting a
+twin for every concept. Each looked healthy, each masked the next, and
+several were agreed with by the offline suite. They could only be found one
+at a time, against the live store, in that order.
