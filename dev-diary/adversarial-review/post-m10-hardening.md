@@ -334,6 +334,36 @@ nodes instead of accumulating, which is why nothing climbs past Candidate)
 and costs recall nothing. Since Mooshik leans on recall and not on
 canonization, the accepted trade is cheaper than this document first claimed.
 
+## The residual 14% is not a defect either
+
+Coverage reported 85.8% (642 of 748). The 106 unembedded split exactly:
+
+```
+SELECT content LIKE 'document:%' AS is_anchor, count(*)
+  FROM concepts WHERE embedding IS NULL GROUP BY 1;
+
+  is_anchor=false   53     "Ingested file ..." action concepts
+  is_anchor=true    53     document: anchors
+                   ---
+                   106  =  53 documents x 2 provenance nodes
+```
+
+**Zero extracted concepts lack a vector.** Coverage over actual knowledge is
+642/642 = 100%. The residual is `record_action` bookkeeping — the anchor and
+the action concept per document — neither of which is ever semantically
+searched.
+
+**This biases M9's coverage gate.** The gate warns below 90%, but the metric
+counts provenance nodes in the denominator, so it is dragged down by exactly
+`2 x documents / total` — 14.2% here, on its own nearly enough to trip a 90%
+gate on a perfectly healthy graph. The original 59.3% was doubly misleading:
+shadow twins AND provenance nodes, neither of them knowledge.
+
+The fix is to measure coverage over concepts that are not provenance, or to
+stop embedding-gating on a population that includes nodes never meant to be
+embedded. Not urgent — but the gate as written cannot reach 100% by
+construction, so a future reader will chase a number that does not exist.
+
 ## What the whole episode was
 
 Six defects, and **not one was a crash.** A wire dropping a field; a policy
