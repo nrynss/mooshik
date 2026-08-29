@@ -75,11 +75,42 @@ WHERE session_id = %s
 ORDER BY id
 """
 
+#: Coverage over the **extraction population** — the same set `RAW_POOL_SQL`
+#: samples, and the same set a query can return.
+#:
+#: Counting every concept in the session was wrong, and wrong by a fixed
+#: amount rather than noisily. The ingester writes two provenance nodes per
+#: document (a `document:<src>` anchor and an "Ingested ..." action concept)
+#: and neither is ever embedded, because neither is knowledge anybody would
+#: want recalled. With `c` extracted concepts per document the bias is
+#:
+#:     2 / (c + 2)
+#:
+#: — independent of corpus size, and 14.2% on the first clean run (c = 12.1).
+#: A 90% gate therefore fires on ANY corpus averaging fewer than ~18 concepts
+#: per document, however healthy the graph, and hardest on short documents
+#: where a trustworthy signal matters most. Lowering the threshold only moves
+#: the arbitrary number; the denominator was the defect.
+#:
+#: Note this classifies by STRUCTURE, not by name: the anchors are created as
+#: `Entity`, the same type as genuine Entity concepts, so neither
+#: `concept_type` nor a `content` prefix on the measured node can separate
+#: them. The prefix here identifies the join's *source* only, exactly as the
+#: raw pool already does.
 COVERAGE_SQL = """
-SELECT count(*)      AS total,
-       count(embedding) AS embedded
-FROM concepts
-WHERE session_id = %s
+SELECT count(*)          AS total,
+       count(embedding)  AS embedded
+FROM (
+    SELECT DISTINCT c.id, c.embedding
+    FROM concepts c
+    JOIN edges e    ON e.session_id = c.session_id
+                   AND e.target = c.id
+                   AND e.edge_type = 'Hierarchical'
+    JOIN concepts d ON d.session_id = c.session_id
+                   AND d.id = e.source
+    WHERE c.session_id = %s
+      AND d.content LIKE 'document:%%'
+) extracted
 """
 
 
@@ -111,6 +142,11 @@ def rejected_pool(conn: Any, session: str) -> list[dict[str, Any]]:
 
 
 def coverage_overall(conn: Any, session: str) -> tuple[int, int]:
-    """(embedded, total) durable-embedding counts over all session concepts."""
+    """(embedded, total) durable-embedding counts over the EXTRACTION population.
+
+    Not every concept in the session: provenance nodes are never embedded by
+    design, so including them puts a floor under the metric that no healthy
+    graph can clear. See `COVERAGE_SQL`.
+    """
     row = conn.query(COVERAGE_SQL, (session,))[0]
     return int(row["embedded"]), int(row["total"])

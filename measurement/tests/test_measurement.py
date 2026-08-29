@@ -328,10 +328,36 @@ class TestCoverageAndReport:
         conn = graph_conn(coverage=(16, 27))
         assert pools.coverage_overall(conn, "mooshik") == (16, 27)
 
-    def test_coverage_sql_is_join_free(self):
-        """Fan-out regression guard: coverage must stay a single-table count
-        (a JOIN here would double-count concepts with multiple edges)."""
-        assert "join" not in pools.COVERAGE_SQL.lower()
+    def test_coverage_counts_each_concept_once_and_only_the_extracted(self):
+        """Two properties, and the first used to be asserted by proxy.
+
+        Fan-out: a concept reachable from two document anchors must count
+        once. That used to be guaranteed by forbidding a JOIN outright, but
+        coverage now has to join to reach the extraction population at all —
+        counting every concept in the session put a fixed floor under the
+        metric (two never-embedded provenance nodes per document), so a 90%
+        gate could not be cleared by a healthy graph. The property is still
+        no-double-counting; the mechanism is now DISTINCT, so assert the
+        property.
+
+        Population: the denominator must be the extracted concepts — targets
+        of a Hierarchical edge from a `document:` anchor — which is exactly
+        what RAW_POOL_SQL samples. If those two disagree, precision and
+        coverage describe different populations and neither is readable.
+        """
+        sql = pools.COVERAGE_SQL.lower()
+        if "join" in sql:
+            assert "distinct" in sql, (
+                "a joined coverage query must de-duplicate, or a concept with "
+                "two document parents is counted twice"
+            )
+        assert "hierarchical" in sql and "document:" in sql, (
+            "coverage must measure the extraction population, not every node"
+        )
+        # And it must agree with the pool precision is measured over.
+        for fragment in ("edge_type = 'hierarchical'", "d.content like 'document:"):
+            assert fragment in sql, fragment
+            assert fragment in pools.RAW_POOL_SQL.lower(), fragment
 
     def test_report_leads_with_coverage_and_gates_low_values(self):
         items, sizes = run_sampling(graph_conn(), "s", 4, 0, 4, seed=11)
