@@ -449,8 +449,10 @@ fn days<Tz: TimeZone>(
 /// The test is over the graph's contents rather than this turn's own, because a
 /// turn that re-derives an existing thought creates no concept — the reinforced
 /// concept's origin is the first turn that reached it, not this one. The cost is
-/// one over-approximation: a person whose sentence is *exactly* a concept in the
-/// graph is read as an echo. Nothing in this product records a person's sentence
+/// two over-approximations: a prompt is dropped when it is *exactly* a concept
+/// in the graph, and also when every clause of it, split on the join separator
+/// (`"; "`), is a concept — a multi-clause sentence disappears without itself
+/// having been a concept. Nothing in this product records a person's sentence
 /// yet, and when something does, an extracted fact is not the sentence it came
 /// from.
 fn said<'a>(contents: &HashSet<&str>, interaction: &'a Interaction) -> Option<&'a str> {
@@ -486,7 +488,12 @@ fn concept_contents(graph: &Graph) -> HashSet<&str> {
 ///
 /// An action recorded with no targets has no such edge and reads as an ordinary
 /// thought. That is the honest limit of this: the bookkeeping this product
-/// actually writes always names what it produced.
+/// actually writes always names what it produced. The reverse is also a limit:
+/// `record_action` resolves its action string through canonicalization and
+/// reuses an existing node on a key match, so an action whose text
+/// canonicalizes onto a thought the user already had turns that thought into
+/// the action node — and `bookkeeping` then hides a real thought from both
+/// panels permanently, because the `Causal` edge never goes away.
 fn action_nodes(graph: &Graph) -> HashSet<NodeId> {
     graph
         .edges()
