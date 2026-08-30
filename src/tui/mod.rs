@@ -230,6 +230,14 @@ extern "C" fn note_signal(_signal: libc::c_int) {
     LEAVING.store(true, Ordering::Relaxed);
 }
 
+/// The dispositions that were in place before [`leave_on_signals`] installed
+/// the session's handler, so [`run`] can put them back once the loop leaves.
+#[cfg(unix)]
+struct SignalDispositions {
+    term: libc::sigaction,
+    hup: libc::sigaction,
+}
+
 /// Take SIGTERM and SIGHUP for the length of the session.
 ///
 /// Under the default disposition both kill the process where it stands, which
@@ -245,33 +253,61 @@ extern "C" fn note_signal(_signal: libc::c_int) {
 /// closed from the handler itself — closing is an async call and belongs on the
 /// path that already runs it.
 ///
-/// The previous disposition is not kept, because there is nowhere to put it back
-/// on: the loop leaves and the command returns. SIGINT is deliberately not taken
-/// — raw mode turns off `ISIG`, so Ctrl-C arrives as a key and is already bound.
+/// The previous dispositions are captured and returned, because they must be
+/// put back: after the loop the command is still closing — the session's
+/// `close` runs after [`run`] returns — and a kill there must behave as it
+/// always did, not set a flag nobody reads. SIGINT is deliberately not taken —
+/// raw mode turns off `ISIG`, so Ctrl-C arrives as a key and is already bound.
 #[cfg(unix)]
-fn leave_on_signals() {
+fn leave_on_signals() -> SignalDispositions {
     // SAFETY: a zeroed `sigaction` is a valid one (no flags, empty mask), the
     // handler has C linkage and does nothing but a relaxed store, and the
-    // out-parameter is null because no previous disposition is wanted back.
+    // out-parameter receives the previous disposition so [`run`] can put it
+    // back.
     unsafe {
         let mut action: libc::sigaction = std::mem::zeroed();
         action.sa_sigaction = note_signal as *const () as libc::sighandler_t;
         libc::sigemptyset(&mut action.sa_mask);
-        for signal in [libc::SIGTERM, libc::SIGHUP] {
-            libc::sigaction(signal, &action, std::ptr::null_mut());
-        }
+        let mut previous = SignalDispositions {
+            term: std::mem::zeroed(),
+            hup: std::mem::zeroed(),
+        };
+        libc::sigaction(libc::SIGTERM, &action, &mut previous.term);
+        libc::sigaction(libc::SIGHUP, &action, &mut previous.hup);
+        previous
+    }
+}
+
+/// Put back the dispositions [`leave_on_signals`] captured, once the loop is
+/// over and the terminal is restored.
+#[cfg(unix)]
+fn restore_signals(previous: SignalDispositions) {
+    // SAFETY: `previous` is exactly what `sigaction` wrote out as the old
+    // disposition, and `sigaction` (with no flags) installs a handler
+    // synchronously, so this is the inverse of the install.
+    unsafe {
+        libc::sigaction(libc::SIGTERM, &previous.term, std::ptr::null_mut());
+        libc::sigaction(libc::SIGHUP, &previous.hup, std::ptr::null_mut());
     }
 }
 
 #[cfg(not(unix))]
 fn leave_on_signals() {}
 
+#[cfg(not(unix))]
+fn restore_signals(_previous: ()) {}
+
 /// Run the TUI until the user leaves, putting the terminal back either way.
+///
+/// SIGTERM and SIGHUP are taken for the length of the loop and restored
+/// afterwards, so a signal after this returns — the session's `close` included
+/// — behaves under its old disposition again.
 pub fn run(mut terminal: ratatui::DefaultTerminal, workspace: Workspace) -> io::Result<()> {
     LEAVING.store(false, Ordering::Relaxed);
-    leave_on_signals();
+    let previous = leave_on_signals();
     let result = event_loop(&mut terminal, workspace);
     ratatui::restore();
+    restore_signals(previous);
     result
 }
 
@@ -318,20 +354,51 @@ mod tests {
     /// The install is a precondition of this test rather than a step in it:
     /// raising either signal under the default disposition kills the whole test
     /// binary, so a broken [`leave_on_signals`] fails this loudly and
-    /// immediately. The flag is put back afterwards because it is process-wide.
+    /// immediately. The flag is put back afterwards because it is process-wide,
+    /// and the disposition is restored again too, so a later `kill` on the
+    /// suite is not swallowed by a handler nothing reads any more.
     #[cfg(unix)]
     #[test]
     fn a_termination_signal_asks_the_session_to_leave() {
         for signal in [libc::SIGTERM, libc::SIGHUP] {
             LEAVING.store(false, Ordering::Relaxed);
-            leave_on_signals();
+            let previous = leave_on_signals();
             assert!(!asked_to_leave());
             // SAFETY: `raise` delivers to this thread, where the handler
             // installed above runs before the call returns.
             assert_eq!(unsafe { libc::raise(signal) }, 0, "signal {signal}");
             assert!(asked_to_leave(), "signal {signal} did not end the session");
+            restore_signals(previous);
         }
         LEAVING.store(false, Ordering::Relaxed);
+    }
+
+    /// The dispositions [`leave_on_signals`] takes are restored when the
+    /// session ends, so a signal after [`run`] returns — the session's close,
+    /// in particular — behaves as it did before instead of setting a flag
+    /// nobody reads. The readback is the proof: in the suite both signals
+    /// start at `SIG_DFL`, and an install/restore pair must leave them there.
+    #[cfg(unix)]
+    #[test]
+    fn a_termination_signal_disposition_is_restored_after_the_session() {
+        let disposition = |signal: libc::c_int| -> libc::sigaction {
+            // SAFETY: `out` is a zeroed but valid out-parameter, and a read
+            // with a null new-disposition pointer installs nothing.
+            let mut out: libc::sigaction = unsafe { std::mem::zeroed() };
+            let result = unsafe { libc::sigaction(signal, std::ptr::null(), &mut out) };
+            assert_eq!(result, 0, "reading the disposition of {signal} failed");
+            out
+        };
+        for signal in [libc::SIGTERM, libc::SIGHUP] {
+            let before = disposition(signal);
+            let previous = leave_on_signals();
+            restore_signals(previous);
+            let after = disposition(signal);
+            assert_eq!(
+                after.sa_sigaction, before.sa_sigaction,
+                "signal {signal} was left with the session's handler installed",
+            );
+        }
     }
 
     /// A run with no terminal is refused before anything is written, so the

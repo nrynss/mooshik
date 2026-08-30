@@ -18,10 +18,11 @@
 //! **The live path is an ordinary holder of the single-writer lease, exactly as
 //! `chat` is.** It takes it for the length of the session and gives it back on
 //! the way out, so a `mooshik tui` left open in a tmux split is a writer another
-//! process can see and be refused by — with Lambo's own conflict sentence, which
-//! names the holder and the override. That refusal is a user error and leaves
-//! with exit code 2. There is no read-only or proxied second view; a workspace
-//! served through somebody else's lease is a different design and not this one.
+//! process can see and be refused by — with Mooshik's own conflict sentence,
+//! which names the holder and no override or page this product does not ship.
+//! That refusal is a user error and leaves with exit code 2. There is no
+//! read-only or proxied second view; a workspace served through somebody
+//! else's lease is a different design and not this one.
 //!
 //! The session is closed **after** the terminal is put back, on every way out of
 //! the loop. Closing is what makes the write-behind tail durable, so `Esc`, a
