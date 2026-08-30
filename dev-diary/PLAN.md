@@ -39,8 +39,11 @@ M2 ─→ M8 ─→ M9 ───────────────────
 
 (M5, M6) ─→ M7        validate and repair the CLI grown across M2–M6
 
+M11 ─→ M12           the ambient layer: the data behind the surface
+
 The CLI itself is not deferred to M7 — it grows with each milestone. M7 is the sweep.
-M11 is last on purpose and is allowed to fail; see M11.
+M11 is last on purpose and is allowed to fail; see M11. M12 exists because it did not:
+the surface landed, so the data behind it became worth building.
 ```
 
 ### Status (2026-08-25)
@@ -59,6 +62,7 @@ M11 is last on purpose and is allowed to fail; see M11.
 | **M9** | Built 2026-08-26, `measurement/` subpackage, commits through `1f3217e`. Review round 2 **APPROVE**, zero residue (`m9-round2.md`). Live on the M8 graph: coverage 59.3% gated, raw precision 10/10, canonization promoted nothing (the predicted pathology, now measured). |
 | **M10** | Built 2026-08-26, `2bc5665` → `f50765f`. Review round 2 **APPROVE**, zero residue (`m10-round2.md`). MCP host: configured servers, vault-ref env, `mcp.<server>.<tool>` naming, gate+redaction integrated, live-verified against real `lambo serve`. |
 | **M11** | Built 2026-08-27, `m11-tui`. The surface is built; the data behind it is not — Today, the week and an 80x24 narrow layout draw from one view model, the `1i` palette rules are enforced in code and held by cross-screen tests, and `--demo` opens no database. Still allowed to fail: no capability lives only here. See M11 below. |
+| **M12a** | Built 2026-08-30, `cf3dcbb`. `memory::view` reads the open graph into the view model: the week ending today, each day's log, the ribbon, what keeps coming back and what was just remembered, every placement resolved through `Interaction::about_time`. `mooshik tui` now holds the session for the length of the pane and closes it on the way out. Prose is deliberately unwritten — mood, gutter summaries, notes and a thread's reason are M12c's. See M12 below. |
 
 Lambo pin: `nrynss/lambo` git `rev = 71334f0` (`lambo-for-mooshik`). E1/E2 (path dep, then rev pin) were done as the rev pin directly; bump the SHA after a Lambo fix.
 
@@ -659,6 +663,45 @@ stays where it was typed. The screens read the view model and never a store, so 
 this in is a change to `tui::live` and nothing else.
 
 **Still allowed to fail.** No capability lives only here.
+
+---
+
+## M12 — The ambient layer
+
+**The data behind M11's surface.** The TUI landed, which means the safety valve was never pulled and
+the pane is now the face of the product — opening on empty panels, because the screens are a pure
+function of a view model nothing was filling. M12 fills it, and then keeps it filled while the pane
+is open. Four tasks, none of which touches a screen: the whole point of M11's shape is that this is
+a change to what feeds the model.
+
+* **M12a — the workspace snapshot.** Build `tui::model::Workspace` from the live graph: the seven
+  days ending today and their logs, the ribbon, what keeps coming back, what was just remembered,
+  and the clock. Every placement resolves through `Interaction::about_time` and a concept's is its
+  origin turn's, so a bootstrapped decade does not collapse into the afternoon it was ingested. A
+  pure function of a graph and an instant, testable without a terminal or a database.
+* **M12b — the tick.** The redraw loop already wakes every 250ms so a resize is picked up. Rebuild
+  the view model on that tick instead of once at startup, so a write from anywhere else — the
+  ingester, an MCP client, the reflect pass — appears in the pane the user left open without a
+  keystroke. The cost of a rebuild against a session-sized graph is the thing to measure first;
+  M12a's builder is one pass over interactions and one over concepts, on purpose.
+* **M12c — `mooshik reflect`.** A one-shot consolidation pass over the session. It writes the prose
+  M12a deliberately leaves empty — how a day felt, its four-words-a-line gutter summary, the
+  trailing notes on its detail pane, and why a thread sits where it does — and consolidates the
+  paraphrase twins the post-M10 review measured. Everything on screen that is a written sentence
+  rather than a fact comes from here, which is why M12a leaves the fields absent rather than filling
+  them with a truncated log.
+* **M12d — the watcher.** Filesystem and git changes under the workspace, derived as they happen, so
+  the memory is ambient rather than something the user has to remember to tell. This is the task
+  that makes the other three worth having.
+
+**The daemon is explicitly out of scope.** A background process that outlives the terminal is a
+different product decision — install, supervision, a second lease holder, and a thing running on a
+machine when nobody asked it to. M12b's refresh happens inside the pane the user opened and stops
+when they close it; M12c is a command they run; M12d watches for as long as something is open. If a
+daemon is ever wanted, it is its own milestone with its own argument.
+
+**Depends on:** M11 for the surface, M2 for the graph. **Done when:** `mooshik tui` opens on the
+user's own week.
 
 ---
 
