@@ -40,8 +40,13 @@ pub fn resolve_store(config: &Config) -> Result<Box<dyn lambo::GraphStore>, Memo
 /// Creating it first, through the same primitive the config and the vault use,
 /// means it never exists at a wider mode; reopening one that already exists
 /// repairs it, which is what `init` does for the other files on every run.
-/// SQLite gives the `-wal` and `-shm` side files the database's own mode, so the
-/// two of them follow without being named here.
+///
+/// SQLite names the `-wal` and `-shm` side files after the database and gives
+/// them the database's mode only when it *creates* them — so on a home where
+/// the database already existed at a wider mode, both side files keep the wide
+/// mode indefinitely (a clean close leaves a WAL in place, growing). They are
+/// repaired here the same way, when present; an absent side file is left for
+/// SQLite to make.
 ///
 /// A store that names no local file — Postgres, and sqlite's in-memory
 /// spellings — has nothing to claim. The in-memory grammar is sqlx's, mirrored
@@ -84,6 +89,26 @@ fn claim_local_store(config: &Config) -> Result<(), MemoryError> {
     let (parent, leaf) = secure_path::open_parent(Path::new(database), false).map_err(file)?;
     let leaf: &OsStr = &leaf;
     secure_path::ensure_private_file_at(&parent, leaf, b"").map_err(file)?;
+
+    // SQLite's own side files, claimed the same way — but only when present.
+    // It copies the database's mode onto `-wal`/`-shm` when it *creates* them,
+    // which is exactly the case that is already safe; a side file that predates
+    // this claim keeps whatever mode the database had, so on an old home both
+    // stay wide until this repair reaches them. Never create the files here —
+    // a `-wal` without a database opening has no business existing, so an
+    // absent side file is skipped.
+    use std::os::unix::fs::PermissionsExt;
+    for side in ["-wal", "-shm"] {
+        let mut side_leaf = leaf.to_os_string();
+        side_leaf.push(side);
+        let Some(side_file) = secure_path::open_existing_at(&parent, &side_leaf).map_err(file)?
+        else {
+            continue;
+        };
+        side_file
+            .set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(file)?;
+    }
     Ok(())
 }
 

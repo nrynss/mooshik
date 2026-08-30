@@ -232,9 +232,14 @@ mod tests {
     /// `0600`. Everything the user has ever remembered was the one file in the
     /// home a second account on the machine could read.
     ///
-    /// Both halves: a database this run brings into existence, and one that is
-    /// already there at a wider mode, which `init` repairs the same way it
-    /// repairs the config's.
+    /// A database is not the only file that can carry the memory, though.
+    /// SQLite names the `-wal` and `-shm` side files after the database and
+    /// copies the database's mode when it *creates* them — so on a home where
+    /// database and side files all started at `0644`, a repair that stops at
+    /// the database leaves the WAL readable for as long as it lives, and a
+    /// clean close does not delete it. Both halves are exercised for all three
+    /// files: a fresh home where every one is born from a private database,
+    /// and a home somebody widened where the next run narrows them all again.
     #[cfg(unix)]
     #[tokio::test]
     async fn the_local_database_is_created_and_repaired_private() {
@@ -255,20 +260,16 @@ mod tests {
         config.store.kind = StoreKind::Sqlite;
         config.store.path = Some(database.to_string_lossy().into_owned());
 
-        provision(&config).await.unwrap();
+        // The three files SQLite can leave a memory in — the database and the
+        // side files it names after it. The `-wal` in particular survives a
+        // clean close and keeps growing.
+        let files = ["graph.db", "graph.db-wal", "graph.db-shm"];
         let mode =
             |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
-        assert!(database.is_file(), "provision wrote no database");
-        assert_eq!(mode(&database), 0o600, "a fresh database is world-readable");
 
-        // And a database somebody has already widened is narrowed again on the
-        // next run, which is what `HomeLayout::init` does for every other file.
-        std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o644)).unwrap();
+        // Fresh home: `provision` creates the database, and a real session
+        // creates the side files beside it. Every one must end up private.
         provision(&config).await.unwrap();
-        assert_eq!(mode(&database), 0o600, "a widened database was left open");
-
-        // The session's own writes still land in it, and the mode survives them
-        // — this is the file the product opens, not an empty one beside it.
         let memory = open(&config).await.unwrap();
         memory
             .derive(
@@ -278,8 +279,29 @@ mod tests {
             .await
             .unwrap();
         memory.close().await.unwrap();
-        assert_eq!(mode(&database), 0o600);
-        assert!(std::fs::metadata(&database).unwrap().len() > 0);
+        for name in files {
+            let path = home.join(name);
+            assert!(path.is_file(), "a session left no {name}");
+            assert_eq!(mode(&path), 0o600, "a fresh {name} is world-readable");
+        }
+        assert!(
+            std::fs::metadata(home.join("graph.db-wal")).unwrap().len() > 0,
+            "the widening below assumes the wal carries content"
+        );
+
+        // A home somebody has already widened is narrowed again on the next
+        // run — every one of the three, which is the upgrade path the repair
+        // exists for. The wal is still here with its content; a repair that
+        // stopped at the database would leave the two side files readable.
+        for name in files {
+            let path = home.join(name);
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        provision(&config).await.unwrap();
+        for name in files {
+            let path = home.join(name);
+            assert_eq!(mode(&path), 0o600, "a widened {name} was left open");
+        }
         let _ = std::fs::remove_dir_all(&home);
     }
 
