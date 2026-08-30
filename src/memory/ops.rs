@@ -224,6 +224,84 @@ mod tests {
         assert_eq!(health.concept_count, 0);
     }
 
+    /// The local database is as private as everything else `init` writes.
+    ///
+    /// sqlx opens the sqlite store with `create_if_missing`, so on a first run
+    /// the file is created under the process umask — `0644` on an ordinary
+    /// account — while the config, the vault and the marker beside it are all
+    /// `0600`. Everything the user has ever remembered was the one file in the
+    /// home a second account on the machine could read.
+    ///
+    /// Both halves: a database this run brings into existence, and one that is
+    /// already there at a wider mode, which `init` repairs the same way it
+    /// repairs the config's.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_local_database_is_created_and_repaired_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = crate::secure_path::canonical_temp_dir().join(format!(
+            "mooshik-store-mode-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let database = home.join("graph.db");
+
+        let mut config = fixture_config();
+        config.store.kind = StoreKind::Sqlite;
+        config.store.path = Some(database.to_string_lossy().into_owned());
+
+        provision(&config).await.unwrap();
+        let mode =
+            |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert!(database.is_file(), "provision wrote no database");
+        assert_eq!(mode(&database), 0o600, "a fresh database is world-readable");
+
+        // And a database somebody has already widened is narrowed again on the
+        // next run, which is what `HomeLayout::init` does for every other file.
+        std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o644)).unwrap();
+        provision(&config).await.unwrap();
+        assert_eq!(mode(&database), 0o600, "a widened database was left open");
+
+        // The session's own writes still land in it, and the mode survives them
+        // — this is the file the product opens, not an empty one beside it.
+        let memory = open(&config).await.unwrap();
+        memory
+            .derive(
+                &[("the ring holds 512", ConceptType::Entity)],
+                &ParentOf::none(),
+            )
+            .await
+            .unwrap();
+        memory.close().await.unwrap();
+        assert_eq!(mode(&database), 0o600);
+        assert!(std::fs::metadata(&database).unwrap().len() > 0);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A store that names no local file has nothing to claim, and provisioning
+    /// it must not go looking for one.
+    #[tokio::test]
+    async fn a_store_with_no_local_file_is_provisioned_without_one() {
+        for path in [":memory:", "sqlite::memory:", "sqlite://file:x?mode=memory"] {
+            let mut config = fixture_config();
+            config.store.kind = StoreKind::Sqlite;
+            config.store.path = Some(path.to_owned());
+            provision(&config).await.unwrap_or_else(|error| {
+                panic!("{path} refused to provision: {error}");
+            });
+        }
+        // And Postgres reaches its own missing-DSN refusal, not a file error.
+        assert!(matches!(
+            provision(&Config::default()).await,
+            Err(MemoryError::MissingDsn)
+        ));
+    }
+
     #[tokio::test]
     async fn provision_does_not_construct_an_embedder() {
         let mut config = Config::default();

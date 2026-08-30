@@ -4,9 +4,12 @@ use lambo::{PromotionPolicy, ResolvedBackends, StoreKind};
 
 use super::MemoryError;
 use crate::config::Config;
+#[cfg(unix)]
+use crate::secure_path;
 
 pub fn resolve_product(config: &Config) -> Result<ResolvedBackends, MemoryError> {
     require_postgres_dsn(config)?;
+    claim_local_store(config)?;
     let mut backends = lambo::resolve_backends(config.to_lambo_file())?;
     backends.config.promotion_policy = PromotionPolicy::Solo;
     backends.config.backend_flush_interval = Duration::from_millis(config.daemon.flush_interval_ms);
@@ -17,11 +20,76 @@ pub fn resolve_product(config: &Config) -> Result<ResolvedBackends, MemoryError>
 /// Store-only construction for `init` / provision. Does not build an embedder.
 pub fn resolve_store(config: &Config) -> Result<Box<dyn lambo::GraphStore>, MemoryError> {
     require_postgres_dsn(config)?;
+    claim_local_store(config)?;
     lambo::store::build_store_with_vector_dim(
         config.store.to_lambo(),
         Some(config.embedder.dim).filter(|dim| *dim > 0),
     )
     .map_err(|error| lambo::LamboError::Config(error.to_string()).into())
+}
+
+/// Bring the local database into existence privately, before anything opens it.
+///
+/// The sqlite store is opened with `create_if_missing`, so on a first run the
+/// file is created by sqlx and takes the process umask — `0644` on an ordinary
+/// account. Everything else `mooshik init` writes is `0600`: the config, the
+/// vault, the marker, the logs directory at `0700`. This one file holds
+/// everything the user has ever remembered, and it was the only world-readable
+/// thing in the home.
+///
+/// Creating it first, through the same primitive the config and the vault use,
+/// means it never exists at a wider mode; reopening one that already exists
+/// repairs it, which is what `init` does for the other files on every run.
+/// SQLite gives the `-wal` and `-shm` side files the database's own mode, so the
+/// two of them follow without being named here.
+///
+/// A store that names no local file — Postgres, and sqlite's in-memory
+/// spellings — has nothing to claim. The in-memory grammar is sqlx's, mirrored
+/// from `SqliteStore::is_in_memory_uri`: the database part is `:memory:`, or a
+/// query parameter says `mode=memory`.
+#[cfg(unix)]
+fn claim_local_store(config: &Config) -> Result<(), MemoryError> {
+    use std::{ffi::OsStr, path::Path};
+
+    if config.store.kind != StoreKind::Sqlite {
+        return Ok(());
+    }
+    let Some(target) = config
+        .store
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    else {
+        return Ok(());
+    };
+    let stripped = target
+        .trim_start_matches("sqlite://")
+        .trim_start_matches("sqlite:");
+    let (database, params) = match stripped.split_once('?') {
+        Some((database, query)) => (database, Some(query)),
+        None => (stripped, None),
+    };
+    let in_memory = database == ":memory:"
+        || params.is_some_and(|query| query.split('&').any(|param| param == "mode=memory"));
+    if in_memory || database.is_empty() {
+        return Ok(());
+    }
+
+    let file = |error: std::io::Error| -> MemoryError {
+        // Through `Backend`, whose `Display` prints fixed advice and never its
+        // source, so the path never reaches the terminal.
+        lambo::LamboError::Config(format!("workspace database: {error}")).into()
+    };
+    let (parent, leaf) = secure_path::open_parent(Path::new(database), false).map_err(file)?;
+    let leaf: &OsStr = &leaf;
+    secure_path::ensure_private_file_at(&parent, leaf, b"").map_err(file)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn claim_local_store(_config: &Config) -> Result<(), MemoryError> {
+    Ok(())
 }
 
 fn require_postgres_dsn(config: &Config) -> Result<(), MemoryError> {
