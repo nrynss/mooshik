@@ -415,26 +415,37 @@ struct Sandbox {
 /// created in the same instant different names.
 static SANDBOXES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// The directory name for a sandbox created at `instant`.
+///
+/// Three parts, and all three are load-bearing: the pid separates processes,
+/// the counter separates two calls inside one, and the clock separates this run
+/// from a directory a crashed one left behind (the drop that removes it does
+/// not run on a kill). The clock alone did not: macOS's realtime clock advances
+/// in microseconds, so two sandboxes opened in the same microsecond drew the
+/// same name and the loser failed with "File exists" — the same fault the vault
+/// fixtures hit on Darwin.
+fn name(instant: std::time::SystemTime) -> String {
+    format!(
+        "mooshik-scratch-{}-{:x}-{:x}",
+        std::process::id(),
+        instant
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0),
+        SANDBOXES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
 impl Sandbox {
     fn create() -> Result<Self, String> {
-        // Three parts, and all three are load-bearing: the pid separates
-        // processes, the counter separates two calls inside one, and the clock
-        // separates this run from a directory a crashed one left behind (the
-        // drop that removes it does not run on a kill). The clock alone did not:
-        // macOS's realtime clock advances in microseconds, so two sandboxes
-        // opened in the same microsecond drew the same name and the loser failed
-        // with "File exists" — the same fault the vault fixtures hit on Darwin.
-        let id = format!(
-            "mooshik-scratch-{}-{:x}-{:x}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.subsec_nanos())
-                .unwrap_or(0),
-            SANDBOXES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        );
-        let dir = std::env::temp_dir().join(id);
+        let dir = std::env::temp_dir().join(name(std::time::SystemTime::now()));
         fs::create_dir(&dir).map_err(|error| fun("tools.scratch_sandbox_failed", &error))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
+                .map_err(|error| fun("tools.scratch_sandbox_failed", &error))?;
+        }
         Ok(Self { dir })
     }
 
@@ -447,6 +458,12 @@ impl Sandbox {
         let path = self.dir.join(name);
         let mut file =
             fs::File::create(&path).map_err(|error| fun("tools.scratch_write_failed", &error))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                .map_err(|error| fun("tools.scratch_write_failed", &error))?;
+        }
         file.write_all(code.as_bytes())
             .map_err(|error| fun("tools.scratch_write_failed", &error))?;
         Ok(path)
@@ -540,13 +557,17 @@ mod tests {
     /// drew the same name and the loser failed with "File exists" — reachable
     /// from two concurrent tool calls, and reached by this suite's own parallel
     /// tests. The clock is sampled once here so the test does not have to win a
-    /// race to observe the fault it is guarding.
+    /// race to observe the fault it is guarding: both names are built from that
+    /// one instant, so the counter alone must separate them.
     #[test]
     fn two_sandboxes_opened_in_the_same_instant_are_two_directories() {
-        let first = Sandbox::create().expect("a sandbox");
-        let second = Sandbox::create().expect("a second sandbox");
-        assert_ne!(first.path(), second.path());
-        assert!(first.path().is_dir() && second.path().is_dir());
+        let instant = std::time::SystemTime::now();
+        let first = name(instant);
+        let second = name(instant);
+        assert_ne!(
+            first, second,
+            "two names built from one instant must differ"
+        );
     }
 
     #[test]
@@ -629,5 +650,149 @@ mod tests {
         .unwrap();
         assert_eq!(out.exit_code, Some(7));
         assert_eq!(out.stdout.trim(), "boom");
+    }
+
+    /// The sandbox and its model-authored script stay private in `/tmp`.
+    ///
+    /// `fs::create_dir`/`fs::File::create` take the process umask, so under the
+    /// ordinary 022 the dir came out 0755 and the script 0644 — readable by
+    /// every account on the machine from the world-writable temp root, and the
+    /// drop that removes them does not run on a kill, so the exposure outlives
+    /// the run. The interpreter is exec'd as the invoking user into the sandbox
+    /// cwd, so 0700/0600 costs nothing functionally; the dir is asserted at
+    /// 0700 because that is what keeps the script (and anything else the run
+    /// wrote) unreachable to other accounts even where the script's own 0600
+    /// would not.
+    ///
+    /// The create and write happen in a forked child under umask 0, so the pin
+    /// catches a dropped `set_permissions` whatever umask the suite runs under —
+    /// and no other thread's umask is touched: the umask lives in the
+    /// process-shared `fs_struct` (CLONE_FS), so setting it in a suite thread
+    /// would apply to every thread of the test binary for the window.
+    #[cfg(unix)]
+    #[test]
+    fn the_scratch_sandbox_and_script_stay_private() {
+        use std::io::Read;
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::io::FromRawFd;
+
+        let mut fds = [0 as libc::c_int; 2];
+        // SAFETY: `pipe` fills two real fds or returns -1. Both are closed on
+        // every path: the child closes the read end and exits via `_exit`
+        // (which runs no destructors), and the parent closes the write end
+        // immediately and the read end through the `File` that owns it.
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "pipe failed");
+        // SAFETY: `fork` returns the child's pid or -1. The child runs only
+        // `Sandbox::create`/`write_script` (which allocate) and then `_exit`s;
+        // glibc's `pthread_atfork` handlers reinitialise the allocator locks
+        // in the child, so those allocations are safe even though the test
+        // binary is multi-threaded.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            // The child: create and write under umask 0, report the two
+            // modes, and leave without running any harness code.
+            // SAFETY: the read end is unused in the child.
+            unsafe {
+                libc::close(fds[0]);
+            }
+            let outcome = (|| -> Result<[u8; 8], String> {
+                // SAFETY: `umask` is always valid; the previous value is
+                // discarded because the child exits.
+                unsafe {
+                    libc::umask(0o000);
+                }
+                let sandbox = Sandbox::create()?;
+                let script = sandbox.write_script("echo hi", ScratchLanguage::Bash)?;
+                let dir_mode = fs::metadata(&sandbox.dir)
+                    .map_err(|error| error.to_string())?
+                    .permissions()
+                    .mode()
+                    & 0o777;
+                let script_mode = fs::metadata(&script)
+                    .map_err(|error| error.to_string())?
+                    .permissions()
+                    .mode()
+                    & 0o777;
+                let mut report = [0u8; 8];
+                report[..4].copy_from_slice(&dir_mode.to_le_bytes());
+                report[4..].copy_from_slice(&script_mode.to_le_bytes());
+                Ok(report)
+            })();
+            match outcome {
+                Ok(report) => {
+                    // SAFETY: the 8-byte write is atomic (PIPE_BUF is 4096),
+                    // retried on EINTR; a failure exits 3, which the parent
+                    // reports. `_exit` runs no destructors.
+                    let mut written = 0usize;
+                    while written < report.len() {
+                        let n = unsafe {
+                            libc::write(
+                                fds[1],
+                                report.as_ptr().add(written) as *const libc::c_void,
+                                report.len() - written,
+                            )
+                        };
+                        if n < 0 {
+                            let error = std::io::Error::last_os_error();
+                            if error.kind() == std::io::ErrorKind::Interrupted {
+                                continue;
+                            }
+                            unsafe {
+                                libc::_exit(3);
+                            }
+                        }
+                        written += n as usize;
+                    }
+                    unsafe {
+                        libc::_exit(0);
+                    }
+                }
+                Err(_) => unsafe {
+                    libc::_exit(2);
+                },
+            }
+        }
+
+        // The parent: close the write end, reap the child, read the report.
+        // SAFETY: the write end is unused in the parent from here on.
+        unsafe {
+            libc::close(fds[1]);
+        }
+        // SAFETY: `waitpid` with a null rusage; `status` is only read through
+        // the `WIFEXITED`/`WEXITSTATUS` macros and `reaped` must equal `pid`.
+        let mut status = 0;
+        let reaped = unsafe { libc::waitpid(pid, &mut status, 0) };
+        assert_eq!(reaped, pid, "waitpid did not reap the sandbox child");
+        assert!(
+            libc::WIFEXITED(status),
+            "the sandbox child did not exit normally"
+        );
+        assert_eq!(
+            libc::WEXITSTATUS(status),
+            0,
+            "the sandbox child could not create or write the sandbox"
+        );
+        // SAFETY: `fds[0]` is a real open read end; the `File` owns it and
+        // closes it on drop.
+        let mut report = [0u8; 8];
+        let mut reader = unsafe { std::fs::File::from_raw_fd(fds[0]) };
+        reader
+            .read_exact(&mut report)
+            .expect("the sandbox child wrote no report");
+        let mut dir_bytes = [0u8; 4];
+        dir_bytes.copy_from_slice(&report[..4]);
+        let mut script_bytes = [0u8; 4];
+        script_bytes.copy_from_slice(&report[4..]);
+        let dir_mode = u32::from_le_bytes(dir_bytes);
+        let script_mode = u32::from_le_bytes(script_bytes);
+        assert_eq!(
+            dir_mode, 0o700,
+            "sandbox dir must not be readable by other accounts, got {dir_mode:o}"
+        );
+        assert_eq!(
+            script_mode, 0o600,
+            "sandbox script must not be readable by other accounts, got {script_mode:o}"
+        );
     }
 }
