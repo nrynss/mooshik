@@ -223,7 +223,10 @@ fn exit_codes_distinguish_user_error_from_internal_failure() {
         anyhow::Error::new(VaultError::MissingPassphrase),
         anyhow::Error::new(VaultError::InvalidFormat),
         anyhow::Error::new(VaultError::UnsafePath),
-        anyhow::Error::new(VaultError::LockFailed),
+        anyhow::Error::new(VaultError::LockFailed {
+            stage: crate::vault::LockStage::Acquire,
+            errno: None,
+        }),
         anyhow::Error::new(VaultError::Keyring),
         anyhow::Error::new(MemoryError::MissingDsn),
         anyhow::Error::new(MemoryError::SessionConflict(

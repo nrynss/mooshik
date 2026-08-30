@@ -90,7 +90,7 @@ fn is_user_error(error: &anyhow::Error) -> bool {
                         // not an internal failure.
                         | VaultError::InvalidFormat
                         | VaultError::UnsafePath
-                        | VaultError::LockFailed
+                        | VaultError::LockFailed { .. }
                         | VaultError::Keyring
                 )
             })

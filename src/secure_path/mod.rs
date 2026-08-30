@@ -580,6 +580,40 @@ fn open_file_at(parent: &File, leaf: &OsStr, create: bool, truncate: bool) -> io
     file_from_fd(fd)
 }
 
+/// Which side of [`open_or_create_at`] produced the descriptor, for callers
+/// that must seed a file they brought into existence.
+#[cfg(unix)]
+enum Opened {
+    Existing(File),
+    Created(File),
+}
+
+/// Open `leaf` under `parent`, creating it if it is absent.
+///
+/// macOS hands the loser of a simultaneous non-exclusive `O_CREAT` open ENOENT
+/// rather than the file the winner just created, so one create attempt does
+/// not settle the question — the loser has to look again. Bounded, so a name
+/// being unlinked as fast as it is created fails closed with the platform's
+/// own error instead of spinning.
+#[cfg(unix)]
+fn open_or_create_at(parent: &File, leaf: &OsStr) -> io::Result<Opened> {
+    const ATTEMPTS: u32 = 8;
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match open_file_at(parent, leaf, false, false) {
+            Ok(file) => return Ok(Opened::Existing(file)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        match open_file_at(parent, leaf, true, false) {
+            Ok(file) => return Ok(Opened::Created(file)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound && attempt < ATTEMPTS => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 #[cfg(unix)]
 pub(crate) fn create_new_at(parent: &File, leaf: &OsStr) -> io::Result<File> {
     let name = as_c_string(leaf)?;
@@ -631,22 +665,20 @@ pub(crate) fn ensure_private_file_at(
     leaf: &OsStr,
     bytes: &[u8],
 ) -> io::Result<File> {
-    match open_file_at(parent, leaf, false, false) {
-        Ok(file) => {
+    match open_or_create_at(parent, leaf)? {
+        Opened::Existing(file) => {
             if !file.metadata()?.is_file() {
                 return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a file"));
             }
             chmod_fd(&file, 0o600)?;
             Ok(file)
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            let file = open_file_at(parent, leaf, true, false)?;
+        Opened::Created(file) => {
             chmod_fd(&file, 0o600)?;
             (&file).write_all(bytes)?;
             file.sync_all()?;
             Ok(file)
         }
-        Err(error) => Err(error),
     }
 }
 
@@ -734,12 +766,8 @@ pub(crate) fn write_private_at(_: &File, _: &OsStr, _: &[u8]) -> io::Result<()> 
 
 #[cfg(unix)]
 pub(crate) fn open_lock_at(parent: &File, leaf: &OsStr) -> io::Result<File> {
-    let file = match open_file_at(parent, leaf, false, false) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            open_file_at(parent, leaf, true, false)?
-        }
-        Err(error) => return Err(error),
+    let file = match open_or_create_at(parent, leaf)? {
+        Opened::Existing(file) | Opened::Created(file) => file,
     };
     chmod_fd(&file, 0o600)?;
     Ok(file)

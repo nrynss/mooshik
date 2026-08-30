@@ -142,10 +142,26 @@ pub enum VaultError {
     InvalidName,
     NotFound,
     UnsafePath,
-    LockFailed,
+    /// Which half of the lock failed and the platform errno behind it. Both
+    /// ride on `Debug` alone — `Display` resolves to the one `vault.lock_failed`
+    /// string, so no errno and no path reaches a user-facing message, while a
+    /// CI log still says which call gave way.
+    LockFailed {
+        stage: LockStage,
+        errno: Option<i32>,
+    },
     MissingValue,
     NulByte,
     InputTooLarge,
+}
+
+/// The two ways [`acquire_lock`] can fail, kept apart because they call for
+/// different investigations: one is the lock file itself, the other is the
+/// advisory lock on it.
+#[derive(Debug)]
+pub enum LockStage {
+    Open,
+    Acquire,
 }
 
 impl std::fmt::Display for VaultError {
@@ -161,7 +177,7 @@ impl std::fmt::Display for VaultError {
             Self::InvalidName => "vault.invalid_name",
             Self::NotFound => "vault.not_found",
             Self::UnsafePath => "vault.unsafe_path",
-            Self::LockFailed => "vault.lock_failed",
+            Self::LockFailed { .. } => "vault.lock_failed",
             Self::MissingValue => "vault.missing_value",
             Self::NulByte => "vault.nul_byte",
             Self::InputTooLarge => "vault.input_too_large",
@@ -422,10 +438,18 @@ fn parse_file(bytes: &[u8]) -> Result<ParsedFile<'_>, VaultError> {
 }
 
 fn acquire_lock(parent: &fs::File) -> Result<fs::File, VaultError> {
-    let file = secure_path::open_lock_at(parent, std::ffi::OsStr::new(".vault.lock"))
-        .map_err(|_| VaultError::LockFailed)?;
+    let file = secure_path::open_lock_at(parent, std::ffi::OsStr::new(".vault.lock")).map_err(
+        |error| VaultError::LockFailed {
+            stage: LockStage::Open,
+            errno: error.raw_os_error(),
+        },
+    )?;
     set_private_permissions(&file)?;
-    file.lock_exclusive().map_err(|_| VaultError::LockFailed)?;
+    file.lock_exclusive()
+        .map_err(|error| VaultError::LockFailed {
+            stage: LockStage::Acquire,
+            errno: error.raw_os_error(),
+        })?;
     Ok(file)
 }
 
@@ -605,6 +629,22 @@ mod tests {
             redact_output("before secret-value after", [token]),
             "before [REDACTED] after"
         );
+    }
+
+    #[test]
+    fn lock_failure_detail_reaches_debug_but_never_the_shown_message() {
+        let error = VaultError::LockFailed {
+            stage: LockStage::Open,
+            errno: Some(libc::ENOENT),
+        };
+        let shown = format!("{error}");
+        assert_eq!(shown, text::get("vault.lock_failed"));
+        assert!(
+            !shown.contains('2'),
+            "the errno is for the log, not for the operator's screen"
+        );
+        let logged = format!("{error:?}");
+        assert!(logged.contains("Open") && logged.contains('2'));
     }
 
     #[test]
