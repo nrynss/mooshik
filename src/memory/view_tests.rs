@@ -8,6 +8,10 @@
 //! +05:45 on purpose: it is not a whole number of hours, so a day boundary
 //! computed by rounding the timestamp instead of converting the calendar date
 //! comes out wrong by more than it could by luck.
+//!
+//! A fixed offset cannot tell a *zone* from an offset, though, and that is the
+//! other way to get a day boundary wrong — so the calendar itself is pinned next
+//! door in `view_clock_tests.rs`, against a zone with a real transition in it.
 
 use super::*;
 
@@ -15,12 +19,12 @@ use chrono::FixedOffset;
 use lambo::{AgentId, CanonizationStatus, ConceptType, SessionId};
 
 /// A zone that is neither UTC nor a whole hour from it.
-fn zone() -> FixedOffset {
+pub(super) fn zone() -> FixedOffset {
     FixedOffset::east_opt(5 * 3600 + 45 * 60).expect("+05:45 is a zone")
 }
 
 /// The instant every test draws: Thursday 27 August 2026, 14:22 local.
-fn now() -> DateTime<FixedOffset> {
+pub(super) fn now() -> DateTime<FixedOffset> {
     zone()
         .with_ymd_and_hms(2026, 8, 27, 14, 22, 0)
         .single()
@@ -28,25 +32,25 @@ fn now() -> DateTime<FixedOffset> {
 }
 
 /// `days` days and `hours` hours before [`now`], as the store would hold it.
-fn before(days: i64, hours: i64) -> DateTime<Utc> {
+pub(super) fn before(days: i64, hours: i64) -> DateTime<Utc> {
     (now() - chrono::Duration::days(days) - chrono::Duration::hours(hours)).with_timezone(&Utc)
 }
 
 /// Long before any week on screen — the bootstrap corpus's own timeline.
-fn long_ago() -> DateTime<Utc> {
+pub(super) fn long_ago() -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2015, 6, 15, 12, 0, 0)
         .single()
         .expect("an instant in 2015")
 }
 
 /// A graph built one turn at a time, keeping the temporal chain Lambo requires.
-struct Corpus {
-    graph: Graph,
+pub(super) struct Corpus {
+    pub(super) graph: Graph,
     tail: Option<NodeId>,
 }
 
 impl Corpus {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             graph: Graph::new(SessionId::new("mooshik")),
             tail: None,
@@ -57,7 +61,7 @@ impl Corpus {
     ///
     /// `event_time` of `None` is the live case — the turn is about the moment it
     /// was recorded — which is the fallback rule `about_time` implements.
-    fn turn(
+    pub(super) fn turn(
         &mut self,
         said: Option<&str>,
         flushed_at: DateTime<Utc>,
@@ -81,15 +85,39 @@ impl Corpus {
 
     /// A concept produced by `origin`, reusing `id` when the same thought is
     /// reached again — which is what puts a second `Derives` edge on it.
-    fn thought(&mut self, id: NodeId, content: &str, origin: NodeId, created_at: DateTime<Utc>) {
+    pub(super) fn thought(
+        &mut self,
+        id: NodeId,
+        content: &str,
+        origin: NodeId,
+        created_at: DateTime<Utc>,
+    ) {
+        self.typed_thought(id, content, origin, created_at, ConceptType::Entity, None);
+    }
+
+    /// The same, with the two fields the panels read for identity: a concept
+    /// type (`Observation` is the one Lambo lets share a canonical key) and the
+    /// key itself.
+    fn typed_thought(
+        &mut self,
+        id: NodeId,
+        content: &str,
+        origin: NodeId,
+        created_at: DateTime<Utc>,
+        concept_type: ConceptType,
+        canonical_key: Option<&str>,
+    ) {
+        let canonical_key = canonical_key
+            .map(str::to_owned)
+            .unwrap_or_else(|| content.to_lowercase());
         self.graph
             .insert_concept(
                 Concept {
                     id,
                     session_id: SessionId::new("mooshik"),
                     content: content.to_owned(),
-                    canonical_key: content.to_lowercase(),
-                    concept_type: ConceptType::Entity,
+                    canonical_key,
+                    concept_type,
                     origin_interaction: origin,
                     origin_agent: AgentId::new("mooshik"),
                     created_at,
@@ -118,13 +146,58 @@ impl Corpus {
         id
     }
 
-    fn view(&self) -> Workspace {
-        of_graph(&self.graph, &figures(), now())
+    /// The same, for a thought Lambo has already judged to be one thing said two
+    /// ways: two concepts, one canonical key. Lambo's schema allows a shared key
+    /// only for `Observation`s, which is where a demoted chunk and its restatement
+    /// land.
+    fn returned_to_as(&mut self, content: &str, key: &str, turns: &[DateTime<Utc>]) -> NodeId {
+        let id = NodeId::new();
+        for at in turns {
+            let origin = self.turn(Some(content), *at, Some(*at));
+            self.typed_thought(
+                id,
+                content,
+                origin,
+                *at,
+                ConceptType::Observation,
+                Some(key),
+            );
+        }
+        id
+    }
+
+    /// One turn that recorded an action, in `record_action`'s own shape: the
+    /// action string on the interaction, a `Resource` concept carrying the same
+    /// string, and a `Causal` edge from it to what the action produced.
+    fn recorded_action(&mut self, action: &str, produced: &str, at: DateTime<Utc>) {
+        let origin = self.turn(Some(action), at, Some(at));
+        let node = NodeId::new();
+        self.typed_thought(node, action, origin, at, ConceptType::Resource, None);
+        let target = NodeId::new();
+        self.typed_thought(target, produced, origin, at, ConceptType::Entity, None);
+        self.graph
+            .upsert_edge(lambo::Edge {
+                id: NodeId::new(),
+                session_id: SessionId::new("mooshik"),
+                source: node,
+                target,
+                edge_type: EdgeType::Causal,
+                weight: 1.0,
+                reinforcements: 1,
+                created_at: at,
+                last_reinforced: at,
+                event_time: Some(at),
+            })
+            .expect("the action produced the resource");
+    }
+
+    pub(super) fn view(&self) -> Workspace {
+        of_graph(&figures(), &self.graph, now())
     }
 }
 
 /// A healthy session's figures, so the status bar has something true to say.
-fn figures() -> MemoryStats {
+pub(super) fn figures() -> MemoryStats {
     MemoryStats {
         session: SessionId::new("mooshik"),
         agent: AgentId::new("mooshik"),
@@ -147,7 +220,7 @@ fn figures() -> MemoryStats {
 
 /// Every line of every day's log, flattened, so a test can ask what the week
 /// says without caring which column said it.
-fn logged(workspace: &Workspace) -> Vec<String> {
+pub(super) fn logged(workspace: &Workspace) -> Vec<String> {
     workspace
         .week
         .days
@@ -156,7 +229,7 @@ fn logged(workspace: &Workspace) -> Vec<String> {
         .collect()
 }
 
-fn trickled(workspace: &Workspace) -> Vec<String> {
+pub(super) fn trickled(workspace: &Workspace) -> Vec<String> {
     workspace
         .trickle
         .iter()
@@ -164,7 +237,7 @@ fn trickled(workspace: &Workspace) -> Vec<String> {
         .collect()
 }
 
-fn threaded(workspace: &Workspace) -> Vec<String> {
+pub(super) fn threaded(workspace: &Workspace) -> Vec<String> {
     workspace
         .threads
         .iter()
@@ -174,7 +247,7 @@ fn threaded(workspace: &Workspace) -> Vec<String> {
 
 /// Draw a workspace at the sizes the design names, so a shape that renders
 /// nowhere cannot pass as a shape.
-fn draws_everywhere(workspace: &Workspace) {
+pub(super) fn draws_everywhere(workspace: &Workspace) {
     use crate::tui::{app::App, grid::Grid, screen::chrome::View};
     use ratatui::{buffer::Buffer, layout::Rect};
 
@@ -241,7 +314,7 @@ fn a_week_that_crosses_a_month_names_both_of_them() {
         .with_ymd_and_hms(2026, 9, 2, 9, 0, 0)
         .single()
         .expect("an unambiguous local instant");
-    let workspace = of_graph(&corpus.graph, &figures(), across);
+    let workspace = of_graph(&figures(), &corpus.graph, across);
     assert_eq!(workspace.week.label, "27 August - 2 September");
     assert_eq!(workspace.week.days[0].short_label, "Thu 27");
     assert_eq!(workspace.week.days[WEEK - 1].short_label, "Wed 2");
@@ -405,6 +478,235 @@ fn threads_are_ordered_by_how_often_they_come_back() {
         .all(|thread| thread.leaned_on.is_empty()));
 }
 
+/// One thought takes one row, however many ways it was said.
+///
+/// Two concepts under one canonical key is Lambo saying they are the same
+/// thing. The panel has five slots and this one holds four other thoughts, so an
+/// unfolded list would spend two of them saying one thing twice — and would rank
+/// the pair *below* the four-support thought, because neither copy carries more
+/// than two supports on its own.
+#[test]
+fn a_thought_said_two_ways_takes_one_row_and_keeps_both_days() {
+    let mut corpus = Corpus::new();
+    corpus.returned_to(
+        "Four times",
+        &[before(6, 0), before(5, 0), before(4, 0), before(3, 0)],
+    );
+    corpus.returned_to_as(
+        "The ring caps at 512",
+        "ring 512",
+        &[before(2, 0), before(2, 1), before(1, 5)],
+    );
+    corpus.returned_to_as(
+        "512 is the ring's cap",
+        "ring 512",
+        &[before(1, 0), before(0, 1)],
+    );
+
+    let workspace = corpus.view();
+    // Folded: five supports against four, so the pair takes the top row, and it
+    // takes exactly one row. The row is the stronger copy's, because that is the
+    // one that earned it.
+    assert_eq!(
+        threaded(&workspace),
+        ["The ring caps at 512", "Four times"],
+        "a thought said two ways took two rows"
+    );
+    // The marks are both copies' days, which is the whole point of folding
+    // rather than dropping: the row is about the thought, not about the wording.
+    assert_eq!(
+        workspace.threads[0].days,
+        [false, false, false, false, true, true, true]
+    );
+}
+
+/// The second leg of the same question, at the radius post-M10 measured.
+///
+/// An LLM extractor does not repeat itself, so the copies of one fact carry
+/// different canonical keys and only the vectors can see they are one thought.
+/// The radius is 0.02: 0.01 apart is a paraphrase and 0.05 apart is two thoughts,
+/// and a copy with no vector yet — writes acknowledge before the embedder runs —
+/// is not folded by this leg at all.
+#[test]
+fn two_thoughts_inside_the_paraphrase_radius_are_one_thought() {
+    fn vector(tilt: f32) -> Concept {
+        Concept {
+            id: NodeId::new(),
+            session_id: SessionId::new("mooshik"),
+            content: "the ring caps at 512".to_owned(),
+            canonical_key: format!("key {tilt}"),
+            concept_type: ConceptType::Entity,
+            origin_interaction: NodeId::new(),
+            origin_agent: AgentId::new("mooshik"),
+            created_at: before(0, 0),
+            access_count: 0,
+            last_accessed: None,
+            gc_survived: 0,
+            human_confirmed: 0,
+            canonization_status: CanonizationStatus::None,
+            blast_radius: None,
+            last_demotion_time: None,
+            embedding: Some(vec![1.0, tilt, 0.0]),
+            chunk_group_id: None,
+        }
+    }
+
+    let here = vector(0.0);
+    // cos(θ) = 1/√(1+t²), so t = 0.1414 is ~0.01 away and t = 0.3244 ~0.05.
+    let paraphrase = vector(0.1414);
+    let other = vector(0.3244);
+    assert!(
+        one_thought(&here, &paraphrase),
+        "a paraphrase took its own row"
+    );
+    assert!(
+        !one_thought(&here, &other),
+        "two thoughts were folded into one"
+    );
+
+    let unembedded = Concept {
+        embedding: None,
+        ..vector(0.1414)
+    };
+    assert!(
+        !one_thought(&here, &unembedded),
+        "a concept with no vector was folded on a distance nothing measured"
+    );
+    // And the identity leg answers without one, because it is Lambo's judgement
+    // and not a measurement.
+    assert!(one_thought(
+        &here,
+        &Concept {
+            embedding: None,
+            canonical_key: here.canonical_key.clone(),
+            ..vector(9.0)
+        }
+    ));
+}
+
+/// Neither panel draws the engine's record of its own work.
+///
+/// This is the corpus the product actually produces: the bootstrap ingester
+/// reads a document, hangs the facts it extracted off a `document:<path>` anchor,
+/// and records the ingest as an action. The anchor gains a support from every
+/// turn that touched the document, so it *wins* the recurrence ranking outright,
+/// and both it and the action string carry an absolute path out of the reader's
+/// home directory onto a pane they leave open beside their work.
+#[test]
+fn provenance_is_not_a_thought_and_reaches_neither_panel() {
+    let mut corpus = Corpus::new();
+    let anchor = NodeId::new();
+    let path = "document:file:/Users/neom/notes/windpipe-design.md";
+    // Three days of reading one document: the anchor collects three supports,
+    // the fact two.
+    for day in [3i64, 2, 1] {
+        let turn = corpus.turn(
+            Some("read the design note"),
+            before(0, 0),
+            Some(before(day, 1)),
+        );
+        corpus.thought(anchor, path, turn, before(day, 1));
+    }
+    corpus.returned_to(
+        "Overflow writers block instead of dropping",
+        &[before(2, 2), before(1, 2)],
+    );
+    corpus.recorded_action(
+        "Ingested file document:git:/Users/neom/work/lambo#4c6fc93",
+        "document:git:/Users/neom/work/lambo#4c6fc93",
+        before(1, 3),
+    );
+
+    let workspace = corpus.view();
+    assert_eq!(
+        threaded(&workspace),
+        ["Overflow writers block instead of dropping"],
+        "provenance ranked as something the user keeps coming back to"
+    );
+    assert_eq!(
+        trickled(&workspace),
+        ["Overflow writers block instead of dropping"],
+        "provenance was offered as something just remembered"
+    );
+    // And nothing anywhere on the workspace names the reader's home directory.
+    let everywhere = format!(
+        "{:?}",
+        (
+            threaded(&workspace),
+            trickled(&workspace),
+            logged(&workspace)
+        )
+    );
+    assert!(!everywhere.contains("/Users/"), "{everywhere}");
+}
+
+/// A day's log quotes what was said, and a `derive` says nothing — it restates
+/// the concepts it is about to write, joined with a semicolon.
+///
+/// The corpus is what `mooshik serve`'s own MCP surface writes: a derive of two
+/// concepts, whose interaction carries `"a; b"`, and an action, whose
+/// interaction carries the action string. Neither is a turn. The third turn is
+/// the control — words no concept in the graph carries — and it is the shape
+/// that fills this panel the moment something records a real turn.
+#[test]
+fn a_turn_that_restates_what_it_wrote_is_not_a_days_log() {
+    let mut corpus = Corpus::new();
+    let derived = corpus.turn(
+        Some("The ring holds 512 in flight; Overflow writers block"),
+        before(0, 0),
+        Some(before(0, 3)),
+    );
+    corpus.thought(
+        NodeId::new(),
+        "The ring holds 512 in flight",
+        derived,
+        before(0, 3),
+    );
+    corpus.thought(
+        NodeId::new(),
+        "Overflow writers block",
+        derived,
+        before(0, 3),
+    );
+    corpus.recorded_action(
+        "Ingested file document:file:/Users/neom/notes/windpipe.md",
+        "document:file:/Users/neom/notes/windpipe.md",
+        before(0, 2),
+    );
+    corpus.turn(
+        Some("Postmortem's done, and it's short"),
+        before(0, 0),
+        Some(before(0, 1)),
+    );
+
+    assert_eq!(
+        logged(&corpus.view()),
+        ["Postmortem's done, and it's short"]
+    );
+}
+
+/// One concept whose content carries the separator is still an echo of itself.
+///
+/// The whole prompt is tested before it is split, because "a; b" is a legal
+/// thing for an extractor to emit as one concept — and splitting first would put
+/// the join back on screen through the one case it cannot parse.
+#[test]
+fn a_single_concept_containing_the_separator_is_still_an_echo() {
+    let mut corpus = Corpus::new();
+    let turn = corpus.turn(
+        Some("The ring caps at 512; overflow blocks"),
+        before(0, 0),
+        Some(before(0, 1)),
+    );
+    corpus.thought(
+        NodeId::new(),
+        "The ring caps at 512; overflow blocks",
+        turn,
+        before(0, 1),
+    );
+    assert!(logged(&corpus.view()).is_empty());
+}
+
 /// "Just remembered" is freshest first, on the turn's own clock.
 #[test]
 fn the_trickle_is_freshest_first() {
@@ -418,41 +720,6 @@ fn the_trickle_is_freshest_first() {
         corpus.thought(NodeId::new(), content, origin, before(0, 0));
     }
     assert_eq!(trickled(&corpus.view()), ["Newest", "Middle", "Oldest"]);
-}
-
-/// A day boundary is the reader's own midnight, not UTC's.
-///
-/// At +05:45 the two instants below are fourteen minutes apart and on different
-/// local dates. Anything that bucketed on the UTC date, or that shifted the
-/// timestamp by whole hours, puts them on the same day.
-#[test]
-fn a_day_boundary_is_the_readers_own_midnight() {
-    let midnight = zone()
-        .with_ymd_and_hms(2026, 8, 27, 0, 0, 0)
-        .single()
-        .expect("an unambiguous local midnight")
-        .with_timezone(&Utc);
-
-    let mut corpus = Corpus::new();
-    corpus.turn(
-        Some("Yesterday, just"),
-        before(0, 0),
-        Some(midnight - chrono::Duration::minutes(7)),
-    );
-    corpus.turn(
-        Some("Today, just"),
-        before(0, 0),
-        Some(midnight + chrono::Duration::minutes(7)),
-    );
-
-    let workspace = corpus.view();
-    assert_eq!(workspace.week.days[5].entries[0].text, "Yesterday, just");
-    assert_eq!(workspace.week.days[6].entries[0].text, "Today, just");
-    // And the time drawn beside it is the reader's, not the stored instant's.
-    assert_eq!(
-        workspace.week.days[6].entries[0].time.as_deref(),
-        Some("00:07")
-    );
 }
 
 /// The ribbon is a shape read against the week's own busiest day, so a quiet
@@ -489,6 +756,35 @@ fn the_ribbon_is_measured_against_the_busiest_day_of_its_own_week() {
     }
 }
 
+/// A week with no busiest day draws flat at the top of its own scale, and that
+/// is the decision rather than an accident of the arithmetic.
+///
+/// The floor is defended at length in `bar_level`: a day that happened must
+/// never draw the empty day's glyph. The ceiling is the same argument from the
+/// other end — the height is a share of this week and carries no absolute
+/// meaning, so seven single-turn days are each the whole of their own week. What
+/// would be wrong is a special case: capping a flat week would put two rows
+/// between `[9; 7]` and a week with one quieter day.
+#[test]
+fn a_flat_week_is_drawn_flat_at_the_top_of_its_own_scale() {
+    for turns in [1, 9] {
+        let mut corpus = Corpus::new();
+        for day in 0..7i64 {
+            for _ in 0..turns {
+                corpus.turn(Some("even"), before(0, 0), Some(before(day, 1)));
+            }
+        }
+        let glyphs: String = corpus
+            .view()
+            .week
+            .days
+            .iter()
+            .map(|day| day.load.glyph())
+            .collect();
+        assert_eq!(glyphs, "███████", "{turns} turns a day");
+    }
+}
+
 /// A turn with nothing said contributes to the shape of the day and not to its
 /// log — an entry with no text is a timestamp beside a blank row.
 #[test]
@@ -515,6 +811,7 @@ fn an_empty_graph_gives_a_well_formed_workspace() {
     assert!(workspace.trickle.is_empty());
     assert!(workspace.conversation.turns.is_empty());
     assert_eq!(workspace.health.scope, "214 things remembered");
+    assert_eq!(workspace.health.short_scope, "214 remembered");
     assert!(workspace.health.well);
     assert!(workspace.week.selected < workspace.week.days.len());
     for day in &workspace.week.days {
@@ -552,95 +849,23 @@ fn a_filled_workspace_draws_at_every_screen_size() {
     draws_everywhere(&corpus.view());
 }
 
-/// End to end, through the code `mooshik tui` runs: an open session, written to
-/// and then read back as the workspace the screens draw.
+/// A day's log carries no more lines than any panel can draw.
 ///
-/// The offline suite above builds graphs by hand, which is fast and pins the
-/// arithmetic — and cannot notice if `of_memory` reads the wrong handle, or if
-/// `derive` does not leave behind the `Derives` edges the recurrence count is
-/// made of. This one goes through `memory::open`, Lambo's own write path and
-/// `Memory::close`, which is the ladder the post-M10 review says a fixture-only
-/// suite cannot climb.
-#[tokio::test]
-async fn a_live_session_fills_the_workspace_the_screens_draw() {
-    let mut config = crate::config::Config::default();
-    config.store.kind = lambo::StoreKind::Memory;
-    config.embedder.kind = lambo::EmbedderKind::Fixture;
-    config.embedder.dim = 1024;
-    config.session.id = "mooshik".to_owned();
-    config.session.agent = "mooshik".to_owned();
-
-    crate::memory::provision(&config).await.unwrap();
-    let memory = crate::memory::open(&config).await.unwrap();
-
-    // Two turns reaching the same thought, and one reaching another — the
-    // shape a thread is made of, written the way the product writes it.
-    for _ in 0..2 {
-        memory
-            .derive(
-                &[("block, never drop", ConceptType::Entity)],
-                &lambo::graph::derive::ParentOf::none(),
-            )
-            .await
-            .unwrap();
-    }
-    memory
-        .derive(
-            &[("the cache lives on the NAS", ConceptType::Entity)],
-            &lambo::graph::derive::ParentOf::none(),
-        )
-        .await
-        .unwrap();
-
-    // Drawn at the wall clock the writes were stamped with, because the live
-    // path has no event time and falls back to it.
-    let workspace = of_memory(&memory, chrono::Local::now());
-    memory.close().await.unwrap();
-
-    assert_eq!(
-        threaded(&workspace),
-        ["block, never drop"],
-        "the re-derived thought is not the thread"
-    );
-    assert!(
-        workspace.threads[0].days[WEEK - 1],
-        "today's mark is not set on a thought derived today"
-    );
-    let trickle = trickled(&workspace);
-    assert!(
-        trickle.contains(&"the cache lives on the NAS".to_owned()),
-        "{trickle:?}"
-    );
-    assert!(
-        !workspace.today.entries.is_empty(),
-        "a day of real derives has no log"
-    );
-    assert!(!workspace.now.time.is_empty());
-    draws_everywhere(&workspace);
-}
-
-/// The status bar says what the session is doing, and only red-free words.
+/// There is no scroll: `aside::entries` stops at the panel's last interior row
+/// and no key reaches past it, so a thousand-turn day used to build a thousand
+/// `Entry` values — two `String`s each — for a pane that draws about twenty rows.
+/// The kept end is the early one, because that is the end the panels draw from.
 #[test]
-fn the_status_bar_reports_the_session_rather_than_flattering_it() {
-    let keeping_up = health(&figures());
-    assert!(keeping_up.well);
-    assert_eq!(keeping_up.state, "Keeping up");
-
-    let behind = health(&MemoryStats {
-        log_depth: 12,
-        ..figures()
-    });
-    assert!(!behind.well);
-    assert_eq!(behind.state, "Catching up");
-
-    let broken = health(&MemoryStats {
-        degraded: true,
-        log_depth: 12,
-        ..figures()
-    });
-    assert!(!broken.well);
-    assert_eq!(broken.state, "Not saving");
-    // The short form is written for the week's rule, which already carries the
-    // range the long form would repeat.
-    assert_eq!(broken.scope, broken.short_scope);
+fn a_days_log_is_bounded_by_what_a_panel_can_draw() {
+    let mut corpus = Corpus::new();
+    for minute in 0..(LOG + 20) {
+        let at = before(0, 6) + chrono::Duration::minutes(minute as i64);
+        corpus.turn(Some(&format!("turn {minute}")), before(0, 0), Some(at));
+    }
+    let workspace = corpus.view();
+    assert_eq!(workspace.today.entries.len(), LOG);
+    assert_eq!(workspace.today.entries[0].text, "turn 0");
+    // The bar still counts the whole day: the cap is about what is drawn, not
+    // about how full the day was.
+    assert_eq!(workspace.today.load.glyph(), '█');
 }

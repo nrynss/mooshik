@@ -294,20 +294,27 @@ fn oversized_unreadable_and_non_utf8_secret_input_is_typed_too() {
 #[test]
 fn lease_conflicts_classify_user_and_render_holder_remediation() {
     // P2-c: a held single-writer lease is an operator situation, not an
-    // internal failure — and its safe detail (holder + age + takeover
-    // hint) must surface instead of the wrong "check credentials" advice.
-    let detail = "session mooshik is already held by another writer (a@h#1) — it \
-                  acquired the single-writer lease 12s ago. If that holder is wedged, \
-                  an operator can force a takeover"
-        .to_owned();
-    let failure = Failure::from(anyhow::Error::new(MemoryError::SessionConflict(
-        detail.clone(),
-    )));
+    // internal failure — and its safe detail (holder + age) must surface
+    // instead of the wrong "check credentials" advice.
+    //
+    // M12a round 1 moved the remediation: Lambo's own is a forced takeover this
+    // binary exposes no way to perform, described in a document only Lambo
+    // ships, so `memory::facts` keeps the holder and `memory.session_conflict`
+    // says what to do here. The facts are still the whole of what is quoted.
+    let facts = "session mooshik is already held by another writer (a@h#1) — it acquired the \
+         single-writer lease 12s ago.";
+    let detail = format!(
+        "{facts} If that holder is wedged, an operator can force a takeover (see the \
+         single-writer lease note in docs/reference/cli.mdx)"
+    );
+    let failure = Failure::from(anyhow::Error::new(MemoryError::SessionConflict(detail)));
     assert_eq!(failure.exit_code(), 2);
     let rendered = failure.rendered();
     assert!(rendered.contains("another writer"), "{rendered}");
-    assert!(rendered.contains("force a takeover"), "{rendered}");
-    assert!(rendered.contains(&detail), "{rendered}");
+    assert!(rendered.contains(facts), "{rendered}");
+    // And the operator is sent somewhere that exists.
+    assert!(!rendered.contains("cli.mdx"), "{rendered}");
+    assert!(rendered.contains("mooshik serve"), "{rendered}");
     assert!(!rendered.contains("postgres://"));
 }
 

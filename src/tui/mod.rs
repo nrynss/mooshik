@@ -53,6 +53,7 @@ pub mod wrap;
 
 use std::{
     io::{self, IsTerminal},
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 
@@ -212,8 +213,63 @@ fn refuse_without_a_terminal(is_terminal: bool) -> io::Result<()> {
     ))
 }
 
+/// Set when the process has been asked to end by something that is not a
+/// keystroke. Read by [`event_loop`], written by [`note_signal`] and by nothing
+/// else.
+static LEAVING: AtomicBool = AtomicBool::new(false);
+
+/// Whether the session has been asked to end from outside the keyboard.
+fn asked_to_leave() -> bool {
+    LEAVING.load(Ordering::Relaxed)
+}
+
+/// The handler itself: one relaxed store, which is the only kind of work that is
+/// safe inside a signal handler.
+#[cfg(unix)]
+extern "C" fn note_signal(_signal: libc::c_int) {
+    LEAVING.store(true, Ordering::Relaxed);
+}
+
+/// Take SIGTERM and SIGHUP for the length of the session.
+///
+/// Under the default disposition both kill the process where it stands, which
+/// leaves the terminal in the alternate screen with no echo — and, since M12a
+/// gave this command a session, leaves Lambo's single-writer lease held for its
+/// whole TTL by a process that no longer exists, so every other command is
+/// refused on its behalf for the next three quarters of a minute. **Closing the
+/// terminal window is not a crash**; it is the most ordinary way anyone ends a
+/// full-screen pane they have left open all day, and it arrives as SIGHUP.
+///
+/// So the signal ends the *loop* rather than the process: the same path `Esc`
+/// takes, which puts the terminal back and then closes the session. Nothing is
+/// closed from the handler itself — closing is an async call and belongs on the
+/// path that already runs it.
+///
+/// The previous disposition is not kept, because there is nowhere to put it back
+/// on: the loop leaves and the command returns. SIGINT is deliberately not taken
+/// — raw mode turns off `ISIG`, so Ctrl-C arrives as a key and is already bound.
+#[cfg(unix)]
+fn leave_on_signals() {
+    // SAFETY: a zeroed `sigaction` is a valid one (no flags, empty mask), the
+    // handler has C linkage and does nothing but a relaxed store, and the
+    // out-parameter is null because no previous disposition is wanted back.
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = note_signal as *const () as libc::sighandler_t;
+        libc::sigemptyset(&mut action.sa_mask);
+        for signal in [libc::SIGTERM, libc::SIGHUP] {
+            libc::sigaction(signal, &action, std::ptr::null_mut());
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn leave_on_signals() {}
+
 /// Run the TUI until the user leaves, putting the terminal back either way.
 pub fn run(mut terminal: ratatui::DefaultTerminal, workspace: Workspace) -> io::Result<()> {
+    LEAVING.store(false, Ordering::Relaxed);
+    leave_on_signals();
     let result = event_loop(&mut terminal, workspace);
     ratatui::restore();
     result
@@ -221,9 +277,14 @@ pub fn run(mut terminal: ratatui::DefaultTerminal, workspace: Workspace) -> io::
 
 /// The draw-and-read loop, separated from the terminal handshake so a failure
 /// inside it still runs [`ratatui::restore`].
+///
+/// A signal is noticed here rather than acted on where it arrives, within one
+/// [`TICK`]: `crossterm` retries a `poll` that EINTR interrupted instead of
+/// surfacing it, so the wait runs to its timeout and the condition below is
+/// tested on the next pass.
 fn event_loop(terminal: &mut ratatui::DefaultTerminal, workspace: Workspace) -> io::Result<()> {
     let mut app = app::App::new(workspace);
-    while app.running {
+    while app.running && !asked_to_leave() {
         terminal.draw(|frame| {
             let area = frame.area();
             let mut screen = grid::Grid::new(frame.buffer_mut(), area);
@@ -250,6 +311,28 @@ mod tests {
 
     use crate::text;
     use model::{Recall, Speaker, Turn};
+
+    /// SIGTERM and SIGHUP end the session through the loop, which is the path
+    /// that puts the terminal back and closes the graph.
+    ///
+    /// The install is a precondition of this test rather than a step in it:
+    /// raising either signal under the default disposition kills the whole test
+    /// binary, so a broken [`leave_on_signals`] fails this loudly and
+    /// immediately. The flag is put back afterwards because it is process-wide.
+    #[cfg(unix)]
+    #[test]
+    fn a_termination_signal_asks_the_session_to_leave() {
+        for signal in [libc::SIGTERM, libc::SIGHUP] {
+            LEAVING.store(false, Ordering::Relaxed);
+            leave_on_signals();
+            assert!(!asked_to_leave());
+            // SAFETY: `raise` delivers to this thread, where the handler
+            // installed above runs before the call returns.
+            assert_eq!(unsafe { libc::raise(signal) }, 0, "signal {signal}");
+            assert!(asked_to_leave(), "signal {signal} did not end the session");
+        }
+        LEAVING.store(false, Ordering::Relaxed);
+    }
 
     /// A run with no terminal is refused before anything is written, so the
     /// sentence explaining why is the only thing that reaches the pipe.
@@ -475,24 +558,27 @@ mod tests {
         use crate::tui::{app::App, grid::Grid, screen::chrome::View};
         use ratatui::{buffer::Buffer, layout::Rect};
 
-        let health = crate::memory::view::health(&lambo::MemoryStats {
-            session: lambo::SessionId::new("mooshik"),
-            agent: lambo::AgentId::new("mooshik"),
-            flush_lag: Duration::from_millis(0),
-            log_depth: 0,
-            flush_depth: 0,
-            dead_lettered: 0,
-            degraded: false,
-            node_count: 214,
-            edge_count: 0,
-            concept_count: 0,
-            canonical_count: 0,
-            embedded_concepts: 0,
-            epoch: 0,
-            daemon_cycles: 0,
-            canonization_cycles: 0,
-            canonization_failures: 0,
-        });
+        let health = crate::memory::view::health(
+            &lambo::MemoryStats {
+                session: lambo::SessionId::new("mooshik"),
+                agent: lambo::AgentId::new("mooshik"),
+                flush_lag: Duration::from_millis(0),
+                log_depth: 0,
+                flush_depth: 0,
+                dead_lettered: 0,
+                degraded: false,
+                node_count: 214,
+                edge_count: 0,
+                concept_count: 0,
+                canonical_count: 0,
+                embedded_concepts: 0,
+                epoch: 0,
+                daemon_cycles: 0,
+                canonization_cycles: 0,
+                canonization_failures: 0,
+            },
+            None,
+        );
         let workspace = Workspace {
             person: text::get("tui.person_unknown").to_owned(),
             health,

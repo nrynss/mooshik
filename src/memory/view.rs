@@ -42,6 +42,36 @@
 //! the model already calls for: "the line is then omitted rather than filled
 //! with a placeholder".
 //!
+//! ## What the panels refuse to draw
+//!
+//! A graph is not a list of thoughts. Two of the things in it are the engine's
+//! own record of its work, and on the only corpus this product can produce they
+//! outrank everything the user actually thought:
+//!
+//! * The bootstrap ingester names every document it reads `document:<source>`
+//!   and hangs the facts it extracted off that anchor, so the anchor gains a
+//!   `Derives` edge from every turn that touched the document — which is exactly
+//!   the count [`threads`] ranks by, and is why post-M10 measured that the only
+//!   nodes ever to reach Venerable were `document:file:…` resources. It is also
+//!   an absolute path out of the reader's home directory, on a pane whose whole
+//!   premise is that it is left open beside their work.
+//! * `record_action` opens a concept for the action itself — "Ingested file
+//!   document:git:…" — which is bookkeeping about a write, not a thing
+//!   remembered.
+//!
+//! [`bookkeeping`] is the one seam that says so, and both panels pass through
+//! it. Nothing else in this module filters by content.
+//!
+//! The same argument decides [`Day::entries`]. `Interaction::prompt_text` is the
+//! only field in the graph that carries words, and **nothing in Mooshik writes a
+//! person's own words into it**: `derive` fills it with the concepts it is about
+//! to write, joined with `"; "`, and `record_action` with the action string it
+//! is about to write as a concept. Quoting either back is the engine's echo
+//! dressed as a day's log — the line [`Day::highlights`] refuses to cross for
+//! prose, crossed for the one field that was filled. So [`said`] drops a turn
+//! whose words are the concepts it wrote, which empties the log on today's
+//! corpus, and fills it the moment something records a real turn.
+//!
 //! ## Named `view`, not `snapshot`
 //!
 //! [`Graph::snapshot`] already exists and means persistence — the whole graph,
@@ -49,7 +79,7 @@
 //! formatted for one screen size of one terminal, and thrown away on the next
 //! tick. Two words for two things.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Datelike, Days, NaiveDate, TimeZone, Timelike, Utc};
 use lambo::{Concept, EdgeType, Graph, Interaction, Memory, MemoryStats, NodeId};
@@ -92,16 +122,60 @@ const TRICKLE: usize = 5;
 /// other side.
 const RETURNS: usize = 2;
 
+/// How many recurrence clusters are carried while the list is being built.
+///
+/// Wider than [`THREADS`], because the fold is what decides the order: a thought
+/// whose paraphrases each rank below the panel outranks a single stronger
+/// thought once they are counted together, and a pool the width of the panel
+/// would have dropped every one of them before they could be folded. Bounded
+/// rather than unbounded so the fold stays a fixed number of comparisons per
+/// concept on a graph whose size nothing here controls.
+const POOL: usize = 4 * THREADS;
+
+/// The most lines of one day's log this view carries.
+///
+/// A day's log has no scroll — `aside::entries` stops at the panel's last
+/// interior row and no key reaches past it — so every line beyond the tallest
+/// interior any terminal can draw is built and thrown away. The earliest of the
+/// day are kept, because that is the end the panels draw from.
+const LOG: usize = 256;
+
+/// The prefix Mooshik's own bootstrap ingester puts on a document anchor. See
+/// this module's header for why an anchor must not reach a panel.
+const PROVENANCE: &str = "document:";
+
+/// What [`Memory::derive`] joins a turn's concepts with when it fills
+/// `prompt_text`.
+const JOIN: &str = "; ";
+
+/// How close two thoughts have to sit, in the embedding space, to take one row
+/// between them.
+///
+/// Measured rather than chosen. Post-M10 sampled forty concepts of the clean
+/// graph through pgvector: median nearest-neighbour distance 0.031 against a
+/// median distance-to-everything of 0.353, and genuine paraphrases inside 0.02.
+/// That is the radius, and it is the number this uses.
+///
+/// **Display only.** Folding two rows into one is a statement about a panel with
+/// five slots, not about the graph: nothing is merged, nothing is promoted, and
+/// the next tick asks the same question again. Consolidating the nodes
+/// themselves is a write, and M12c's.
+const PARAPHRASE: f32 = 0.02;
+
 /// The workspace for an open [`Memory`], as of `now`.
 ///
-/// `stats` is read **before** the graph guard is taken. [`Memory::stats`] locks
-/// the graph itself, and `parking_lot`'s read lock is not recursion-safe: a
-/// writer queued between the two acquires deadlocks a thread that already holds
-/// one reader. Taking the figures first means only one lock is ever held here.
+/// **Two acquires, in this order and no other.** [`Memory::stats`] takes the
+/// graph lock itself, and `parking_lot`'s read lock is not recursion-safe: a
+/// writer queued between the two deadlocks a thread that already holds one
+/// reader, with no error, no timeout and no diagnostic — the pane simply stops.
+/// [`of_graph`] takes the figures ahead of the graph so that the one-expression
+/// form of this call, which is what a later reader writes while simplifying, is
+/// the safe one: Rust evaluates arguments left to right, so the figures are read
+/// before the guard exists. `the_figures_are_read_before_the_graph_guard` pins
+/// the order and `a_workspace_is_drawn_while_a_writer_hammers_the_graph` proves
+/// it survives contention.
 pub fn of_memory<Tz: TimeZone>(memory: &Memory, now: DateTime<Tz>) -> Workspace {
-    let stats = memory.stats();
-    let graph = memory.graph().read();
-    of_graph(&graph, &stats, now)
+    of_graph(&memory.stats(), &memory.graph().read(), now)
 }
 
 /// The workspace for a graph and a clock, with nothing else behind it.
@@ -110,12 +184,20 @@ pub fn of_memory<Tz: TimeZone>(memory: &Memory, now: DateTime<Tz>) -> Workspace 
 /// that zone before it is placed on a calendar day. The zone is a parameter
 /// rather than [`chrono::Local`] read inside so the day-boundary cases can be
 /// tested at a pinned offset — the suite must not answer differently on a
-/// developer's laptop than in CI, which runs in UTC.
-pub fn of_graph<Tz: TimeZone>(graph: &Graph, stats: &MemoryStats, now: DateTime<Tz>) -> Workspace {
+/// developer's laptop than in CI, which runs in UTC. It is a full [`TimeZone`]
+/// and not an offset because those are different things on two days a year;
+/// `a_zone_is_not_an_offset_across_a_daylight_saving_change` is what holds the
+/// distinction.
+pub fn of_graph<Tz: TimeZone>(stats: &MemoryStats, graph: &Graph, now: DateTime<Tz>) -> Workspace {
     let zone = now.timezone();
     let dates = week_dates(&now);
     let placed = placements(graph, &zone, &dates);
-    let days = days(graph, &zone, &dates, &placed);
+    // Both collected once, in one pass each, because every panel below asks the
+    // same two questions of every node it considers: is this the engine's own
+    // record-keeping, and are these words the concepts a turn wrote.
+    let actions = action_nodes(graph);
+    let contents = concept_contents(graph);
+    let days = days(graph, &zone, &dates, &placed, &contents);
     // Today is the last of the seven, and it is the same `Day` the ribbon's last
     // column draws — `screen::today::today_index` finds it by matching
     // `day_of_month`, so the two must be one day formatted once.
@@ -133,12 +215,12 @@ pub fn of_graph<Tz: TimeZone>(graph: &Graph, stats: &MemoryStats, now: DateTime<
             // can nominate.
             selected: WEEK - 1,
         },
-        threads: threads(graph, &placed),
-        trickle: trickle(graph, &placed),
+        threads: threads(graph, &placed, &actions),
+        trickle: trickle(graph, &placed, &actions),
         // Not fed from the graph. The conversation is the chat loop's, and until
         // it can be driven from a redraw loop the panel stays as M11 left it.
         conversation: Conversation::default(),
-        health: health(stats),
+        health: health(stats, earliest(&placed, &zone)),
     }
 }
 
@@ -146,7 +228,14 @@ pub fn of_graph<Tz: TimeZone>(graph: &Graph, stats: &MemoryStats, now: DateTime<
 ///
 /// Two words at most, per `1i`: "One mark, one word: reachable, saved, keeping
 /// up. Never a sentence."
-pub(crate) fn health(stats: &MemoryStats) -> Health {
+///
+/// `since` is the day the earliest turn in the graph is about — the far end of
+/// what this session remembers, on the reader's own calendar. The model
+/// documents these as two *written* forms, "214 things remembered, back to 21
+/// August" beside "214 remembered", and says why the short one is not a
+/// truncation of the long one; both are written here. A graph with nothing in it
+/// has no far end, and then the long form is the short one plus its noun.
+pub(crate) fn health(stats: &MemoryStats, since: Option<NaiveDate>) -> Health {
     let (state, well) = if stats.degraded {
         (text::get("tui.health_degraded"), false)
     } else if stats.log_depth > 0 {
@@ -154,13 +243,33 @@ pub(crate) fn health(stats: &MemoryStats) -> Health {
     } else {
         (text::get("tui.health_keeping_up"), true)
     };
-    let scope = text::get("tui.scope_live").replace("{count}", &stats.node_count.to_string());
+    let count = stats.node_count.to_string();
+    let scope = match since {
+        Some(date) => text::get("tui.scope_since")
+            .replace("{count}", &count)
+            .replace("{date}", &day_month(date)),
+        None => text::get("tui.scope_live").replace("{count}", &count),
+    };
     Health {
         state: state.to_owned(),
-        scope: scope.clone(),
-        short_scope: scope,
+        scope,
+        short_scope: text::get("tui.scope_short").replace("{count}", &count),
         well,
     }
+}
+
+/// The day the earliest turn in the graph is about, in the reader's zone.
+///
+/// The about-time and not the flush stamp, for the reason the whole module
+/// resolves through [`Interaction::about_time`]: a bootstrap flushed this
+/// afternoon is about a decade ago, and "back to this afternoon" is the sentence
+/// M9 measured the cost of.
+fn earliest<Tz: TimeZone>(placed: &HashMap<NodeId, Placed>, zone: &Tz) -> Option<NaiveDate> {
+    placed
+        .values()
+        .map(|place| place.at)
+        .min()
+        .map(|at| at.with_timezone(zone).date_naive())
 }
 
 /// Where one interaction sits: the instant it is about, and which of the week's
@@ -219,8 +328,20 @@ fn about(placed: &HashMap<NodeId, Placed>, concept: &Concept) -> Option<Placed> 
 /// week is Friday-first because the design's own day is a Thursday; what
 /// generalizes is "today is the last column", which `screen::today::today_index`
 /// already says in as many words.
+///
+/// **The seven dates are distinct, and something depends on that.**
+/// `screen::today::today_index` finds today by matching `day_of_month`, so a
+/// week holding one date twice brightens one ribbon column while the panel
+/// describes another. Seven consecutive dates are distinct by arithmetic; the
+/// only way to lose that is a subtraction that underflows and falls back to
+/// today, which is why the anchor is lifted to the first date with six days
+/// behind it rather than left to fold the whole week onto one day.
 fn week_dates<Tz: TimeZone>(now: &DateTime<Tz>) -> [NaiveDate; WEEK] {
-    let today = now.date_naive();
+    let span = u64::try_from(WEEK - 1).unwrap_or(0);
+    let first_drawable = NaiveDate::MIN
+        .checked_add_days(Days::new(span))
+        .unwrap_or(NaiveDate::MIN);
+    let today = now.date_naive().max(first_drawable);
     std::array::from_fn(|index| {
         let back = u64::try_from(WEEK - 1 - index).unwrap_or(0);
         today.checked_sub_days(Days::new(back)).unwrap_or(today)
@@ -248,18 +369,26 @@ fn days<Tz: TimeZone>(
     zone: &Tz,
     dates: &[NaiveDate; WEEK],
     placed: &HashMap<NodeId, Placed>,
+    contents: &HashSet<&str>,
 ) -> Vec<Day> {
-    let mut logs: [Vec<&Interaction>; WEEK] = std::array::from_fn(|_| Vec::new());
+    // The placement travels with the turn rather than being looked up again:
+    // `placements` exists because three readers want the same answer, and a
+    // comparator that recomputes `about_time` twice per comparison is the shape
+    // that lets `Placed::at` and the value actually drawn drift apart.
+    let mut logs: [Vec<(Placed, &Interaction)>; WEEK] = std::array::from_fn(|_| Vec::new());
     let mut counts = [0usize; WEEK];
     for interaction in graph.interactions() {
-        let Some(index) = placed.get(&interaction.id).and_then(|place| place.day) else {
+        let Some(place) = placed.get(&interaction.id).copied() else {
+            continue;
+        };
+        let Some(index) = place.day else {
             continue;
         };
         // The bar counts every turn, whether or not it left something to quote:
         // it measures how full the day was, not how much of it is printable.
         counts[index] = counts[index].saturating_add(1);
-        if said(interaction).is_some() {
-            logs[index].push(interaction);
+        if said(contents, interaction).is_some() {
+            logs[index].push((place, interaction));
         }
     }
     let busiest = counts.iter().copied().max().unwrap_or(0);
@@ -272,11 +401,12 @@ fn days<Tz: TimeZone>(
             // By about-time, then by id: two turns stamped with the same instant
             // are ordinary in a bulk ingest, and a log that reshuffles them
             // between two ticks of the same graph would be its own bug.
-            log.sort_by(|left, right| {
-                left.about_time()
-                    .cmp(&right.about_time())
-                    .then_with(|| left.id.0.cmp(&right.id.0))
+            log.sort_by(|(left, left_turn), (right, right_turn)| {
+                left.at
+                    .cmp(&right.at)
+                    .then_with(|| left_turn.id.0.cmp(&right_turn.id.0))
             });
+            log.truncate(LOG);
             Day {
                 short_label: day_head(*date),
                 long_label: long_date(*date),
@@ -287,10 +417,10 @@ fn days<Tz: TimeZone>(
                 load: Load::new(bar_level(counts[index], busiest), Tone::Plain),
                 entries: log
                     .into_iter()
-                    .map(|interaction| {
+                    .map(|(place, interaction)| {
                         Entry::at(
-                            &clock(&interaction.about_time().with_timezone(zone)),
-                            said(interaction).unwrap_or_default(),
+                            &clock(&place.at.with_timezone(zone)),
+                            said(contents, interaction).unwrap_or_default(),
                         )
                     })
                     .collect(),
@@ -304,15 +434,70 @@ fn days<Tz: TimeZone>(
 
 /// What a turn has to show for itself, or nothing.
 ///
-/// An interaction with no prompt — Lambo's `record_action` opens one for work
-/// that was done rather than said — has no line to contribute, and an [`Entry`]
-/// with empty text is a blank row with a timestamp beside it.
-fn said(interaction: &Interaction) -> Option<&str> {
-    interaction
+/// An interaction with no prompt — `demote` opens one for a chunk that
+/// overflowed rather than something that was said — has no line to contribute,
+/// and an [`Entry`] with empty text is a blank row with a timestamp beside it.
+///
+/// Neither does a turn whose words are the concepts it wrote. `derive` fills
+/// `prompt_text` with its concepts joined by [`JOIN`] and `record_action` with
+/// the action string it writes as a concept of its own, so both are caught by
+/// one test: every piece of the prompt is the content of a concept in this
+/// graph. The whole prompt is tried before the split, because one concept may
+/// itself contain the separator.
+///
+/// The test is over the graph's contents rather than this turn's own, because a
+/// turn that re-derives an existing thought creates no concept — the reinforced
+/// concept's origin is the first turn that reached it, not this one. The cost is
+/// one over-approximation: a person whose sentence is *exactly* a concept in the
+/// graph is read as an echo. Nothing in this product records a person's sentence
+/// yet, and when something does, an extracted fact is not the sentence it came
+/// from.
+fn said<'a>(contents: &HashSet<&str>, interaction: &'a Interaction) -> Option<&'a str> {
+    let said = interaction
         .prompt_text
         .as_deref()
         .map(str::trim)
-        .filter(|said| !said.is_empty())
+        .filter(|said| !said.is_empty())?;
+    if contents.contains(said) || said.split(JOIN).all(|piece| contents.contains(piece)) {
+        return None;
+    }
+    Some(said)
+}
+
+/// Every concept's content, once, so [`said`] can ask whether a turn is quoting
+/// the graph back at itself without walking it per turn.
+fn concept_contents(graph: &Graph) -> HashSet<&str> {
+    graph
+        .concepts()
+        .map(|concept| concept.content.as_str())
+        .collect()
+}
+
+/// The concepts `record_action` opened for an action, collected in one pass over
+/// the edges.
+///
+/// `Causal` and `Dependency` edges have exactly one writer in Lambo —
+/// `graph::action::record_action`, which plans them from the action node to what
+/// the action produces, modifies and depends on — so a concept at the source of
+/// one is an action node and not a thought. `ConceptType` cannot answer this: an
+/// action node is `Resource`, a document anchor is `Entity`, and concepts the
+/// user meant are both.
+///
+/// An action recorded with no targets has no such edge and reads as an ordinary
+/// thought. That is the honest limit of this: the bookkeeping this product
+/// actually writes always names what it produced.
+fn action_nodes(graph: &Graph) -> HashSet<NodeId> {
+    graph
+        .edges()
+        .filter(|edge| matches!(edge.edge_type, EdgeType::Causal | EdgeType::Dependency))
+        .map(|edge| edge.source)
+        .collect()
+}
+
+/// Whether a concept is the engine's record of its own work rather than
+/// something the user thought. See this module's header.
+fn bookkeeping(actions: &HashSet<NodeId>, concept: &Concept) -> bool {
+    concept.content.starts_with(PROVENANCE) || actions.contains(&concept.id)
 }
 
 /// How tall a day's bar is, as a share of the busiest day in the same week.
@@ -329,6 +514,16 @@ fn said(interaction: &Interaction) -> Option<&str> {
 /// "nothing happened" about a day that did, which is the one thing this row is
 /// asked. Any activity is lifted to the second step, and the seven steps above
 /// the baseline carry the shape from there.
+///
+/// **A week with no busiest day draws seven full bars, and that is the same
+/// argument from the other end.** Seven single-turn days are each 100% of their
+/// own week, so `▁▁▁█▁██` and `███████` differ in shape and not in loudness —
+/// the height is a share and carries no absolute meaning, which is stated above
+/// and is what keeps a quiet week from flattening onto the baseline. Capping a
+/// flat week at a middle step would put an absolute judgement back into exactly
+/// one case and make `[9,9,9,9,9,9,9]` and `[9,9,9,9,9,9,8]` two rows apart.
+/// `a_flat_week_is_drawn_flat_at_the_top_of_its_own_scale` pins the answer so it
+/// is a decision rather than a side effect.
 fn bar_level(count: usize, busiest: usize) -> u8 {
     if count == 0 || busiest == 0 {
         return 1;
@@ -342,11 +537,14 @@ fn bar_level(count: usize, busiest: usize) -> u8 {
     u8::try_from(scaled.saturating_add(1)).unwrap_or(u8::MAX)
 }
 
-/// What a concept is worth as a thread: how many separate turns reached it, and
-/// which of the week's days those were.
+/// What a concept is worth as a thread: which turns reached it, and which of the
+/// week's days those were.
 struct Recurrence<'a> {
     concept: &'a Concept,
-    returns: usize,
+    /// The turns carrying a `Derives` edge into the concept, kept rather than
+    /// counted because folding two paraphrases has to union them: a turn that
+    /// derived both said one thing, not two.
+    supports: Vec<NodeId>,
     days: [bool; WEEK],
     latest: DateTime<Utc>,
 }
@@ -365,25 +563,49 @@ struct Recurrence<'a> {
 /// panel draws its seven marks under the seven day columns: a thought last
 /// touched in March would arrive with every mark absent, which reads as "this
 /// never comes up" beside a claim that it is what keeps coming back.
-fn threads(graph: &Graph, placed: &HashMap<NodeId, Placed>) -> Vec<Thread> {
+///
+/// **One thought takes one row.** An LLM extractor does not repeat itself: the
+/// same fact met three times enters the graph as three concepts, and post-M10
+/// measured the consequence — recurrence spreads across the copies instead of
+/// accumulating on one, and three of these five slots go to one thought said
+/// three ways. So the strongest candidate of a cluster keeps the row and the
+/// rest are folded into it, supports unioned, marks merged. Same thought by
+/// [`one_thought`]: Lambo's own canonical key, or inside the measured
+/// [`PARAPHRASE`] radius. A copy with no vector yet — writes acknowledge before
+/// the embedder runs — is only caught by the key, and still takes its own row.
+fn threads(
+    graph: &Graph,
+    placed: &HashMap<NodeId, Placed>,
+    actions: &HashSet<NodeId>,
+) -> Vec<Thread> {
     let mut found: Vec<Recurrence<'_>> = graph
         .concepts()
+        .filter(|concept| !bookkeeping(actions, concept))
         .filter_map(|concept| recurrence(graph, placed, concept))
         .collect();
-    found.sort_by(|left, right| {
-        right
-            .returns
-            .cmp(&left.returns)
-            .then_with(|| right.day_count().cmp(&left.day_count()))
-            .then_with(|| right.latest.cmp(&left.latest))
-            // Total, so two equally-returned-to thoughts do not swap places
-            // between one tick and the next.
-            .then_with(|| left.concept.content.cmp(&right.concept.content))
-            .then_with(|| left.concept.id.0.cmp(&right.concept.id.0))
-    });
-    found
-        .into_iter()
-        .take(THREADS)
+    found.sort_by(strongest_first);
+
+    // Strongest first, so the row a cluster keeps is the copy that earned it.
+    // A candidate that matches nothing held and finds the pool full is below the
+    // cut in every ordering, folded or not, and is dropped; the walk continues so
+    // a paraphrase further down still merges into the row it belongs to.
+    let mut kept: Vec<Recurrence<'_>> = Vec::new();
+    for candidate in found {
+        let held = kept
+            .iter()
+            .position(|held| one_thought(held.concept, candidate.concept));
+        match held {
+            Some(index) => kept[index].absorb(candidate),
+            None if kept.len() < POOL => kept.push(candidate),
+            None => {}
+        }
+    }
+    // Folding changes the totals, so the order is settled after it rather than
+    // before: a cluster is as strong as what it gathered.
+    kept.sort_by(strongest_first);
+    kept.truncate(THREADS);
+
+    kept.into_iter()
         .map(|found| Thread {
             summary: found.concept.content.clone(),
             // The one-line label and the reason are both written, not derived —
@@ -399,11 +621,80 @@ fn threads(graph: &Graph, placed: &HashMap<NodeId, Placed>) -> Vec<Thread> {
         .collect()
 }
 
+/// The list's order: how often it came back, then how much of the week it spans,
+/// then how recently — and then two tie-breaks that make the order total, so two
+/// equally-returned-to thoughts do not swap places between one tick and the next.
+fn strongest_first(left: &Recurrence<'_>, right: &Recurrence<'_>) -> std::cmp::Ordering {
+    right
+        .returns()
+        .cmp(&left.returns())
+        .then_with(|| right.day_count().cmp(&left.day_count()))
+        .then_with(|| right.latest.cmp(&left.latest))
+        .then_with(|| left.concept.content.cmp(&right.concept.content))
+        .then_with(|| left.concept.id.0.cmp(&right.concept.id.0))
+}
+
+/// Whether two concepts are one thought for the purpose of one row.
+///
+/// Lambo's own judgement first: a shared canonical key is the engine saying
+/// these are the same thing, and it costs a string comparison. The embedding
+/// distance is the second leg, because the key cannot see a paraphrase — that is
+/// the whole of what post-M10 measured.
+fn one_thought(left: &Concept, right: &Concept) -> bool {
+    if left.canonical_key == right.canonical_key {
+        return true;
+    }
+    let (Some(here), Some(there)) = (&left.embedding, &right.embedding) else {
+        return false;
+    };
+    cosine_distance(here, there).is_some_and(|distance| distance < PARAPHRASE)
+}
+
+/// The distance between two vectors, or `None` when there is no angle to
+/// measure: mismatched widths (two embedding contracts in one graph) or a zero
+/// vector.
+fn cosine_distance(here: &[f32], there: &[f32]) -> Option<f32> {
+    if here.len() != there.len() {
+        return None;
+    }
+    let dot: f32 = here.iter().zip(there).map(|(a, b)| a * b).sum();
+    let magnitude = norm(here) * norm(there);
+    (magnitude > 0.0).then(|| 1.0 - dot / magnitude)
+}
+
+fn norm(vector: &[f32]) -> f32 {
+    vector.iter().map(|value| value * value).sum::<f32>().sqrt()
+}
+
 impl Recurrence<'_> {
+    /// How many separate turns reached this thought. Orders the list; never
+    /// drawn as a number.
+    fn returns(&self) -> usize {
+        self.supports.len()
+    }
+
     /// How many of the week's days this thought came up on. Orders the list;
     /// never drawn as a number.
     fn day_count(&self) -> usize {
         self.days.iter().filter(|came_up| **came_up).count()
+    }
+
+    /// Take another way of saying the same thing into this row.
+    ///
+    /// The supports are unioned rather than added: one turn that derived two
+    /// paraphrases of a fact is one turn that came back to it, and adding the
+    /// counts would let an extractor's habits inflate the ranking it is already
+    /// spreading.
+    fn absorb(&mut self, other: Recurrence<'_>) {
+        for support in other.supports {
+            if !self.supports.contains(&support) {
+                self.supports.push(support);
+            }
+        }
+        for (day, came_up) in self.days.iter_mut().zip(other.days) {
+            *day = *day || came_up;
+        }
+        self.latest = self.latest.max(other.latest);
     }
 }
 
@@ -434,7 +725,7 @@ fn recurrence<'a>(
     }
     Some(Recurrence {
         concept,
-        returns: supports.len(),
+        supports,
         days,
         latest: latest?,
     })
@@ -444,10 +735,17 @@ fn recurrence<'a>(
 ///
 /// Windowed to the same seven days as everything else. The panel's title is a
 /// claim about recency, so a graph nobody has written to since March shows
-/// nothing here rather than offering March as news.
-fn trickle(graph: &Graph, placed: &HashMap<NodeId, Placed>) -> Vec<Trickle> {
+/// nothing here rather than offering March as news. And filtered through
+/// [`bookkeeping`] like the threads are: "Just remembered: Ingested file
+/// document:git:/Users/…" is not something anybody remembered.
+fn trickle(
+    graph: &Graph,
+    placed: &HashMap<NodeId, Placed>,
+    actions: &HashSet<NodeId>,
+) -> Vec<Trickle> {
     let mut fresh: Vec<(DateTime<Utc>, &Concept)> = graph
         .concepts()
+        .filter(|concept| !bookkeeping(actions, concept))
         .filter_map(|concept| {
             let place = about(placed, concept)?;
             place.day?;
@@ -494,6 +792,17 @@ fn short_date(date: NaiveDate) -> String {
         .replace("{weekday}", &weekday(&date, true))
         .replace("{day}", &date.day().to_string())
         .replace("{month}", &month(&date, true))
+}
+
+/// "21 August" — how far back the status bar says this session goes.
+///
+/// Its own key rather than [`long_date`] without the weekday: "back to Friday 21
+/// August" names a weekday nobody asked about, on the one line of the app that
+/// has to survive an 80-column terminal beside the week's own label.
+fn day_month(date: NaiveDate) -> String {
+    text::get("tui.date_day_month")
+        .replace("{day}", &date.day().to_string())
+        .replace("{month}", &month(&date, false))
 }
 
 /// "Thu 27" — a week column's title.
@@ -548,3 +857,11 @@ fn month(date: &NaiveDate, short: bool) -> String {
 #[cfg(test)]
 #[path = "view_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "view_clock_tests.rs"]
+mod clock_tests;
+
+#[cfg(test)]
+#[path = "view_session_tests.rs"]
+mod session_tests;

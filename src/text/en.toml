@@ -96,7 +96,10 @@ serve_help = "Serve Lambo memory over MCP and publish a session endpoint"
 serve_after_help = "Serves Lambo's MCP tool surface on stdio by default and publishes a local session endpoint so a losing `lambo serve` can proxy into this process. Postgres needs MOOSHIK_POSTGRES_DSN (or LAMBO_POSTGRES_DSN / DATABASE_URL). Gemini credentials follow Lambo's ADC chain."
 missing_dsn = "No Postgres DSN is configured. Set MOOSHIK_POSTGRES_DSN and try again."
 backend_failed = "Could not use the workspace memory. Check the store, embedder, and credentials."
-session_conflict = "Workspace memory is held by another writer, so this command was refused: {detail}"
+# Lambo's own sentence names the holder and the lease age; the remediation is
+# this product's, because Lambo's points at a takeover Mooshik exposes no way to
+# perform and at a document only Lambo ships. See `memory::facts`.
+session_conflict = "Workspace memory is held by another writer, so this command was refused. {detail} Leave that session — Esc in the terminal interface, Ctrl-C in `mooshik serve` or `mooshik chat` — and run this again; a holder that is already gone stops refreshing its lease and lets go of it shortly by itself."
 runtime_failed = "Could not start the async runtime for workspace memory."
 recall_help = "Search workspace memory and print what matched"
 recall_after_help = "Requires an initialized home (`mooshik init`). Searches this session's concept graph, using real embeddings when [store]/[embedder] point at Postgres and Gemini. Matches print to you, the local operator; they are not routed through chat's egress redaction because nothing here reaches a model. Example: `mooshik recall \"deploy checklist\"`."
@@ -231,7 +234,15 @@ panel_caution = "One thing before you do"
 health_keeping_up = "Keeping up"
 health_catching_up = "Catching up"
 health_degraded = "Not saving"
+# How much is behind the state, in three renderings of the same fact. The long
+# form names the far end of what the session remembers and the short one does
+# not, because the week screen's rule already carries the week beside it — two
+# written forms, not a truncation, for the reason `Stamp::short_date` is two
+# fields. `scope_live` is the long form for a graph with no far end to name: a
+# session with nothing in it has no day to go back to.
 scope_live = "{count} things remembered"
+scope_since = "{count} things remembered, back to {date}"
+scope_short = "{count} remembered"
 # Until a workspace says whose it is, the conversation needs a name for the
 # person's turns.
 person_unknown = "You"
@@ -291,6 +302,9 @@ week_day_header = "  Fri Sat Sun Mon Tue Wed Thu"
 # because "14:2" is not a clock.
 date_long = "{weekday} {day} {month}"
 date_short = "{weekday} {day} {month}"
+# A date with no weekday, for the status bar's "back to 21 August": the weekday
+# of a day months ago is not something the reader asked about.
+date_day_month = "{day} {month}"
 day_head = "{weekday} {day}"
 clock = "{hour}:{minute}"
 # The week's range on the title rule. Two keys, because a week that crosses a

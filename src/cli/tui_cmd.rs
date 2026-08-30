@@ -23,11 +23,22 @@
 //! with exit code 2. There is no read-only or proxied second view; a workspace
 //! served through somebody else's lease is a different design and not this one.
 //!
-//! The session is closed **after** the terminal is put back, whichever way the
-//! loop ended. Closing is what makes the write-behind tail durable, so a `q`, a
-//! failed draw and a broken pipe all reach it — and its own failure is reported
-//! rather than swallowed, because a session that would not close is the one
-//! thing here that can lose what was remembered.
+//! The session is closed **after** the terminal is put back, on every way out of
+//! the loop. Closing is what makes the write-behind tail durable, so `Esc`, a
+//! failed draw, a broken pipe and — since M12a's first review round —
+//! `SIGTERM`/`SIGHUP` all reach it; the last of those used to kill the process
+//! where it stood, which left the alternate screen up and the lease held for its
+//! whole TTL by a pid that no longer existed. `crate::tui::run` takes both
+//! signals for the length of the session and ends the loop instead. Close's own
+//! failure is reported rather than swallowed, because a session that would not
+//! close is the one thing here that can lose what was remembered.
+//!
+//! **A panic is the exception, deliberately.** The panic hook puts the terminal
+//! back, the unwind drops the `Memory`, and Lambo's `Drop` aborts the heartbeat
+//! without releasing the lease — a handle dropped without a clean close is the
+//! crash-shaped path, and the lease is what makes a crash safe. So a panic
+//! leaves the lease to lapse on its own TTL, which is the correct answer for a
+//! crash and the wrong one for a closed window; only the second is a signal.
 
 use crate::{home::HomeLayout, text, tui::Scene};
 
