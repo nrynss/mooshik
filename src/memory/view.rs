@@ -172,8 +172,8 @@ const PARAPHRASE: f32 = 0.02;
 /// form of this call, which is what a later reader writes while simplifying, is
 /// the safe one: Rust evaluates arguments left to right, so the figures are read
 /// before the guard exists. `the_figures_are_read_before_the_graph_guard` pins
-/// the order and `a_workspace_is_drawn_while_a_writer_hammers_the_graph` proves
-/// it survives contention.
+/// the order, and pins it by reading this body rather than by executing the
+/// fault: a test of the reversed order cannot fail, only fail to return.
 pub fn of_memory<Tz: TimeZone>(memory: &Memory, now: DateTime<Tz>) -> Workspace {
     of_graph(&memory.stats(), &memory.graph().read(), now)
 }
@@ -282,9 +282,10 @@ struct Placed {
 
 /// Every interaction in the graph, placed once.
 ///
-/// Once, because three separate readers want the answer — the day logs, a
-/// thread's marks and the trickle's freshness — and a graph with an interaction
-/// per turn of a long session is not a thing to walk three times a tick.
+/// Once, because four separate readers want the answer — the day logs, a
+/// thread's marks, the trickle's freshness and the far end the status bar names
+/// — and a graph with an interaction per turn of a long session is not a thing
+/// to walk four times a tick.
 fn placements<Tz: TimeZone>(
     graph: &Graph,
     zone: &Tz,
