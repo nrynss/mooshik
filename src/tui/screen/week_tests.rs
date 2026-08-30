@@ -47,6 +47,9 @@ fn workspace() -> Workspace {
             days: (0..7)
                 .map(|n| day(&format!("Day {n}"), &format!("2{n}"), n == 5))
                 .collect(),
+            // Unnamed, so this fixture draws the fallback header the design's
+            // own week is; `the_day_header_names_the_week_it_labels` fills it.
+            day_heads: Vec::new(),
             selected: 5,
         },
         threads: (0..3)
@@ -171,6 +174,78 @@ fn the_marks_line_up_under_their_day_headers() {
         marks_row.get(usize::from(thu) + 1),
         Some('▇' | '·')
     ));
+}
+
+/// The header names the week's own days when the week names them, and the
+/// design's Friday-first row only when it does not.
+///
+/// The fixed row is true of exactly one week: the artboard's, which ends on a
+/// Thursday. A live week ends on today, so on six days in seven that row put
+/// `Fri` over Wednesday's marks and misattributed every one of them — a panel
+/// lying about its own contents, which is the same fault the sixth review round
+/// found twice. The marks are still aligned against it either way, which is the
+/// second half of this test.
+#[test]
+fn the_day_header_names_the_week_it_labels() {
+    let mut workspace = workspace();
+    // No heads: the fallback, and what `--demo` draws.
+    let buf = drawn(120, 40, &workspace);
+    assert!(all_text(&buf).contains("Fri Sat Sun Mon Tue Wed Thu"));
+
+    // A week ending on a Sunday says so, on the row the marks hang from.
+    workspace.week.day_heads = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        .iter()
+        .map(|head| (*head).to_owned())
+        .collect();
+    let buf = drawn(120, 40, &workspace);
+    let text = all_text(&buf);
+    assert!(
+        text.contains("Mon Tue Wed Thu Fri Sat Sun"),
+        "the header did not follow the week"
+    );
+    assert!(
+        !text.contains("Fri Sat Sun Mon"),
+        "the fixed Friday-first row is still drawn"
+    );
+
+    let header_row = row_of(&buf, 0..40, "Mon Tue Wed");
+    let mon = col_of(&buf, header_row, "Mon");
+    let sun = col_of(&buf, header_row, "Sun");
+    let marks_row: Vec<char> = row_text(&buf, header_row + 1).chars().collect();
+    assert_eq!(marks_row.get(usize::from(mon) + 1), Some(&'▇'));
+    assert!(matches!(
+        marks_row.get(usize::from(sun) + 1),
+        Some('▇' | '·')
+    ));
+}
+
+/// A head that is not three cells wide is padded or cut here, so the marks stay
+/// on their four-cell stride whatever a locale abbreviates a weekday to.
+#[test]
+fn a_day_head_is_held_to_the_marks_own_stride() {
+    let heads: Vec<String> = ["M", "Tues", "W", "Th", "F", "Sa", "Su"]
+        .iter()
+        .map(|head| (*head).to_owned())
+        .collect();
+    let row = day_header(&heads).expect("seven named days");
+    assert_eq!(row, "  M   Tue W   Th  F   Sa  Su ");
+    // The stride is what the marks are laid on: every head starts four cells
+    // after the one before it, whatever its own length.
+    for (index, head) in heads.iter().enumerate() {
+        assert_eq!(
+            row.chars().nth(2 + index * 4),
+            head.chars().next(),
+            "head {index} is off the stride: {row:?}"
+        );
+    }
+
+    // Fewer than seven, or one with nothing in it, is not a week that can name
+    // its own days.
+    assert!(day_header(&heads[..6]).is_none());
+    let mut blank = heads.clone();
+    blank[3] = "  ".to_owned();
+    assert!(day_header(&blank).is_none());
+    assert!(day_header(&[]).is_none());
 }
 
 /// Every thread shows its reason on this screen, unlike the Today panel.

@@ -332,8 +332,9 @@ pub struct Thread {
     /// written a label for still heads the panel with something true.
     #[serde(default)]
     pub short_summary: Option<String>,
-    /// Which of the week's seven days it came up on, Friday first. `false` is
-    /// drawn as absence rather than left blank, so the shape stays readable.
+    /// Which of the week's seven days it came up on, in the same order as
+    /// [`Week::days`] — oldest first, today last. `false` is drawn as absence
+    /// rather than left blank, so the shape stays readable.
     pub days: [bool; 7],
     /// Why it is where it is in the list.
     pub because: Justification,
@@ -487,8 +488,18 @@ pub struct Health {
 pub struct Week {
     /// "21-27 August".
     pub label: String,
-    /// Friday first, today last.
+    /// Oldest first, today last.
     pub days: Vec<Day>,
+    /// The three-letter head over each day's marks on the week screen — "Fri",
+    /// "Sat", … — in the same order as [`Week::days`] and [`Thread::days`].
+    ///
+    /// The header row used to be a fixed string in `en.toml`, which is true of
+    /// exactly one week: the design's own, which ends on a Thursday. A live week
+    /// ends on today, so on six days in seven that row named Friday over
+    /// Wednesday's marks and every mark under it was attributed to the wrong
+    /// day. Empty falls back to that fixed string, which is what `--demo` draws
+    /// and what a week with no days has nothing better than.
+    pub day_heads: Vec<String>,
     /// Which day the detail pane is showing, as an index into `days`.
     pub selected: usize,
 }

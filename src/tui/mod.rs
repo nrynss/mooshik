@@ -32,12 +32,15 @@
 //! `1a`, `--demo recall` adds `1c`'s quoted words and `--demo caution` adds
 //! `1d`'s one careful sentence, because those two artboards are states of the
 //! conversation and there is no other way to reach them until the chat loop
-//! lands. On the live path, the status bar is real — it comes from
-//! [`crate::memory::stats`] — and the rest of the workspace is empty, because the
-//! data the artboards show does not exist behind Mooshik yet: a day's weather and
-//! mood have no source at all, and per-day thread marks need recalled nodes
-//! grouped by event date. Filling those in is a change to [`live`] and to nothing
-//! else, which is the reason the screens read the model and never a store.
+//! lands. On the live path the workspace is the graph: M12a's
+//! [`crate::memory::view`] fills the clock, the week, today's log, the ribbon,
+//! what keeps coming back and what was just remembered, all placed on the
+//! reader's own calendar days. What it deliberately leaves empty is prose —
+//! a day's mood, its gutter summary, its trailing notes and a thread's reason —
+//! because nothing in a graph writes an English sentence; M12c's reflect pass
+//! does, and weather has no source at all. There are still exactly two
+//! constructors of a [`model::Workspace`] and the screens read neither a store
+//! nor a clock.
 
 pub mod app;
 pub mod grid;
@@ -55,9 +58,7 @@ use std::{
 
 use ratatui::crossterm::event::{self, Event};
 
-use crate::{config::Config, memory::MemoryError, text};
-
-use model::{Health, Workspace};
+use model::Workspace;
 
 /// The design's own demo day, as a workspace.
 const DEMO: &str = include_str!("demo.toml");
@@ -160,45 +161,6 @@ pub fn demo(scene: Scene) -> Workspace {
     workspace
 }
 
-/// The live workspace: what Mooshik can actually say about right now.
-///
-/// Only the status bar is filled, and it is filled honestly — `node_count` is
-/// how many things are remembered, and a degraded session says so rather than
-/// claiming to be keeping up. Everything else is empty on purpose: an empty
-/// panel is a true statement about a source that does not exist yet, and putting
-/// the demo's Thursday behind `mooshik tui` would be a false one.
-pub async fn live(config: &Config) -> Result<Workspace, MemoryError> {
-    Ok(from_stats(&crate::memory::stats(config).await?))
-}
-
-/// The live workspace's shape, without the database in front of it.
-///
-/// Split out of [`live`] so the one thing worth pinning about the primary path
-/// can be pinned: what the chrome reads when almost every field is empty. See
-/// `the_live_chrome_draws_no_dangling_separator`.
-fn from_stats(stats: &lambo::MemoryStats) -> Workspace {
-    // Two words at most, per `1i`: "One mark, one word: reachable, saved,
-    // keeping up. Never a sentence."
-    let (state, well) = if stats.degraded {
-        (text::get("tui.health_degraded"), false)
-    } else if stats.log_depth > 0 {
-        (text::get("tui.health_catching_up"), false)
-    } else {
-        (text::get("tui.health_keeping_up"), true)
-    };
-    let scope = text::get("tui.scope_live").replace("{count}", &stats.node_count.to_string());
-    Workspace {
-        person: text::get("tui.person_unknown").to_owned(),
-        health: Health {
-            state: state.to_owned(),
-            scope: scope.clone(),
-            short_scope: scope,
-            well,
-        },
-        ..Workspace::default()
-    }
-}
-
 /// Take the terminal: raw mode, the alternate screen, and a panic hook that puts
 /// both back so a panic inside the loop cannot leave the user's shell without an
 /// echo.
@@ -286,6 +248,7 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, workspace: Workspace) -> 
 mod tests {
     use super::*;
 
+    use crate::text;
     use model::{Recall, Speaker, Turn};
 
     /// A run with no terminal is refused before anything is written, so the
@@ -491,8 +454,8 @@ mod tests {
         assert_eq!(Scene::named(Some("nonsense")), Scene::Today);
     }
 
-    /// The live workspace's chrome draws no separator with nothing on one side of
-    /// it, on any of the three screens.
+    /// The chrome draws no separator with nothing on one side of it, on any of
+    /// the three screens, when every field but the status bar is empty.
     ///
     /// This is the first thing an operator sees, and it used to be
     /// `Mooshik  ·    ·  ` on Today and the narrow layout,
@@ -500,12 +463,19 @@ mod tests {
     /// the week's bottom rule — because `now` is empty and `week.label` is empty
     /// and every subject was built with an unconditional `format!`. The empty
     /// fields are honest; the separators around them were not.
+    ///
+    /// M12a fills those two fields on the live path, so this no longer describes
+    /// what `mooshik tui` draws — which is exactly why it is still here. The
+    /// join is a property of the chrome and not of whichever source happens to
+    /// be filling the model this milestone, and the shape it was written against
+    /// is one construction away: a workspace with a real status bar and nothing
+    /// else, which is what a source that fails to fill a field still produces.
     #[test]
-    fn the_live_chrome_draws_no_dangling_separator() {
+    fn the_chrome_draws_no_dangling_separator() {
         use crate::tui::{app::App, grid::Grid, screen::chrome::View};
         use ratatui::{buffer::Buffer, layout::Rect};
 
-        let workspace = from_stats(&lambo::MemoryStats {
+        let health = crate::memory::view::health(&lambo::MemoryStats {
             session: lambo::SessionId::new("mooshik"),
             agent: lambo::AgentId::new("mooshik"),
             flush_lag: Duration::from_millis(0),
@@ -523,12 +493,14 @@ mod tests {
             canonization_cycles: 0,
             canonization_failures: 0,
         });
-        // The status bar is the one thing that is real, so it is there to find.
+        let workspace = Workspace {
+            person: text::get("tui.person_unknown").to_owned(),
+            health,
+            ..Workspace::default()
+        };
+        // The status bar is the one thing that is filled, so it is there to find.
         assert_eq!(workspace.health.scope, "214 things remembered");
-        assert!(
-            workspace.now.long_date.is_empty(),
-            "the clock is not live yet"
-        );
+        assert!(workspace.now.long_date.is_empty(), "the clock is not empty");
 
         let separator = text::get("tui.separator").trim();
         let tight = text::get("tui.separator_tight").trim();
@@ -565,6 +537,38 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The demo names no day heads, so the week screen falls back to the fixed
+    /// Friday-first row — and that row has to be the demo's own week.
+    ///
+    /// The two are separate files and could drift silently: `demo.toml` could be
+    /// re-dated onto another week and the header would keep saying Friday over
+    /// Monday's marks, which is the exact fault `Week::day_heads` exists to
+    /// stop on the live path. Pinned from the fixture's side, since the
+    /// fixture's side is what would move.
+    #[test]
+    fn the_demo_week_and_the_header_it_falls_back_to_agree() {
+        let workspace = demo(Scene::Today);
+        assert!(
+            workspace.week.day_heads.is_empty(),
+            "the demo names its days; the fallback is no longer what it draws"
+        );
+        let heads: Vec<&str> = workspace
+            .week
+            .days
+            .iter()
+            .map(|day| {
+                day.short_label
+                    .split_whitespace()
+                    .next()
+                    .expect("a day is labelled")
+            })
+            .collect();
+        let header: Vec<&str> = text::get("tui.week_day_header")
+            .split_whitespace()
+            .collect();
+        assert_eq!(heads, header);
     }
 
     /// The demo's bars are all drawable, so the ribbon has no holes.

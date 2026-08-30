@@ -1,4 +1,5 @@
-//! In-process Lambo memory: resolve backends, provision schema, open, serve.
+//! In-process Lambo memory: resolve backends, provision schema, open, serve —
+//! and, in [`view`], read the open graph back as the workspace the TUI draws.
 
 use lambo::LamboError;
 
@@ -6,6 +7,7 @@ use crate::text;
 
 mod ops;
 mod resolve;
+pub mod view;
 
 pub use ops::{open, provision, recall, serve, serve_plan, stats, ServePlan};
 pub use resolve::{resolve_product, resolve_store};

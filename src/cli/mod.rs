@@ -67,10 +67,18 @@ fn dispatch(matches: &clap::ArgMatches) -> anyhow::Result<()> {
 }
 
 fn block_on<T>(fut: impl Future<Output = Result<T, MemoryError>>) -> anyhow::Result<T> {
+    runtime()?.block_on(fut).map_err(anyhow::Error::new)
+}
+
+/// A runtime for a command that has to outlive one `block_on`.
+///
+/// [`block_on`] answers every one-shot: open, do the thing, close, drop. `tui`
+/// cannot, because it holds the session open across a synchronous redraw loop —
+/// the `Memory` has to survive between the open and the close, and so does the
+/// runtime its background tasks are on.
+fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .map_err(|_| anyhow!(text::get("memory.runtime_failed")))?
-        .block_on(fut)
-        .map_err(anyhow::Error::new)
+        .map_err(|_| anyhow!(text::get("memory.runtime_failed")))
 }

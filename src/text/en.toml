@@ -270,9 +270,35 @@ week_offscreen = "{count} more days"
 week_offscreen_one = "one more day"
 narrow_trickle_prefix = "· Just remembered: "
 
-# The gutter a thread's marks sit in. The trickle's bullet is a glyph, so it
-# lives in Rust: see `widget::marks`.
+# The gutter a thread's marks sit in, for a week that does not name its own
+# days — the design's own Friday-first Thursday, which is what `--demo` draws.
+# A live week ends on today, so it names its seven days in `Week::day_heads` and
+# `week::day_header` builds the row from those instead; this is the fallback and
+# the demo's. The trickle's bullet is a glyph, so it lives in Rust: see
+# `widget::marks`.
 week_day_header = "  Fri Sat Sun Mon Tue Wed Thu"
+
+# How the live workspace writes the six renderings of one instant that
+# `model::Stamp`, `model::Day` and `model::Week` carry as strings.
+#
+# Templates rather than a `strftime` pattern, for the reason `[tui.numbers]`
+# exists: the order of weekday, day and month is a property of a language, and
+# so are the names themselves — `chrono`'s `%A`/`%B` are English and nothing
+# else. A locale reorders these freely and translates the four tables below.
+#
+# `{day}` is never zero-padded: the artboards write "Thursday 27 August", and a
+# locale wanting "07" can say so in its own tables. `{hour}` and `{minute}` are,
+# because "14:2" is not a clock.
+date_long = "{weekday} {day} {month}"
+date_short = "{weekday} {day} {month}"
+day_head = "{weekday} {day}"
+clock = "{hour}:{minute}"
+# The week's range on the title rule. Two keys, because a week that crosses a
+# month names it twice and one that does not names it once — "21-27 August"
+# against "29 August - 4 September". Deriving the second from the first would
+# put a calendar rule in the renderer.
+week_span = "{from}-{to} {month}"
+week_span_across = "{from} {from_month} - {to} {to_month}"
 
 # Small numbers, spelled. Every artboard writes them out in prose — `1d`'s
 # "Eight things lean on it:", `1h`'s "four more" — so a generated sentence has
@@ -323,3 +349,55 @@ nav_week = "Week"
 # What joins the collapsed trickle's entries. Punctuation between words is
 # prose, not notation, so a locale that separates lists differently can say so.
 list_separator = ", "
+
+# The calendar, keyed by the numbers `chrono` counts in: weekdays 1–7 from
+# Monday, months 1–12 from January. Four tables rather than two, because the
+# short forms are written and not truncated — the same rule `Stamp::short_date`
+# and `Health::short_scope` are two fields for. The week screen's day header
+# lays its heads on a four-cell stride, so a short weekday that is not three
+# cells wide is padded or cut by `week::day_header`, never by this file.
+[tui.weekday]
+1 = "Monday"
+2 = "Tuesday"
+3 = "Wednesday"
+4 = "Thursday"
+5 = "Friday"
+6 = "Saturday"
+7 = "Sunday"
+
+[tui.weekday_short]
+1 = "Mon"
+2 = "Tue"
+3 = "Wed"
+4 = "Thu"
+5 = "Fri"
+6 = "Sat"
+7 = "Sun"
+
+[tui.month]
+1 = "January"
+2 = "February"
+3 = "March"
+4 = "April"
+5 = "May"
+6 = "June"
+7 = "July"
+8 = "August"
+9 = "September"
+10 = "October"
+11 = "November"
+12 = "December"
+
+[tui.month_short]
+1 = "Jan"
+2 = "Feb"
+3 = "Mar"
+4 = "Apr"
+5 = "May"
+6 = "Jun"
+7 = "Jul"
+8 = "Aug"
+9 = "Sep"
+10 = "Oct"
+11 = "Nov"
+12 = "Dec"

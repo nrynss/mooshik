@@ -158,6 +158,7 @@ pub fn draw(grid: &mut Grid<'_>, workspace: &Workspace, thread_cursor: usize) {
 
     threads(
         grid,
+        &workspace.week,
         &workspace.threads,
         thread_cursor,
         Place::new(0, lower_top, detail_col, lower_rows),
@@ -464,14 +465,58 @@ fn column(grid: &mut Grid<'_>, day: &Day, selected: bool, today: bool, at: Place
     }
 }
 
+/// Cells one day's head takes in the header row, before the space that
+/// separates it from the next: `Fri`, and the stride the marks are laid on.
+///
+/// The stride itself belongs to [`marks::aligned`], which places one mark every
+/// four cells; three letters and the space between them is that same four, and
+/// the row would drift out from under the marks at any other width. So a head
+/// shorter than three cells is padded and a longer one is cut, here rather than
+/// in `en.toml`: how long a language's abbreviated weekday is, is the
+/// translator's business, and holding the design's stride is the renderer's.
+const HEAD_CELLS: usize = 3;
+
+/// The header the thread marks line up against, built from the week's own days.
+///
+/// `None` when the week does not name seven days — `--demo`'s does not, and
+/// neither does a workspace nobody has filled — and the caller falls back to
+/// `en.toml`'s fixed Friday-first row, which is the design's own week and the
+/// only week that row is true of.
+fn day_header(heads: &[String]) -> Option<String> {
+    let heads = heads.get(..marks::WEEK)?;
+    if heads.iter().any(|head| head.trim().is_empty()) {
+        return None;
+    }
+    // The two leading spaces are the design's: they put `Fri` at column 3, so
+    // the marks at column 4 land on the middle letter of their own day.
+    let mut row = String::from("  ");
+    for (index, head) in heads.iter().enumerate() {
+        if index > 0 {
+            row.push(' ');
+        }
+        let mut cells = 0;
+        for letter in head.chars().take(HEAD_CELLS) {
+            row.push(letter);
+            cells += 1;
+        }
+        for _ in cells..HEAD_CELLS {
+            row.push(' ');
+        }
+    }
+    Some(row)
+}
+
 /// Draw "What keeps coming back" with the marks aligned under their days.
-fn threads(grid: &mut Grid<'_>, list: &[Thread], cursor: usize, at: Place) {
+fn threads(grid: &mut Grid<'_>, week: &Week, list: &[Thread], cursor: usize, at: Place) {
     let mut inner = Panel::new(text::get("tui.panel_threads"), Kind::Idle).draw(grid, at);
 
+    let header = day_header(&week.day_heads);
     inner.put(
         DAY_HEADER,
         0,
-        text::get("tui.week_day_header"),
+        header
+            .as_deref()
+            .unwrap_or_else(|| text::get("tui.week_day_header")),
         Role::Furniture.style(),
     );
 
