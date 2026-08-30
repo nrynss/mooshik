@@ -411,15 +411,27 @@ struct Sandbox {
     dir: PathBuf,
 }
 
+/// How many sandboxes this process has named, which is what makes two of them
+/// created in the same instant different names.
+static SANDBOXES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 impl Sandbox {
     fn create() -> Result<Self, String> {
+        // Three parts, and all three are load-bearing: the pid separates
+        // processes, the counter separates two calls inside one, and the clock
+        // separates this run from a directory a crashed one left behind (the
+        // drop that removes it does not run on a kill). The clock alone did not:
+        // macOS's realtime clock advances in microseconds, so two sandboxes
+        // opened in the same microsecond drew the same name and the loser failed
+        // with "File exists" — the same fault the vault fixtures hit on Darwin.
         let id = format!(
-            "mooshik-scratch-{}-{:x}",
+            "mooshik-scratch-{}-{:x}-{:x}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.subsec_nanos())
-                .unwrap_or(0)
+                .unwrap_or(0),
+            SANDBOXES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
         let dir = std::env::temp_dir().join(id);
         fs::create_dir(&dir).map_err(|error| fun("tools.scratch_sandbox_failed", &error))?;
@@ -519,6 +531,22 @@ mod tests {
         );
         assert!(!out.timed_out);
         assert!(!out.truncated);
+    }
+
+    /// Two scripts started in the same instant get two sandboxes.
+    ///
+    /// They used to be named from the pid and the clock alone, and macOS's
+    /// realtime clock advances in microseconds: two calls inside one microsecond
+    /// drew the same name and the loser failed with "File exists" — reachable
+    /// from two concurrent tool calls, and reached by this suite's own parallel
+    /// tests. The clock is sampled once here so the test does not have to win a
+    /// race to observe the fault it is guarding.
+    #[test]
+    fn two_sandboxes_opened_in_the_same_instant_are_two_directories() {
+        let first = Sandbox::create().expect("a sandbox");
+        let second = Sandbox::create().expect("a second sandbox");
+        assert_ne!(first.path(), second.path());
+        assert!(first.path().is_dir() && second.path().is_dir());
     }
 
     #[test]
