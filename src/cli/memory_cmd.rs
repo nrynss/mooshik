@@ -2,9 +2,26 @@
 
 use crate::{config::Config, home::HomeLayout, text};
 
+use std::io::IsTerminal;
+
 use super::{block_on, render, resolve};
 
-pub(crate) fn initialize(layout: &HomeLayout) -> anyhow::Result<()> {
+pub(crate) fn initialize(layout: &HomeLayout, matches: &clap::ArgMatches) -> anyhow::Result<()> {
+    let forced_non_interactive = matches.get_flag("non_interactive");
+    let interactive = !forced_non_interactive
+        && std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal();
+    if interactive {
+        return super::init_flow::run(layout);
+    }
+    initialize_unattended(layout)
+}
+
+/// The path a non-TTY run takes, and what `--non-interactive` forces.
+///
+/// Byte-identical to what `init` did before M12h: the Dockerfile calls it
+/// unattended and CI will too, so nothing here may change shape or output.
+fn initialize_unattended(layout: &HomeLayout) -> anyhow::Result<()> {
     let root = layout.init().map_err(anyhow::Error::new)?;
     let mut config = Config::load_at(&root).map_err(anyhow::Error::new)?;
     // First run creates the vault, so it is opened here regardless — and the

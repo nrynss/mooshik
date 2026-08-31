@@ -13,7 +13,17 @@ pub fn command() -> Command {
         .version(env!("CARGO_PKG_VERSION"))
         .about(text::get("app.about"))
         .after_help(text::get("app.after_help"))
-        .subcommand(Command::new("init").about(text::get("config.init_help")))
+        .subcommand(
+            Command::new("init")
+                .about(text::get("config.init_help"))
+                .after_help(text::get("config.init_after_help"))
+                .arg(
+                    Arg::new("non_interactive")
+                        .long("non-interactive")
+                        .action(ArgAction::SetTrue)
+                        .help(text::get("config.init_non_interactive_help")),
+                ),
+        )
         .subcommand(
             Command::new("serve")
                 .about(text::get("memory.serve_help"))

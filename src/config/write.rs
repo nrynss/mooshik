@@ -155,6 +155,12 @@ const SETTABLE: &[Setting] = &[
         kind: Kind::SecretName,
     },
     Setting {
+        key: "store.path",
+        section: "store",
+        field: "path",
+        kind: Kind::Path,
+    },
+    Setting {
         key: "embedder.kind",
         section: "embedder",
         field: "kind",
@@ -183,6 +189,12 @@ const SETTABLE: &[Setting] = &[
         section: "embedder",
         field: "gemini_model",
         kind: Kind::Text,
+    },
+    Setting {
+        key: "embedder.gemini_credentials",
+        section: "embedder",
+        field: "gemini_credentials",
+        kind: Kind::Path,
     },
     Setting {
         key: "daemon.flush_interval_ms",

@@ -26,6 +26,7 @@ mod failure;
 mod memory_cmd;
 mod render;
 mod resolve;
+mod init_flow;
 mod secret;
 mod tui_cmd;
 mod watcher;
@@ -50,7 +51,7 @@ fn dispatch(matches: &clap::ArgMatches) -> anyhow::Result<()> {
     let home = config::resolve_home(env::vars()).map_err(anyhow::Error::new)?;
     let layout = HomeLayout::new(home);
     match matches.subcommand() {
-        Some(("init", _)) => memory_cmd::initialize(&layout),
+        Some(("init", args)) => memory_cmd::initialize(&layout, args),
         Some(("serve", _)) => memory_cmd::serve(&layout),
         Some(("chat", _)) => chat_cmd::chat(&layout),
         Some(("tui", args)) => tui_cmd::tui(&layout, args),

@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use lambo::{EmbedderKind, StoreKind};
 use serde::Serialize;
 
+use crate::text;
 use super::Config;
 
 #[derive(Serialize)]
@@ -182,6 +183,88 @@ impl Config {
         })
         .expect("resolved config must serialize")
     }
+    /// What a working setup still lacks, one bullet per item, in the order
+    /// `mooshik init` would ask them.
+    ///
+    /// The resolved configuration (file plus environment overlay) is the
+    /// judgment basis, exactly as the interactive flow judges: a value present
+    /// only in the environment is "configured" for this machine. The bullets
+    /// still lead with the durable fix, because an environment value is the
+    /// "worked before I rebooted" failure the milestone exists to end.
+    pub fn missing_config(&self) -> Vec<String> {
+        let mut missing = Vec::new();
+        match self.store.kind {
+            StoreKind::Postgres | StoreKind::Cockroach => {
+                let has_dsn = self
+                    .store
+                    .dsn
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|value| !value.is_empty())
+                    || self
+                        .store
+                        .dsn_secret
+                        .as_deref()
+                        .map(str::trim)
+                        .is_some_and(|value| !value.is_empty());
+                if !has_dsn {
+                    missing.push(text::get("config.missing_store_dsn").to_owned());
+                }
+            }
+            StoreKind::Sqlite => {
+                if self
+                    .store
+                    .path
+                    .as_deref()
+                    .map(str::trim)
+                    .is_none_or(|value| value.is_empty())
+                {
+                    missing.push(text::get("config.missing_store_path").to_owned());
+                }
+            }
+            // `memory` is a test double that keeps nothing; nothing to report.
+            StoreKind::Memory => {}
+        }
+        if self.embedder.kind == EmbedderKind::Gemini {
+            if self
+                .embedder
+                .gemini_project
+                .as_deref()
+                .map(str::trim)
+                .is_none_or(|value| value.is_empty())
+            {
+                missing.push(text::get("config.missing_gemini_project").to_owned());
+            }
+            if self
+                .embedder
+                .gemini_credentials
+                .as_ref()
+                .is_none_or(|path| path.as_os_str().is_empty())
+            {
+                missing.push(text::get("config.missing_gemini_credentials").to_owned());
+            }
+        }
+        if self.companion.auth == super::CompanionAuth::Google {
+            if self
+                .companion
+                .google_project
+                .as_deref()
+                .map(str::trim)
+                .is_none_or(|value| value.is_empty())
+            {
+                missing.push(text::get("config.missing_companion_project").to_owned());
+            }
+            if self
+                .companion
+                .google_credentials
+                .as_ref()
+                .is_none_or(|path| path.as_os_str().is_empty())
+            {
+                missing.push(text::get("config.missing_companion_credentials").to_owned());
+            }
+        }
+        missing
+    }
 }
 
 #[cfg(test)]
@@ -259,4 +342,46 @@ mod tests {
         let shown = Config::default().redacted_toml();
         assert!(!shown.contains("[tools"), "{shown}");
     }
+    #[test]
+    fn missing_config_reports_the_default_postgres_store() {
+        let missing = Config::default().missing_config();
+        let joined = missing.join("\n");
+        assert!(joined.contains("store DSN"), "{joined}");
+        assert!(joined.contains("mooshik secret set store-dsn"), "{joined}");
+        assert!(joined.contains("store.dsn_secret"), "{joined}");
+    }
+
+    #[test]
+    fn missing_config_names_only_what_is_actually_unset() {
+        let config = Config::from_toml_and_env(
+            "[store]\nkind = 'postgres'\ndsn_secret = 'store-dsn'\n\
+             [embedder]\nkind = 'gemini'\ngemini_project = 'proj'\n\
+             [companion]\nauth = 'google'\ngoogle_project = 'proj'\ngoogle_credentials = '/k.json'\n",
+            [],
+        )
+        .unwrap();
+        let missing = config.missing_config();
+        let joined = missing.join("\n");
+        assert!(!joined.contains("store DSN"), "{joined}");
+        assert!(!joined.contains("gemini_project"), "{joined}");
+        assert!(!joined.contains("google_project"), "{joined}");
+        // The credentials path is still unset, and it is the key M12h added
+        // to the settable surface so a guided run can write it.
+        assert!(joined.contains("gemini_credentials"), "{joined}");
+    }
+
+    #[test]
+    fn missing_config_reports_the_local_posture_sqlite_path() {
+        let config = Config::from_toml_and_env(
+            "[store]\nkind = 'sqlite'\n[embedder]\nkind = 'bge_m3'\n",
+            [],
+        )
+        .unwrap();
+        let missing = config.missing_config();
+        let joined = missing.join("\n");
+        assert!(joined.contains("store.path"), "{joined}");
+        assert!(!joined.contains("store DSN"), "{joined}");
+        assert!(!joined.contains("gemini"), "{joined}");
+    }
 }
+

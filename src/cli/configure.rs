@@ -20,6 +20,15 @@ pub(crate) fn show_config(layout: &HomeLayout) -> anyhow::Result<()> {
     let root = layout.open_existing_root().map_err(anyhow::Error::new)?;
     let config = Config::load_at(&root).map_err(anyhow::Error::new)?;
     print!("{}", config.redacted_toml());
+    // What is still missing, in the order `mooshik init` would ask it. The
+    // resolved config is the judgment basis, exactly as the flow uses.
+    let missing = config.missing_config();
+    if !missing.is_empty() {
+        println!("\n{}", text::get("config.missing_header"));
+        for item in missing {
+            println!("{item}");
+        }
+    }
     Ok(())
 }
 
@@ -128,12 +137,8 @@ pub(crate) fn configure_coder(
         .get_one::<String>("agent")
         .expect("clap marks the agent argument required");
 
-    let (env_var, secret_name) = match agent.as_str() {
-        "claude" => ("ANTHROPIC_API_KEY", "anthropic-api-key"),
-        "omp" | "agy" => ("MOOSHIK_GEMINI_API_KEY", "gemini-api-key"),
-        "cursor" => ("CURSOR_API_KEY", "cursor-api-key"),
-        _ => return Err(anyhow!(text::get("config.invalid_coder_agent"))),
-    };
+    let (env_var, secret_name) = coder_agent_secret(agent)
+        .ok_or_else(|| anyhow!(text::get("config.invalid_coder_agent")))?;
 
     let root = layout.init().map_err(anyhow::Error::new)?;
     let before = read_config_text(&root)?;
@@ -170,6 +175,18 @@ pub(crate) fn configure_coder(
     Ok(())
 }
 
+/// The environment variable a coding agent's key travels in, and the vault
+/// secret *name* that holds it. One table for both callers (`configure coder`
+/// and the interactive init flow), so the mapping cannot drift.
+pub(super) fn coder_agent_secret(agent: &str) -> Option<(&'static str, &'static str)> {
+    match agent {
+        "claude" => Some(("ANTHROPIC_API_KEY", "anthropic-api-key")),
+        "omp" | "agy" => Some(("MOOSHIK_GEMINI_API_KEY", "gemini-api-key")),
+        "cursor" => Some(("CURSOR_API_KEY", "cursor-api-key")),
+        _ => None,
+    }
+}
+
 pub(super) fn apply_coder_config(
     before: &str,
     agent: &str,
@@ -178,18 +195,52 @@ pub(super) fn apply_coder_config(
     env_var: &str,
     secret_name: &str,
 ) -> String {
-    let mut in_coder_section = false;
+    let mut args = args_prefix.to_vec();
+    args.push("--agent".to_owned());
+    args.push(agent.to_owned());
+    append_mcp_block(
+        before,
+        "coder",
+        command,
+        &args,
+        &["delegate", "check"],
+        &[(env_var, secret_name)],
+        "\"mcp.coder.*\" = \"prompt\"",
+    )
+}
+
+/// Append one `[mcp_servers.<name>]` block, replacing any existing block of
+/// the same name, and ensure `[permissions]` carries the grant.
+///
+/// The hand-rolled TOML is deliberate and inherited from the coder config:
+/// `[mcp_servers.*]` has no settable keys in the `config set` allowlist, so
+/// this one block shape is the established way the CLI writes it. `env` maps
+/// environment variable names to vault secret NAMES — never values.
+pub(super) fn append_mcp_block(
+    before: &str,
+    name: &str,
+    command: &str,
+    args: &[String],
+    expose: &[&str],
+    env: &[(&str, &str)],
+    grant: &str,
+) -> String {
+    let mut in_section = false;
     let mut cleaned_lines = Vec::new();
+    let block_headers = [
+        format!("[mcp_servers.{name}]"),
+        format!("[mcp_servers.{name}.env]"),
+    ];
     for line in before.lines() {
         let trimmed = line.trim();
-        if trimmed == "[mcp_servers.coder]" || trimmed == "[mcp_servers.coder.env]" {
-            in_coder_section = true;
+        if block_headers.iter().any(|header| trimmed == header) {
+            in_section = true;
             continue;
         }
-        if in_coder_section && trimmed.starts_with('[') {
-            in_coder_section = false;
+        if in_section && trimmed.starts_with('[') {
+            in_section = false;
         }
-        if !in_coder_section {
+        if !in_section {
             cleaned_lines.push(line);
         }
     }
@@ -199,40 +250,38 @@ pub(super) fn apply_coder_config(
         result.push('\n');
     }
 
-    // Ensure permissions table contains "mcp.coder.*" = "prompt"
+    // Ensure the permissions table carries the grant.
     if result.contains("[permissions]") {
-        if !result.contains("\"mcp.coder.*\"") && !result.contains("mcp.coder") {
+        if !result.contains(grant) && !result.contains(&format!("mcp.{name}")) {
             if let Some(pos) = result.find("[permissions]") {
                 let insert_at = pos + "[permissions]".len();
                 let (head, tail) = result.split_at(insert_at);
-                result = format!("{head}\n\"mcp.coder.*\" = \"prompt\"{tail}");
+                result = format!("{head}\n{grant}{tail}");
             }
         }
     } else {
-        result.push_str("\n[permissions]\n\"mcp.coder.*\" = \"prompt\"\n");
+        result.push_str(&format!("\n[permissions]\n{grant}\n"));
     }
 
-    // Append the coder mcp server block.
-    //
-    // The agent name travels in `args`, not `env`. Every value under
-    // `[mcp_servers.*.env]` is resolved as a vault secret NAME (see
-    // `mcp_host::resolve_env`), so a literal `MOOSHIK_CODER_AGENT = "claude"`
-    // there makes the host look up a secret called `claude`, fail to find it,
-    // and refuse to spawn the server. Only the credential — which really is a
-    // secret name — belongs in that table.
-    let mut args: Vec<String> = args_prefix.to_vec();
-    args.push("--agent".to_owned());
-    args.push(agent.to_owned());
     let args_toml = args
         .iter()
         .map(|a| format!("\"{a}\""))
         .collect::<Vec<_>>()
         .join(", ");
+    let expose_toml = expose
+        .iter()
+        .map(|e| format!("\"{e}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
     result.push_str(&format!(
-        "\n[mcp_servers.coder]\ncommand = \"{}\"\nargs = [{}]\nexpose = [\"delegate\", \"check\"]\n\n[mcp_servers.coder.env]\n{} = \"{}\"\n",
-        command, args_toml, env_var, secret_name
+        "\n[mcp_servers.{name}]\ncommand = \"{command}\"\nargs = [{args_toml}]\nexpose = [{expose_toml}]\n"
     ));
-
+    if !env.is_empty() {
+        result.push_str(&format!("\n[mcp_servers.{name}.env]\n"));
+        for (var, secret) in env {
+            result.push_str(&format!("{var} = \"{secret}\"\n"));
+        }
+    }
     result
 }
 
