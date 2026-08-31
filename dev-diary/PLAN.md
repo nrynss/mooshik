@@ -748,10 +748,12 @@ a change to what feeds the model.
   a configuration in a state that cannot work: `[store]` is `postgres` with no DSN, and
   `[companion]` points at `http://127.0.0.1:8080/v1` with model `local-model`, which is a local
   posture nobody has running. Every instruction a user needs exists, as **comments inside the file
-  init just wrote**, which means the product's setup path is "open the config and read it". The
-  hackathon's default path is the Google one — Vertex for inference, Cloud SQL for the graph — and
-  that is also Mooshik's shared posture, so it is the path `init` should walk somebody down, asking
-  a question at a time and writing each answer as it goes.
+  init just wrote**, which means the product's setup path is "open the config and read it". `init`
+  should ask instead, a question at a time, writing each answer as it goes. **Posture is the first
+  question, not an assumption.** Mooshik compiles both: shared (Postgres plus Vertex Gemini) and
+  local (SQLite plus bge-m3 plus any OpenAI-compatible endpoint, nothing leaving the box). The
+  shared pair is what `mooshik init` already writes and what the hackathon path wants, so it leads
+  and it is the default answer. It is not the only branch.
 
 **The daemon is explicitly out of scope.** A background process that outlives the terminal is a
 different product decision — install, supervision, a second lease holder, and a thing running on a
@@ -1089,13 +1091,63 @@ already configured. It is the same code path as first contact, so it cannot rot.
 install, or came back a week later. It already resolves and prints, so saying what is unset costs no
 new surface, and a separate `doctor` is one more thing to discover.
 
+**What `init` actually has to collect, and what it must not ask.** The pane is the product, so the
+list is whatever `mooshik tui` needs to open on a real week and answer when somebody types. Checked
+against a clean v0.1.0 install:
+
+0. **Which posture.** Shared or local. One question, shared as the default, and the answer decides
+   everything below it. The README's Backends table is already the honest description of the two;
+   `init` should be asking it rather than leaving a user to find that table.
+
+**If shared:**
+
+1. **The database.** A DSN, read with echo off, into the vault, then `store.dsn_secret`, then
+   provision the schema. Everything else is decoration until this exists: without it the pane draws
+   nothing and `recall` and `stats` both exit 2.
+2. **The cloud project.** Asked **once**. It fills both `embedder.gemini_project` and
+   `companion.google_project`, with an offer to differ, because a cross-project setup is real: the
+   deployed ingester runs its service account from `mooshik` with `roles/aiplatform.user` on
+   `nryn-personal`.
+3. **The credentials path.** One answer, written to **both** `companion.google_credentials` and
+   `embedder.gemini_credentials`. That second key exists on `EmbedderConfig` and **is not in
+   `config set`'s settable list**, so today a guided run cannot write it and the embedder falls back
+   to `MOOSHIK_GEMINI_CREDENTIALS` or ADC from whatever shell happened to export it. That is the
+   "worked before I rebooted" failure, and M12h has to add the key.
+
+**If local:**
+
+1. **Where the graph file lives.** `store.kind = sqlite` and a path. No DSN, no vault entry, no
+   schema provisioning against a server.
+2. **The embedder.** `embedder.kind = bge_m3` and its dimension, with whatever the local embedder
+   needs to be reachable.
+3. **The companion endpoint.** `companion.base_url`, `companion.model`, and an optional
+   `companion.api_key_secret` for endpoints that want a bearer. This is the posture the shipped
+   default already describes, so `init` is confirming a default rather than inventing one.
+
+**Either way:**
+
+4. **Nothing else, because the rest is derivable.** On the shared path that is
+   `companion.auth = google`, `companion.google_location = global`,
+   `companion.model = gemini-3.7-flash`. `init` sets these and says it set them. They are not
+   questions, and a question with one right answer is a worse experience than a statement.
+5. **The MCP servers, offered not required.** `install.sh` leaves a venv at
+   `${XDG_DATA_HOME:-~/.local/share}/mooshik/venv`. If `init` finds it, it can offer to wire
+   `news`, `artifacts` and `coder`, asking for the coding agent only if the user wants `coder`.
+   Declining must be one keystroke and must not block anything.
+
+**And what it must leave alone.** Permissions already resolve correctly on a fresh install: the
+three memory tools `allow`, `run_scratch_script` `prompt`, everything else denied. So the pane's own
+tool calls work with no grant written and `init` should not raise the subject. Same for
+`session.id`, `session.agent`, `vault.provider`, `daemon.flush_interval_ms`, and the embedder's
+`gemini_location` (`us-central1`), `gemini_model` and `dim`, all of which are already right.
+
 **Errors should name the durable fix first.** `recall` currently says "Set MOOSHIK_POSTGRES_DSN",
 which is the environment escape hatch. The path that survives a reboot is
 `mooshik secret set <name>` plus `mooshik config set store.dsn_secret <name>`, and the message
 should lead with that and offer the variable second. As written it teaches the wrong habit at the
 first point of contact.
 
-**The Google path is the one to walk, and it has a trap in it.** Inference is
+**The shared posture has a trap in it that a user cannot guess.** Inference is
 `companion.auth google`, `companion.google_project`, `companion.google_location = global`,
 `companion.model = gemini-3.7-flash`, `companion.google_credentials`. Embedding is
 `embedder.gemini_project` with `gemini_location` left at `us-central1`. Those two locations differ
@@ -1109,8 +1161,10 @@ moved to on 2026-08-31. It is the first model name a new user reads.
 
 **Depends on:** M1 for the home and the config writer, M6 for the vault, and nothing else.
 **Done when:** a new user runs the install one-liner, runs `mooshik init`, answers its questions,
-and reaches a working `mooshik chat` against Vertex without ever opening `config.toml` or copying a
-command out of a list. A non-TTY `init` still writes the defaults and exits as it does today, and
+and `mooshik tui` opens on their own week and answers when they type into it, without ever opening
+`config.toml` or copying a command out of a list. The pane is the target, not `chat`: `chat` is the
+alternate path and it comes along for free from the same settings. **Both postures reach that,** and
+the local one reaches it with nothing leaving the machine. A non-TTY `init` still writes the defaults and exits as it does today, and
 `mooshik config show` tells anyone who took that route what is still missing.
 
 **Depends on:** M11 for the surface, M2 for the graph. **Done when:** `mooshik tui` opens on the
