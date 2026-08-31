@@ -1,68 +1,185 @@
 # Mooshik
 
-An ambient, local-first AI cowork partner and workspace orchestrator. Mooshik
-runs continuously alongside you as a peer: it holds a lifelong memory of your
-workspace, researches the web, connects to your tools over MCP, and hands heavy
-code changes to a specialized coding agent.
+Mooshik is an ambient, local-first AI cowork partner and workspace orchestrator. It runs continuously alongside you as a peer. It holds lifelong memory of your workspace, researches the web, and connects to your tools over MCP. When you need heavy code edits, Mooshik delegates them to specialized coding agents.
 
-- **Spec** (authority): [docs/SPEC.md](docs/SPEC.md)
-- **Build plan**: [dev-diary/PLAN.md](dev-diary/PLAN.md)
-- **License:** AGPLv3 · memory core (Lambo): Apache 2.0
+- **Authority Specification:** [docs/SPEC.md](docs/SPEC.md)
+- **Build Plan:** [dev-diary/PLAN.md](dev-diary/PLAN.md)
+- **License:** AGPLv3 (Application and Orchestration), Apache 2.0 (Lambo Memory Core)
 
-## Status
+---
 
-Early — Phase 1 under construction. Milestones through M12d are in `dev-diary/PLAN.md`.
+## Architecture
 
-`mooshik tui` watches the current working directory for live changes while its pane is open.
-Only `.md`, `.markdown`, `.txt`, and `.rst` files outside Git repositories are eligible; generated
-directories and symlinks are excluded. File contents are secret-scanned but only the relative path
-is remembered. Git repositories contribute commit metadata and author time, never working-tree
-files or diffs. Live watching is currently Unix-only; on unsupported non-Unix platforms it fails
-closed at TUI startup. The watcher stops with the pane.
+```mermaid
+graph TB
+    subgraph Clients ["Clients"]
+        TUI["Terminal UI (mooshik tui)"]
+        CLI["CLI Commands"]
+    end
 
-## Build
+    subgraph Core ["Mooshik Core Runtime"]
+        Router["Event & Intent Router"]
+        Companion["Companion Adapter (/v1)"]
+        Scratch["Scratch Script Runner"]
+        MCPHost["MCP Client & Tool Aggregator"]
+        Watcher["Workspace & Git Watcher"]
+    end
 
-Requires Rust 1.97.1 (pinned in `rust-toolchain.toml`; rustup installs it).
-On Linux, the OS keyring backend needs D-Bus headers:
+    subgraph Memory ["Lambo Graph Memory Substrate"]
+        Graph["In-Memory Concept Graph"]
+        WriteLane["WriteLane (Serialized Commits)"]
+        Seam["GraphStore Seam"]
+    end
 
-```sh
-sudo apt install libdbus-1-dev pkg-config   # Debian/Ubuntu
+    subgraph Vault ["Secret Vault"]
+        V[("Local Encrypted Vault")]
+    end
+
+    subgraph Stores ["Persistent Stores"]
+        SQLite[("Local SQLite")]
+        PG[("Shared Postgres")]
+    end
+
+    subgraph MCPServers ["External MCP Servers"]
+        News["News & Search Grounding"]
+        Artifacts["Multimodal Artifact Ingestion"]
+        Tools["Filesystem & Dev Tools"]
+    end
+
+    Clients <--> Core
+    Core --> Router
+    Router --> Vault
+    Core --> WriteLane --> Graph --> Seam --> Stores
+    Core --> Watcher
+    MCPHost <--> MCPServers
+    Core -.->|Delegate Tasks| Coding["Coding Contractor Agent"]
 ```
 
+---
+
+## The Triad
+
+Mooshik separates memory, orchestration, and coding execution into three clear roles.
+
+| Role | Repository / Engine | Responsibility |
+| :--- | :--- | :--- |
+| **Mooshik** | `nrynss/mooshik` | Ambient awareness, fast local chat, research, MCP aggregation, and terminal UI. |
+| **Lambo** | `nrynss/lambo` | Living graph memory substrate, in-memory graph, write-behind, and vector recall. |
+| **Coding Contractor** | Delegated Agent | Surgical code edits in repositories under constraints provided by Lambo memory. |
+
+---
+
+## Installation
+
+### One-Line Shell Installer
+
+Run this command in your terminal to install the latest pre-compiled binary for Linux or macOS:
+
 ```sh
-cargo build          # debug binary at target/debug/mooshik
-cargo test           # unit tests live alongside their code
-./target/debug/mooshik --help
+curl -fsSL https://raw.githubusercontent.com/nrynss/mooshik/main/install.sh | sh
 ```
 
-## Backends
+### Build from Source
 
-Which backends exist is a **build** decision; which one runs is a config one
-(`~/.mooshik/config.toml`). This binary compiles both postures:
+Install Rust 1.97.1 using rustup.
 
-| Posture | `[store]` | `[embedder]` | Needs |
-| --- | --- | --- | --- |
-| **Local** | `sqlite` | `bge_m3` | a llama.cpp server; nothing else |
-| **Shared** | `postgres` | `gemini` | a Postgres DSN + Vertex credentials |
+On Linux, install required D-Bus development headers:
 
-The defaults written by `mooshik init` are the shared pair, because that is
-what a desktop and a laptop flushing into one memory needs. For a standalone
-machine, set `kind = "sqlite"` with a `path`, point `[embedder]` and
-`[companion]` at local servers, and nothing leaves the box.
+```sh
+sudo apt install libdbus-1-dev pkg-config
+```
 
-`memory` / `fixture` are compiled too, but they are **test doubles** — the
-memory store keeps nothing across a restart and the fixture embedder's
-vectors carry no meaning. Never point a real workspace at them.
+Build and test the binary:
 
-Changing embedder mid-session means re-embedding: the embedding contract
-(kind + model + dim) is stamped per session and a mismatched vector space is
-refused rather than silently mixed.
+```sh
+cargo build --release
+cargo test
+./target/release/mooshik --help
+```
 
-## Conventions
+---
 
-- **User-facing strings live in TOML, not Rust source** — `src/text/en.toml`,
-  resolved via dotted keys (`text::get("app.about")`). Localization later means
-  another file with the same schema.
-- **File-size discipline:** soft target ~600 lines per file including tests and
-  doc text; CI fails past 1000.
-- **CI actions are pinned to commit SHAs**, never tags.
+## Quickstart
+
+Initialize your Mooshik workspace:
+
+```sh
+mooshik init
+```
+
+Open the terminal user interface:
+
+```sh
+mooshik tui
+```
+
+Search your memory graph:
+
+```sh
+mooshik recall "deployment checklist"
+```
+
+Consolidate memory and generate prose summaries:
+
+```sh
+mooshik reflect
+```
+
+---
+
+## Core Capabilities
+
+### Ambient Workspace Awareness
+The workspace watcher observes file modifications and git commits. It extracts durable concepts automatically while the terminal UI stays open. Live watching is currently Unix-only. On unsupported non-Unix platforms it fails closed at TUI startup. The watcher stops with the pane.
+
+### Terminal User Interface
+The terminal UI renders weekly logs, active threads, ribbons, and notes. It rebuilds the view model on every 250 millisecond tick.
+
+### Encrypted Local Secret Vault
+Mooshik stores credentials in an encrypted local vault. It redacts secrets before tool calls reach external models or processes.
+
+### Pre-Wire Secret Scanning
+The artifact extractor scans extracted text for credentials and tokens. It drops the entire document when it detects a secret.
+
+### Multimodal Artifact Ingestion
+The artifacts MCP server processes screenshots and audio recordings. It extracts structured decisions, relations, and values without polluting the graph with visual captions.
+
+---
+
+## Storage and Embedder Postures
+
+Mooshik supports two deployment postures through `~/.mooshik/config.toml`:
+
+| Posture | Store Kind | Embedder Kind | Requirements |
+| :--- | :--- | :--- | :--- |
+| **Local** | `sqlite` | `bge_m3` | Local llama.cpp server. No data leaves your machine. |
+| **Shared** | `postgres` | `gemini` | Postgres connection string and Vertex AI credentials. |
+
+---
+
+## CLI Reference
+
+| Command | Description |
+| :--- | :--- |
+| `mooshik init` | Creates home directory layout and configuration files. |
+| `mooshik tui` | Launches the interactive terminal user interface. |
+| `mooshik chat` | Starts a command-line conversation session. |
+| `mooshik recall <query>` | Searches the concept graph and returns relevant context. |
+| `mooshik stats` | Displays graph node counts and session health metrics. |
+| `mooshik reflect` | Runs consolidation and writes prose descriptions. |
+| `mooshik config show` | Displays active configuration with redacted secrets. |
+| `mooshik config set <key> <val>` | Updates a configuration setting. |
+| `mooshik secret set <name> <val>` | Stores a secret in the encrypted local vault. |
+| `mooshik permissions list` | Lists all tool permission grants. |
+
+---
+
+## Documentation Site
+
+Explore the full documentation in the `docs/` directory:
+
+- [Getting Started & Installation](docs/src/content/docs/getting-started/overview.md)
+- [System Architecture](docs/src/content/docs/architecture/system-overview.md)
+- [Memory & WriteLane Concurrency](docs/src/content/docs/architecture/writelane-concurrency.md)
+- [MCP Servers & Tools](docs/src/content/docs/mcp-and-tools/mcp-host.md)
+- [CLI Reference](docs/src/content/docs/reference/cli.md)

@@ -18,8 +18,10 @@ scratch/
 *.db-wal
 mooshik.db*
 
-# Node sidecar / ADK ingester
+# Node sidecar / ADK ingester / docs
 node_modules/
+dist/
+.astro/
 __pycache__/
 # Python build artefacts. `pip install ./<pkg>` leaves these in the source
 # tree, and with four packages here they turn up wherever anyone installs one.

@@ -1,0 +1,125 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build binary (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            use_cross: false
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            use_cross: true
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            use_cross: false
+          - os: macos-13
+            target: x86_64-apple-darwin
+            use_cross: false
+
+    steps:
+      # actions/checkout v7.0.1
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      # dtolnay/rust-toolchain pinned
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: "1.97.1"
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux' && !matrix.use_cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build release binary
+        run: |
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }} --locked
+          else
+            cargo build --release --target ${{ matrix.target }} --locked
+          fi
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          ARCHIVE_NAME="mooshik-${VERSION}-${{ matrix.target }}.tar.gz"
+          
+          mkdir -p dist
+          BIN_PATH="target/${{ matrix.target }}/release/mooshik"
+          
+          if [ "${{ runner.os }}" = "Linux" ] && [ "${{ matrix.use_cross }}" = "false" ]; then
+            strip "$BIN_PATH"
+          fi
+          
+          cp "$BIN_PATH" ./mooshik
+          tar -czf "dist/${ARCHIVE_NAME}" mooshik
+          rm mooshik
+          
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
+          else
+            shasum -a 256 "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
+          fi
+
+      - name: Upload artifact
+        # actions/upload-artifact v4.6.1
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1
+        with:
+          name: artifacts-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v7.0.1
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      # actions/download-artifact v4.1.9
+      - name: Download all artifacts
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806
+        with:
+          path: release-artifacts
+
+      - name: Consolidate archives and checksums
+        shell: bash
+        run: |
+          mkdir -p release-files
+          find release-artifacts -type f -name '*.tar.gz' -exec cp {} release-files/ \;
+          find release-artifacts -type f -name '*.sha256' -exec cat {} + > release-files/checksums.txt
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release create "$TAG" release-files/* \
+            --title "Mooshik $TAG" \
+            --generate-notes
