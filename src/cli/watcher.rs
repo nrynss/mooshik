@@ -13,13 +13,15 @@
 //! into the graph. A git event carries commit metadata (SHA, repository path,
 //! author time, and message) and never a patch or diff. Both event kinds are
 //! coalesced for 250 ms and every graph write takes the pane's [`WriteLane`].
-//! Discovery runs in one `spawn_blocking` task at a time. Quiet workspaces use
+//! Discovery runs in one dedicated blocking worker at a time. Quiet workspaces use
 //! an adaptive 100--250 ms poll interval, trading a bounded amount of latency
 //! for keeping recursive walks and git subprocesses off the TUI runtime.
 //! Git output is capped at 2 MiB and each poll admits at most 256 commits;
 //! pending events are capped at 2,048. A cap retains only the affected
 //! repository's old head and retries it, so pressure is explicit backpressure
-//! rather than silent loss; unrelated file state still advances.
+//! rather than silent loss; unrelated file state still advances. A worker
+//! stuck in an uninterruptible filesystem syscall is detached after a
+//! 250-ms shutdown grace period; it owns no memory or write resources.
 
 use std::{
     collections::BTreeMap,
@@ -50,6 +52,7 @@ const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_GIT_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_GIT_COMMITS_PER_POLL: usize = 256;
 const MAX_PENDING_EVENTS: usize = 2048;
+const DISCOVERY_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(250);
 const ALLOWED_EXTENSIONS: &[&str] = &["md", "markdown", "txt", "rst"];
 const SKIP_DIRS: &[&str] = &[
     ".git",
@@ -185,6 +188,33 @@ struct ChangeResult {
     snapshot: Snapshot,
     changed: bool,
     retry: bool,
+}
+
+/// A discovery worker is intentionally separate from Tokio's blocking pool.
+/// The pool waits for blocking tasks during runtime shutdown, while a
+/// filesystem syscall cannot be forcibly interrupted portably. The worker is
+/// therefore awaited for a short grace period and then detached if necessary;
+/// it owns only discovery data and the cancellation flag, never `Memory`.
+struct DiscoveryTask {
+    result: oneshot::Receiver<DiscoveryResult>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+fn start_discovery(
+    root: PathBuf,
+    previous: Option<Snapshot>,
+    pending: BTreeMap<String, Pending>,
+    cancelled: Arc<AtomicBool>,
+) -> DiscoveryTask {
+    let (sender, result) = oneshot::channel();
+    let worker = thread::spawn(move || {
+        let discovered = discover_and_collect(&root, previous.as_ref(), pending, &cancelled);
+        let _ = sender.send(discovered);
+    });
+    DiscoveryTask {
+        result,
+        worker: Some(worker),
+    }
 }
 
 impl Snapshot {
@@ -325,19 +355,36 @@ async fn run(
         // subprocesses stop before that join completes.
         let prior = previous.clone();
         let pending_for_discovery = std::mem::take(&mut pending);
-        let mut discovery = tokio::task::spawn_blocking({
-            let root = root.clone();
-            let cancelled = Arc::clone(&discovery_cancelled);
-            move || discover_and_collect(&root, prior.as_ref(), pending_for_discovery, &cancelled)
-        });
+        let mut discovery = start_discovery(
+            root.clone(),
+            prior,
+            pending_for_discovery,
+            Arc::clone(&discovery_cancelled),
+        );
         let discovered = tokio::select! {
             _ = &mut cancelled => {
                 discovery_cancelled.store(true, Ordering::Release);
-                let _ = (&mut discovery).await;
+                // Git subprocesses observe the flag and are killed/joined by
+                // the worker. A directory syscall itself may be
+                // uninterruptible, so shutdown is bounded and the worker is
+                // then detached with no access to pane-owned resources.
+                let _ = tokio::time::timeout(
+                    DISCOVERY_SHUTDOWN_TIMEOUT,
+                    &mut discovery.result,
+                )
+                .await;
                 return Ok(());
             },
-            result = &mut discovery => result.map_err(|_| WatchError::TaskFailed)?,
+            result = &mut discovery.result => result.map_err(|_| WatchError::TaskFailed)?,
         };
+        if let Some(worker) = discovery.worker.take() {
+            // The worker sends its result immediately before returning, so
+            // this join cannot encounter an arbitrary filesystem syscall. It
+            // ensures the normal path never leaves a detached worker behind.
+            if worker.join().is_err() {
+                return Err(WatchError::TaskFailed);
+            }
+        }
         pending = discovered.pending;
         if discovered.changed {
             changed_at = Some(Instant::now());
@@ -666,6 +713,7 @@ fn is_git_marker(path: &Path) -> bool {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GitFailure {
     Command,
+    Cleanup,
     MalformedOutput,
     OutputTooLarge,
     TooManyCommits,
@@ -683,10 +731,27 @@ fn git_head_with_cancel(repo: &Path, cancelled: &AtomicBool) -> Result<GitHead, 
         }
         Err(GitFailure::Command) => {
             // `rev-parse --verify HEAD` returns a command failure for an
-            // empty, otherwise healthy repository. Confirm the work tree
-            // before classifying it as a healthy unborn repository.
-            git_with_cancel(repo, &["rev-parse", "--is-inside-work-tree"], cancelled)
-                .map(|_| GitHead::Unborn)
+            // empty, otherwise healthy repository. A symbolic HEAD is the
+            // specific unborn marker; a detached/broken HEAD must not be
+            // converted into an empty repository merely because `status`
+            // happens to tolerate it.
+            let inside = git_with_cancel(repo, &["rev-parse", "--is-inside-work-tree"], cancelled)?;
+            if inside.trim() != "true" {
+                return Err(GitFailure::Command);
+            }
+            let symbolic_head = git_with_cancel(repo, &["symbolic-ref", "HEAD"], cancelled)?;
+            if symbolic_head.trim().is_empty() {
+                return Err(GitFailure::MalformedOutput);
+            }
+            let (ref_status, _) =
+                git_process_with_cancel_input(repo, &["show-ref", "--head"], &[], cancelled)?;
+            match ref_status.code() {
+                // `show-ref --head` uses status 1 for a healthy repository
+                // with no refs. Any refs (status 0), malformed refs, or
+                // another failure mean the HEAD transition is not healthy.
+                Some(1) => Ok(GitHead::Unborn),
+                _ => Err(GitFailure::Command),
+            }
         }
         Err(error) => Err(error),
     }
@@ -786,8 +851,10 @@ fn parse_commit_messages(
             .windows(2)
             .position(|window| window == b"\n\n")
             .ok_or(GitFailure::MalformedOutput)?;
-        let message = String::from_utf8(content[separator + 2..].to_vec())
-            .map_err(|_| GitFailure::MalformedOutput)?;
+        // Git commit objects are byte strings. Preserve NULs and framing
+        // bytes, while replacing invalid UTF-8 only at the graph boundary so
+        // an otherwise valid commit does not block head advancement forever.
+        let message = String::from_utf8_lossy(&content[separator + 2..]).into_owned();
         commits.push(Commit {
             repo: repo.to_path_buf(),
             sha: expected_sha.clone(),
@@ -821,6 +888,19 @@ fn git_bytes_with_cancel_input(
     input: &[u8],
     cancelled: &AtomicBool,
 ) -> Result<Vec<u8>, GitFailure> {
+    let (status, bytes) = git_process_with_cancel_input(repo, args, input, cancelled)?;
+    if !status.success() {
+        return Err(GitFailure::Command);
+    }
+    Ok(bytes)
+}
+
+fn git_process_with_cancel_input(
+    repo: &Path,
+    args: &[&str],
+    input: &[u8],
+    cancelled: &AtomicBool,
+) -> Result<(std::process::ExitStatus, Vec<u8>), GitFailure> {
     if cancelled.load(Ordering::Acquire) {
         return Err(GitFailure::Command);
     }
@@ -838,18 +918,25 @@ fn git_bytes_with_cancel_input(
     }
     let mut child = command.spawn().map_err(|_| GitFailure::Command)?;
     let Some(mut stdout) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(GitFailure::Command);
+        return match reap_child(&mut child, true) {
+            Ok(_) => Err(GitFailure::Command),
+            Err(error) => Err(error),
+        };
     };
     let output_too_large = Arc::new(AtomicBool::new(false));
     let output_too_large_reader = Arc::clone(&output_too_large);
+    let reader_failed = Arc::new(AtomicBool::new(false));
+    let reader_failed_reader = Arc::clone(&reader_failed);
     let reader = thread::spawn(move || {
         let mut bytes = Vec::new();
         let result = stdout
             .by_ref()
             .take((MAX_GIT_OUTPUT_BYTES + 1) as u64)
-            .read_to_end(&mut bytes);
+            .read_to_end(&mut bytes)
+            .map(|_| ());
+        if result.is_err() {
+            reader_failed_reader.store(true, Ordering::Release);
+        }
         if bytes.len() > MAX_GIT_OUTPUT_BYTES {
             output_too_large_reader.store(true, Ordering::Release);
         }
@@ -857,23 +944,32 @@ fn git_bytes_with_cancel_input(
     });
     if !input.is_empty() {
         let Some(mut stdin) = child.stdin.take() else {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = reader.join();
-            return Err(GitFailure::Command);
+            return finish_git_process(child, reader, true, Some(GitFailure::Command));
         };
         if stdin.write_all(input).is_err() {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = reader.join();
-            return Err(GitFailure::Command);
+            return finish_git_process(child, reader, true, Some(GitFailure::Command));
         }
     }
-    let mut process_failed = false;
+    let mut termination_error = None;
     let status = loop {
-        if cancelled.load(Ordering::Acquire) || output_too_large.load(Ordering::Acquire) {
-            let _ = child.kill();
-            break child.wait().ok();
+        if cancelled.load(Ordering::Acquire)
+            || output_too_large.load(Ordering::Acquire)
+            || reader_failed.load(Ordering::Acquire)
+        {
+            let reason = if output_too_large.load(Ordering::Acquire)
+                && !cancelled.load(Ordering::Acquire)
+                && !reader_failed.load(Ordering::Acquire)
+            {
+                GitFailure::OutputTooLarge
+            } else {
+                GitFailure::Command
+            };
+            termination_error = Some(reason);
+            // Leave all reap/kill behavior to `finish_git_process`, including
+            // this cancellation/overflow path. In particular, do not turn a
+            // wait error into `None` here and then accidentally lose the
+            // cleanup diagnosis.
+            break None;
         }
         match child.try_wait() {
             Ok(Some(result)) => {
@@ -881,29 +977,44 @@ fn git_bytes_with_cancel_input(
             }
             Ok(None) => thread::sleep(Duration::from_millis(5)),
             Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                process_failed = true;
+                termination_error = Some(GitFailure::Command);
                 break None;
             }
         }
     };
-    if process_failed {
-        let _ = reader.join();
-        return Err(GitFailure::Command);
+    finish_git_process(child, reader, status.is_none(), termination_error)
+}
+
+fn reap_child(
+    child: &mut std::process::Child,
+    terminate: bool,
+) -> Result<std::process::ExitStatus, GitFailure> {
+    let kill_error = if terminate { child.kill().err() } else { None };
+    let wait_result = child.wait();
+    if kill_error.is_some_and(|error| error.kind() != io::ErrorKind::NotFound) {
+        return Err(GitFailure::Cleanup);
     }
-    let (read_result, bytes) = reader.join().map_err(|_| GitFailure::Command)?;
+    wait_result.map_err(|_| GitFailure::Cleanup)
+}
+
+fn finish_git_process(
+    mut child: std::process::Child,
+    reader: thread::JoinHandle<(io::Result<()>, Vec<u8>)>,
+    terminate: bool,
+    original_error: Option<GitFailure>,
+) -> Result<(std::process::ExitStatus, Vec<u8>), GitFailure> {
+    let child_cleanup = reap_child(&mut child, terminate);
+    let reader_result = reader.join().map_err(|_| GitFailure::Cleanup);
+    let status = child_cleanup?;
+    let (read_result, bytes) = reader_result?;
+    if let Some(error) = original_error {
+        return Err(error);
+    }
     read_result.map_err(|_| GitFailure::Command)?;
-    if cancelled.load(Ordering::Acquire) {
-        return Err(GitFailure::Command);
-    }
     if bytes.len() > MAX_GIT_OUTPUT_BYTES {
         return Err(GitFailure::OutputTooLarge);
     }
-    if !status.is_some_and(|status| status.success()) {
-        return Err(GitFailure::Command);
-    }
-    Ok(bytes)
+    Ok((status, bytes))
 }
 
 fn read_nofollow(path: &Path, root: &Path) -> io::Result<Vec<u8>> {
@@ -1361,6 +1472,20 @@ mod tests {
     }
 
     #[test]
+    fn corrupt_head_is_retried_instead_of_classified_as_unborn() {
+        let root = test_root("corrupt-head");
+        run_git(&root, &["init", "-q"]);
+        fs::write(root.join(".git/HEAD"), "ref: refs/heads/broken\n").unwrap();
+        fs::create_dir_all(root.join(".git/refs/heads")).unwrap();
+        fs::write(root.join(".git/refs/heads/broken"), "not-an-object-id\n").unwrap();
+
+        let snapshot = Snapshot::discover(&root);
+        assert!(!snapshot.heads.contains_key(&root));
+        assert_eq!(snapshot.git_failures, vec![root.clone()]);
+        remove_test_root(&root);
+    }
+
+    #[test]
     fn bounded_read_rejects_a_file_that_grows_past_the_limit() {
         let root = test_root("read-limit");
         let path = root.join("large.md");
@@ -1441,7 +1566,7 @@ mod tests {
         let sha = "a".repeat(40);
         let metadata =
             parse_commit_headers(&format!("{sha}\02024-01-02T03:04:05+00:00\0")).unwrap();
-        let content = b"tree abc\nauthor Test <test@example.invalid> 0 +0000\ncommitter Test <test@example.invalid> 0 +0000\n\nfix parser";
+        let content = b"tree abc\nauthor Test <test@example.invalid> 0 +0000\ncommitter Test <test@example.invalid> 0 +0000\n\nfix parser\0\x1e\xff";
         let mut object = format!("{sha} commit {}\n", content.len()).into_bytes();
         object.extend_from_slice(content);
         object.push(b'\n');
@@ -1452,6 +1577,7 @@ mod tests {
             commits[0].author_time.to_rfc3339(),
             "2024-01-02T03:04:05+00:00"
         );
+        assert_eq!(commits[0].message, "fix parser\0\x1e�");
         assert!(!format!("{:?}", commits[0]).contains("diff"));
     }
 
