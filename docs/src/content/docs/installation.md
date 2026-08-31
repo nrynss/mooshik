@@ -7,7 +7,7 @@ You can install Mooshik using our one-line installer script or build the binary 
 
 ## One-Line Shell Installer
 
-Run the install script in your terminal to fetch the latest release for Linux or macOS:
+Run the install script in your terminal to fetch the latest release for x86_64 Linux or Apple Silicon macOS:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/nrynss/mooshik/main/install.sh | sh
@@ -101,7 +101,7 @@ Supported targets include:
 
 Download the archive for your system, extract the `mooshik` binary, and place it in your system PATH.
 
-Alongside those four, every release carries one further asset: `mooshik-python-<version>.tar.gz`, a flat archive of the four `py3-none-any` wheels. It is one asset rather than four copies because nothing about those wheels is platform-specific. `checksums.txt` covers it like everything else.
+Alongside those two, every release carries one further asset: `mooshik-python-<version>.tar.gz`, a flat archive of the four `py3-none-any` wheels. It is one asset rather than a copy per platform, because nothing about those wheels is platform-specific. `checksums.txt` covers it like everything else.
 
 ## Build From Source
 

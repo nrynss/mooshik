@@ -14,20 +14,22 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      # Two targets, both built natively on a standard runner.
+      #
+      # aarch64 Linux is deliberately absent. It needs `cross`, and the keyring
+      # dependency reaches libdbus-sys, which wants libdbus for the target
+      # architecture inside the cross container. Nothing supplies it, so that
+      # leg fails to link and the publish guard below then blocks the whole
+      # release over one missing archive. Intel macOS is absent for the same
+      # reason it is cheap to drop: nobody has asked for it.
+      #
+      # Users on either platform build from source, which the README covers.
       matrix:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            use_cross: false
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            use_cross: true
           - os: macos-latest
             target: aarch64-apple-darwin
-            use_cross: false
-          - os: macos-13
-            target: x86_64-apple-darwin
-            use_cross: false
 
     steps:
       # actions/checkout v7.0.1
@@ -42,22 +44,13 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Install Linux dependencies
-        if: runner.os == 'Linux' && !matrix.use_cross
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libdbus-1-dev pkg-config
 
-      - name: Install cross
-        if: matrix.use_cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
-
       - name: Build release binary
-        run: |
-          if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }} --locked
-          else
-            cargo build --release --target ${{ matrix.target }} --locked
-          fi
+        run: cargo build --release --target ${{ matrix.target }} --locked
 
       - name: Package artifact
         shell: bash
@@ -69,7 +62,7 @@ jobs:
           mkdir -p dist
           BIN_PATH="target/${{ matrix.target }}/release/mooshik"
           
-          if [ "${{ runner.os }}" = "Linux" ] && [ "${{ matrix.use_cross }}" = "false" ]; then
+          if [ "${{ runner.os }}" = "Linux" ]; then
             strip "$BIN_PATH"
           fi
           
@@ -220,8 +213,8 @@ jobs:
           # checksum grep on the user's machine instead.
           archives=$(find release-files -maxdepth 1 -name '*.tar.gz' | wc -l)
           sums=$(wc -l < release-files/checksums.txt)
-          if [ "$archives" -ne 5 ] || [ "$sums" -ne 5 ]; then
-            echo "::error::expected 5 archives and 5 checksum lines; got ${archives} and ${sums}"
+          if [ "$archives" -ne 3 ] || [ "$sums" -ne 3 ]; then
+            echo "::error::expected 3 archives and 3 checksum lines; got ${archives} and ${sums}"
             cat release-files/checksums.txt
             exit 1
           fi

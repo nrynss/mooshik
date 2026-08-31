@@ -75,7 +75,7 @@ Mooshik separates memory, orchestration, and coding execution into three clear r
 
 ### One-Line Shell Installer
 
-Run this command in your terminal on Linux or macOS:
+Run this command in your terminal on x86_64 Linux or Apple Silicon macOS:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/nrynss/mooshik/main/install.sh | sh

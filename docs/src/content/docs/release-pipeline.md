@@ -16,22 +16,29 @@ git push origin v0.1.0
 
 ## Build Matrix
 
-The release pipeline builds optimized binaries across four target architectures:
+The release pipeline builds optimized binaries for two target architectures, both natively on a standard runner:
 
 1. **`x86_64-unknown-linux-gnu`**: Linux 64-bit on x86 processors.
-2. **`aarch64-unknown-linux-gnu`**: Linux 64-bit on ARM processors.
-3. **`aarch64-apple-darwin`**: macOS Apple Silicon.
-4. **`x86_64-apple-darwin`**: macOS Intel.
+2. **`aarch64-apple-darwin`**: macOS on Apple Silicon.
+
+ARM Linux and Intel macOS carry no prebuilt binary. Users on those platforms
+build from source, which the README covers.
+
+ARM Linux is the one worth explaining. It needs `cross`, and the keyring
+dependency reaches `libdbus-sys`, which wants libdbus built for the target
+architecture inside the cross container. Nothing supplies it there, so that leg
+fails to link. The publish guard then blocks the entire release over one
+missing archive, which turns a single broken target into no release at all.
 
 ## Python Wheel Bundle
 
-A fifth job runs in parallel with those four and builds the Python MCP servers. It builds the `news`, `artifacts`, and `coder` servers plus the shared `mooshik-common` package as wheels, and ships them as a **single** additional asset:
+A third job runs in parallel with those two and builds the Python MCP servers. It builds the `news`, `artifacts`, and `coder` servers plus the shared `mooshik-common` package as wheels, and ships them as a **single** additional asset:
 
 ```
 mooshik-python-<version>.tar.gz
 ```
 
-One asset, not four copies embedded in the platform tarballs. Every wheel is `py3-none-any`, so nothing about them is per-target, and duplicating identical bytes across four archives would imply otherwise. This also keeps the platform tarballs at exactly their historical shape, one `mooshik` binary and nothing else, so the binary-only install path cannot regress.
+One asset, not a copy embedded in each platform tarball. Every wheel is `py3-none-any`, so nothing about them is per-target, and duplicating identical bytes across archives would imply otherwise. This also keeps the platform tarballs at exactly their historical shape, one `mooshik` binary and nothing else, so the binary-only install path cannot regress.
 
 The job vendors Mooshik's own four packages with `--no-deps`. Pip resolves the third-party pins (`mcp`, `google-genai`, `google-adk`) from PyPI on the user's machine at install time.
 

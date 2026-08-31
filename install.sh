@@ -69,6 +69,21 @@ fi
 
 TARGET="${ARCH_TARGET}-${OS_TARGET}"
 
+# The release builds two targets, both natively. Anything else has no asset to
+# download, so say so here rather than failing later on a 404 from GitHub.
+case "$TARGET" in
+    x86_64-unknown-linux-gnu|aarch64-apple-darwin) ;;
+    *)
+        echo "Error: no prebuilt binary for ${TARGET} ($(uname -s) $(uname -m))." >&2
+        echo "Prebuilt binaries cover x86_64 Linux and Apple Silicon macOS." >&2
+        echo "Build from source instead:" >&2
+        echo "    git clone https://github.com/nrynss/mooshik.git" >&2
+        echo "    cd mooshik && cargo build --release" >&2
+        echo "See the Installation section of the README for the prerequisites." >&2
+        exit 1
+        ;;
+esac
+
 if [ -n "${MOOSHIK_VERSION:-}" ]; then
     LATEST_TAG="$MOOSHIK_VERSION"
     case "$LATEST_TAG" in
