@@ -791,6 +791,11 @@ sources.
 Successful derive batches are removed immediately; a failed batch stays pending for retry. As with
 other ambient writes, a backend failure after a remote commit can therefore have at-least-once
 semantics for that batch.
+Discovery treats an empty repository with no `HEAD` as healthy and continues watching unrelated files;
+Git command output is capped at 2 MiB, a poll admits at most 256 commits, and the pending queue holds
+at most 2,048 events. Hitting a cap retains the old state and retries with explicit backpressure rather
+than silently dropping history. Recursive file reads use descriptor-relative `openat` traversal with
+`O_NOFOLLOW` on Unix; other platforms retain the canonicalization and identity-check fallback.
 
 ### M12e — what to move, and what not to break
 

@@ -16,6 +16,9 @@
 //! Discovery runs in one `spawn_blocking` task at a time. Quiet workspaces use
 //! an adaptive 100--250 ms poll interval, trading a bounded amount of latency
 //! for keeping recursive walks and git subprocesses off the TUI runtime.
+//! Git output is capped at 2 MiB and each poll admits at most 256 commits;
+//! pending events are capped at 2,048. A cap retains the old snapshot and
+//! retries, so pressure is explicit backpressure rather than silent loss.
 
 use std::{
     collections::BTreeMap,
@@ -23,8 +26,12 @@ use std::{
     future::Future,
     io::{self, Read},
     path::{Path, PathBuf},
-    process::Command,
-    sync::Arc,
+    process::{Command, Stdio},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    thread,
     time::{Duration, Instant, SystemTime},
 };
 
@@ -39,6 +46,9 @@ const QUIET_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const DEBOUNCE: Duration = Duration::from_millis(250);
 const MAX_CONCEPTS_PER_DERIVE: usize = 64;
 const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_GIT_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_GIT_COMMITS_PER_POLL: usize = 256;
+const MAX_PENDING_EVENTS: usize = 2048;
 const ALLOWED_EXTENSIONS: &[&str] = &["md", "markdown", "txt", "rst"];
 const SKIP_DIRS: &[&str] = &[
     ".git",
@@ -55,7 +65,7 @@ const SKIP_DIRS: &[&str] = &[
 /// runtime: dropping the pane's runtime cancels it, while the normal path calls
 /// [`Watcher::stop`] and waits for the task before closing `Memory`.
 pub(crate) struct Watcher {
-    cancel: Option<oneshot::Sender<()>>,
+    cancel: Option<(oneshot::Sender<()>, Arc<AtomicBool>)>,
     task: JoinHandle<Result<(), WatchError>>,
 }
 
@@ -73,15 +83,25 @@ impl Watcher {
             return Err(WatchError::WorkspaceUnavailable);
         }
         let (cancel, cancelled) = oneshot::channel();
-        let task = handle.spawn(run(memory, writes, root, agent, vault, cancelled));
+        let discovery_cancelled = Arc::new(AtomicBool::new(false));
+        let task = handle.spawn(run(
+            memory,
+            writes,
+            root,
+            agent,
+            vault,
+            cancelled,
+            Arc::clone(&discovery_cancelled),
+        ));
         Ok(Self {
-            cancel: Some(cancel),
+            cancel: Some((cancel, discovery_cancelled)),
             task,
         })
     }
 
     pub(crate) async fn stop(mut self) -> Result<(), WatchError> {
-        if let Some(cancel) = self.cancel.take() {
+        if let Some((cancel, discovery_cancelled)) = self.cancel.take() {
+            discovery_cancelled.store(true, Ordering::Release);
             let _ = cancel.send(());
         }
         match self.task.await {
@@ -133,33 +153,51 @@ enum Pending {
     Commit(Commit),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum GitHead {
+    Commit(String),
+    Unborn,
+}
+
 #[derive(Default, Eq, PartialEq)]
 struct Snapshot {
     files: BTreeMap<PathBuf, FileState>,
-    heads: BTreeMap<PathBuf, String>,
+    heads: BTreeMap<PathBuf, GitHead>,
     git_failures: Vec<PathBuf>,
 }
 
 impl Snapshot {
+    #[cfg(test)]
     fn discover(root: &Path) -> Self {
+        static NEVER_CANCELLED: AtomicBool = AtomicBool::new(false);
+        Self::discover_with_cancel(root, &NEVER_CANCELLED)
+    }
+
+    fn discover_with_cancel(root: &Path, cancelled: &AtomicBool) -> Self {
         let mut snapshot = Self::default();
         let mut dirs = Vec::new();
         if is_git_marker(root) {
-            match git_head(root) {
+            match git_head_with_cancel(root, cancelled) {
                 Ok(head) => {
                     snapshot.heads.insert(root.to_path_buf(), head);
                 }
-                Err(()) => snapshot.git_failures.push(root.to_path_buf()),
+                Err(_) => snapshot.git_failures.push(root.to_path_buf()),
             }
         } else {
             dirs.push(root.to_path_buf());
         }
         while let Some(dir) = dirs.pop() {
+            if cancelled.load(Ordering::Acquire) {
+                return snapshot;
+            }
             let entries = match fs::read_dir(&dir) {
                 Ok(entries) => entries,
                 Err(_) => continue,
             };
             for entry in entries.flatten() {
+                if cancelled.load(Ordering::Acquire) {
+                    return snapshot;
+                }
                 let path = entry.path();
                 let file_type = match entry.file_type() {
                     Ok(file_type) => file_type,
@@ -177,11 +215,11 @@ impl Snapshot {
                         continue;
                     }
                     if is_git_marker(&path) {
-                        match git_head(&path) {
+                        match git_head_with_cancel(&path, cancelled) {
                             Ok(head) => {
                                 snapshot.heads.insert(path.clone(), head);
                             }
-                            Err(()) => snapshot.git_failures.push(path.clone()),
+                            Err(_) => snapshot.git_failures.push(path.clone()),
                         }
                         continue; // repositories are metadata-only sources
                     }
@@ -214,6 +252,7 @@ async fn run(
     agent: String,
     vault: Option<SharedVault>,
     mut cancelled: oneshot::Receiver<()>,
+    discovery_cancelled: Arc<AtomicBool>,
 ) -> Result<(), WatchError> {
     let mut pending = BTreeMap::<String, Pending>::new();
     let mut changed_at = None;
@@ -229,16 +268,21 @@ async fn run(
 
         // Directory walks and git subprocesses are blocking operations. Keep
         // them off the TUI runtime, and never start a second walk while the
-        // first is still running. If the pane closes during a walk, dropping
-        // this handle detaches the blocking task; it has no Memory or write
-        // lane access and therefore cannot write after shutdown.
-        let discovery = tokio::task::spawn_blocking({
+        // first is still running. The handle is retained through cancellation
+        // and joined below; the atomic flag lets directory traversal and git
+        // subprocesses stop before that join completes.
+        let mut discovery = tokio::task::spawn_blocking({
             let root = root.clone();
-            move || Snapshot::discover(&root)
+            let cancelled = Arc::clone(&discovery_cancelled);
+            move || Snapshot::discover_with_cancel(&root, &cancelled)
         });
         let current = tokio::select! {
-            _ = &mut cancelled => return Ok(()),
-            result = discovery => result.map_err(|_| WatchError::TaskFailed)?,
+            _ = &mut cancelled => {
+                discovery_cancelled.store(true, Ordering::Release);
+                let _ = (&mut discovery).await;
+                return Ok(());
+            },
+            result = &mut discovery => result.map_err(|_| WatchError::TaskFailed)?,
         };
 
         if previous.is_none() {
@@ -312,13 +356,16 @@ fn collect_changes(
                 continue;
             };
             let key = format!("file:{}", path.display());
-            pending.insert(
+            if !enqueue_pending(
+                pending,
                 key,
                 Pending::File {
                     path: path.clone(),
                     event_time,
                 },
-            );
+            ) {
+                return false;
+            }
             *changed_at = Some(Instant::now());
         }
     }
@@ -329,17 +376,32 @@ fn collect_changes(
         if previous_head == head {
             continue;
         }
-        let Ok(commits) = git_commits_between(repo, previous_head, head) else {
+        let (old, new) = match (previous_head, head) {
+            (GitHead::Commit(old), GitHead::Commit(new)) => (Some(old.as_str()), new),
+            (GitHead::Unborn, GitHead::Commit(new)) => (None, new),
+            (GitHead::Commit(_), GitHead::Unborn) | (GitHead::Unborn, GitHead::Unborn) => continue,
+        };
+        let Ok(commits) = git_commits_between(repo, old, new) else {
             return false;
         };
         for commit in commits {
             let key = format!("git:{}#{}", repo.display(), commit.sha);
-            pending.insert(key, Pending::Commit(commit));
+            if !enqueue_pending(pending, key, Pending::Commit(commit)) {
+                return false;
+            }
             *changed_at = Some(Instant::now());
         }
     }
     // A newly-created repository is baselined by `Snapshot::discover`, so its
     // existing history is never replayed into the open pane.
+    true
+}
+
+fn enqueue_pending(pending: &mut BTreeMap<String, Pending>, key: String, event: Pending) -> bool {
+    if !pending.contains_key(&key) && pending.len() >= MAX_PENDING_EVENTS {
+        return false;
+    }
+    pending.insert(key, event);
     true
 }
 
@@ -469,11 +531,24 @@ fn is_allowed_file(path: &Path) -> bool {
 }
 
 fn system_time_to_utc(time: SystemTime) -> Option<DateTime<Utc>> {
-    time.duration_since(SystemTime::UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| {
-            DateTime::<Utc>::from_timestamp(duration.as_secs() as i64, duration.subsec_nanos())
-        })
+    match time.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(duration) => DateTime::<Utc>::from_timestamp(
+            i64::try_from(duration.as_secs()).ok()?,
+            duration.subsec_nanos(),
+        ),
+        Err(error) => {
+            let duration = error.duration();
+            let seconds = i64::try_from(duration.as_secs()).ok()?;
+            if duration.subsec_nanos() == 0 {
+                DateTime::<Utc>::from_timestamp(-seconds, 0)
+            } else {
+                DateTime::<Utc>::from_timestamp(
+                    seconds.checked_neg()?.checked_sub(1)?,
+                    1_000_000_000 - duration.subsec_nanos(),
+                )
+            }
+        }
+    }
 }
 
 fn is_git_marker(path: &Path) -> bool {
@@ -485,26 +560,62 @@ fn is_git_marker(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn git_head(repo: &Path) -> Result<String, ()> {
-    git(repo, &["rev-parse", "--verify", "HEAD"])
-        .map(|output| output.trim().to_owned())
-        .ok_or(())
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GitFailure {
+    Command,
+    OutputTooLarge,
+    TooManyCommits,
 }
 
-fn git_commits_between(repo: &Path, old: &str, new: &str) -> Result<Vec<Commit>, ()> {
-    let range = format!("{old}..{new}");
-    let output = git(
+fn git_head_with_cancel(repo: &Path, cancelled: &AtomicBool) -> Result<GitHead, GitFailure> {
+    match git_with_cancel(repo, &["rev-parse", "--verify", "HEAD"], cancelled) {
+        Ok(output) => {
+            let head = output.trim();
+            if head.is_empty() {
+                Ok(GitHead::Unborn)
+            } else {
+                Ok(GitHead::Commit(head.to_owned()))
+            }
+        }
+        Err(GitFailure::Command) => {
+            // `rev-parse --verify HEAD` returns a command failure for an
+            // empty, otherwise healthy repository. Confirm the work tree
+            // before classifying it as a healthy unborn repository.
+            git_with_cancel(repo, &["rev-parse", "--is-inside-work-tree"], cancelled)
+                .map(|_| GitHead::Unborn)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn git_commits_between(
+    repo: &Path,
+    old: Option<&str>,
+    new: &str,
+) -> Result<Vec<Commit>, GitFailure> {
+    static NEVER_CANCELLED: AtomicBool = AtomicBool::new(false);
+    git_commits_between_with_cancel(repo, old, new, &NEVER_CANCELLED)
+}
+
+fn git_commits_between_with_cancel(
+    repo: &Path,
+    old: Option<&str>,
+    new: &str,
+    cancelled: &AtomicBool,
+) -> Result<Vec<Commit>, GitFailure> {
+    let range = old.map_or_else(|| new.to_owned(), |old| format!("{old}..{new}"));
+    let output = git_with_cancel(
         repo,
         &["log", "--no-patch", "--format=%H%x00%aI%x00%B%x1e", &range],
-    )
-    .ok_or(())?;
-    Ok(parse_commits(repo, &output))
+        cancelled,
+    )?;
+    parse_commits(repo, &output)
 }
 
-fn parse_commits(repo: &Path, output: &str) -> Vec<Commit> {
-    output
-        .split('\x1e')
-        .filter_map(|record| {
+fn parse_commits(repo: &Path, output: &str) -> Result<Vec<Commit>, GitFailure> {
+    let mut commits = Vec::new();
+    for record in output.split('\x1e') {
+        if let Some(commit) = (|| {
             let mut fields = record.trim().splitn(3, '\0');
             let sha = fields.next()?.trim();
             let date = fields.next()?.trim();
@@ -516,27 +627,163 @@ fn parse_commits(repo: &Path, output: &str) -> Vec<Commit> {
                 author_time,
                 message: message.to_owned(),
             })
-        })
-        .collect()
+        })() {
+            if commits.len() == MAX_GIT_COMMITS_PER_POLL {
+                return Err(GitFailure::TooManyCommits);
+            }
+            commits.push(commit);
+        }
+    }
+    Ok(commits)
 }
 
-fn git(repo: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
+fn git_with_cancel(
+    repo: &Path,
+    args: &[&str],
+    cancelled: &AtomicBool,
+) -> Result<String, GitFailure> {
+    if cancelled.load(Ordering::Acquire) {
+        return Err(GitFailure::Command);
+    }
+    let mut child = Command::new("git")
         .arg("-C")
         .arg(repo)
         .args(args)
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| GitFailure::Command)?;
+    let mut stdout = child.stdout.take().ok_or(GitFailure::Command)?;
+    let output_too_large = Arc::new(AtomicBool::new(false));
+    let output_too_large_reader = Arc::clone(&output_too_large);
+    let reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let result = stdout
+            .by_ref()
+            .take((MAX_GIT_OUTPUT_BYTES + 1) as u64)
+            .read_to_end(&mut bytes);
+        if bytes.len() > MAX_GIT_OUTPUT_BYTES {
+            output_too_large_reader.store(true, Ordering::Release);
+        }
+        (result, bytes)
+    });
+    let status = loop {
+        if cancelled.load(Ordering::Acquire) || output_too_large.load(Ordering::Acquire) {
+            let _ = child.kill();
+            break child.wait().ok();
+        }
+        match child.try_wait().map_err(|_| GitFailure::Command)? {
+            Some(result) => {
+                break Some(result);
+            }
+            None => thread::sleep(Duration::from_millis(5)),
+        }
+    };
+    let (read_result, bytes) = reader.join().map_err(|_| GitFailure::Command)?;
+    read_result.map_err(|_| GitFailure::Command)?;
+    if cancelled.load(Ordering::Acquire) {
+        return Err(GitFailure::Command);
+    }
+    if bytes.len() > MAX_GIT_OUTPUT_BYTES {
+        return Err(GitFailure::OutputTooLarge);
+    }
+    if !status.is_some_and(|status| status.success()) {
+        return Err(GitFailure::Command);
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn read_nofollow(path: &Path, root: &Path) -> io::Result<Vec<u8>> {
-    // Canonicalizing before opening rejects symlinked parents and keeps the
-    // read within the canonical workspace. On Unix, O_NOFOLLOW and inode
-    // checks below close the final-component and common parent-swap races.
+    #[cfg(unix)]
+    return read_nofollow_unix(path, root);
+    #[cfg(not(unix))]
+    return read_nofollow_non_unix(path, root);
+}
+
+#[cfg(unix)]
+fn read_nofollow_unix(path: &Path, root: &Path) -> io::Result<Vec<u8>> {
+    use std::{
+        os::fd::{AsRawFd, FromRawFd},
+        os::unix::ffi::OsStrExt,
+        path::Component,
+    };
+
+    let relative = path.strip_prefix(root).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "watch path escapes workspace",
+        )
+    })?;
+    let components: Vec<_> = relative.components().collect();
+    if components.is_empty()
+        || components
+            .iter()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "watch path is not a normal workspace path",
+        ));
+    }
+    let root_name = std::ffi::CString::new(root.as_os_str().as_bytes()).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "workspace path contains a NUL")
+    })?;
+    let directory_flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW;
+    let root_fd = unsafe { libc::open(root_name.as_ptr(), directory_flags) };
+    if root_fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut directory = unsafe { fs::File::from_raw_fd(root_fd) };
+    for component in &components[..components.len() - 1] {
+        let name = std::ffi::CString::new(component.as_os_str().as_bytes()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "watch path contains a NUL")
+        })?;
+        let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), directory_flags) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        directory = unsafe { fs::File::from_raw_fd(fd) };
+    }
+    let name = std::ffi::CString::new(
+        components
+            .last()
+            .expect("non-empty components")
+            .as_os_str()
+            .as_bytes(),
+    )
+    .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "watch path contains a NUL"))?;
+    let file_flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW;
+    let file_fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), file_flags) };
+    if file_fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut file = unsafe { fs::File::from_raw_fd(file_fd) };
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > MAX_FILE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "file is not a watchable text file",
+        ));
+    }
+    let mut bytes = Vec::with_capacity((MAX_FILE_BYTES as usize).min(64 * 1024));
+    file.by_ref()
+        .take(MAX_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "watch file exceeds size limit",
+        ));
+    }
+    Ok(bytes)
+}
+
+#[cfg(not(unix))]
+fn read_nofollow_non_unix(path: &Path, root: &Path) -> io::Result<Vec<u8>> {
+    // Windows and other non-Unix targets have no portable openat equivalent
+    // in the standard library. Canonicalization plus post-open identity
+    // checks is fail-closed for ordinary symlink escapes, while Unix uses
+    // descriptor-relative traversal above for race-safe protection.
     let canonical = fs::canonicalize(path)?;
     if !canonical.starts_with(root) {
         return Err(io::Error::new(
@@ -544,86 +791,36 @@ fn read_nofollow(path: &Path, root: &Path) -> io::Result<Vec<u8>> {
             "watch path escapes workspace",
         ));
     }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        use std::os::unix::fs::OpenOptionsExt;
-        let metadata = fs::symlink_metadata(path)?;
-        if !metadata.file_type().is_file() || metadata.len() > MAX_FILE_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "file is not a watchable text file",
-            ));
-        }
-        let mut file = fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(path)?;
-        let opened = file.metadata()?;
-        let current = fs::symlink_metadata(path)?;
-        if !current.file_type().is_file()
-            || current.dev() != opened.dev()
-            || current.ino() != opened.ino()
-            || metadata.dev() != current.dev()
-            || metadata.ino() != current.ino()
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "watch path changed while opening",
-            ));
-        }
-        let mut bytes = Vec::with_capacity((MAX_FILE_BYTES as usize).min(64 * 1024));
-        io::Read::by_ref(&mut file)
-            .take(MAX_FILE_BYTES + 1)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > MAX_FILE_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "watch file exceeds size limit",
-            ));
-        }
-        Ok(bytes)
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "symbolic links and non-files are not watchable",
+        ));
     }
-    #[cfg(not(unix))]
+    let mut file = fs::File::open(path)?;
+    let opened = file.metadata()?;
+    let current = fs::symlink_metadata(path)?;
+    if !current.is_file()
+        || current.len() != opened.len()
+        || current.modified().ok() != opened.modified().ok()
     {
-        let metadata = fs::symlink_metadata(path)?;
-        if metadata.file_type().is_symlink() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "symbolic links are not watchable",
-            ));
-        }
-        if !metadata.is_file() || metadata.len() > MAX_FILE_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "file is not a watchable text file",
-            ));
-        }
-        let mut file = fs::File::open(path)?;
-        let opened = file.metadata()?;
-        let current = fs::symlink_metadata(path)?;
-        if !current.is_file()
-            || current.len() != opened.len()
-            || current.modified().ok() != opened.modified().ok()
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "watch path changed while opening",
-            ));
-        }
-        let mut bytes = Vec::with_capacity((MAX_FILE_BYTES as usize).min(64 * 1024));
-        io::Read::by_ref(&mut file)
-            .take(MAX_FILE_BYTES + 1)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > MAX_FILE_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "watch file exceeds size limit",
-            ));
-        }
-        Ok(bytes)
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "watch path changed while opening",
+        ));
     }
+    let mut bytes = Vec::with_capacity((MAX_FILE_BYTES as usize).min(64 * 1024));
+    file.by_ref()
+        .take(MAX_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "watch file exceeds size limit",
+        ));
+    }
+    Ok(bytes)
 }
 
 /// The Rust-side copy of `ingester.secretscan`: match classes, never matched
@@ -876,13 +1073,13 @@ mod tests {
     fn failed_git_transition_does_not_advance_the_previous_snapshot() {
         let repo = test_root("missing-git").join("repo");
         let previous = Snapshot {
-            heads: [(repo.clone(), "old-head".to_owned())]
+            heads: [(repo.clone(), GitHead::Commit("old-head".to_owned()))]
                 .into_iter()
                 .collect(),
             ..Snapshot::default()
         };
         let current = Snapshot {
-            heads: [(repo.clone(), "new-head".to_owned())]
+            heads: [(repo.clone(), GitHead::Commit("new-head".to_owned()))]
                 .into_iter()
                 .collect(),
             ..Snapshot::default()
@@ -897,8 +1094,44 @@ mod tests {
             &mut changed
         ));
         assert!(pending.is_empty());
-        assert_eq!(previous.heads.get(&repo), Some(&"old-head".to_owned()));
+        assert_eq!(
+            previous.heads.get(&repo),
+            Some(&GitHead::Commit("old-head".to_owned()))
+        );
         remove_test_root(repo.parent().unwrap());
+    }
+
+    #[test]
+    fn unborn_nested_repository_does_not_block_files_or_its_first_commit() {
+        let root = test_root("unborn-repo");
+        let repo = root.join("nested");
+        fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q"]);
+        run_git(&repo, &["config", "user.email", "test@example.invalid"]);
+        run_git(&repo, &["config", "user.name", "Mooshik Test"]);
+
+        let before = Snapshot::discover(&root);
+        assert_eq!(before.heads.get(&repo), Some(&GitHead::Unborn));
+        assert!(before.git_failures.is_empty());
+        fs::write(root.join("outside.md"), "changed outside the repo").unwrap();
+        fs::write(repo.join("note.md"), "first commit").unwrap();
+        run_git(&repo, &["add", "note.md"]);
+        run_git_with_date(
+            &repo,
+            &["commit", "-qm", "first nested commit"],
+            "2022-03-04T05:06:07+0000",
+        );
+        let after = Snapshot::discover(&root);
+        let mut pending = BTreeMap::new();
+        let mut changed = None;
+        assert!(collect_changes(&before, &after, &mut pending, &mut changed));
+        assert!(pending
+            .values()
+            .any(|event| matches!(event, Pending::Commit(_))));
+        assert!(pending
+            .keys()
+            .any(|key| key == &format!("file:{}", root.join("outside.md").display())));
+        remove_test_root(&root);
     }
 
     #[test]
@@ -908,6 +1141,43 @@ mod tests {
         let file = fs::File::create(&path).unwrap();
         file.set_len(MAX_FILE_BYTES + 1).unwrap();
         assert!(read_nofollow(&path, &root).is_err());
+        remove_test_root(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn descriptor_relative_read_rejects_a_symlinked_parent() {
+        let root = test_root("read-parent-link");
+        let outside = root.with_extension("read-parent-outside");
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("note.md"), "outside").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("linked")).unwrap();
+        assert!(read_nofollow(&root.join("linked/note.md"), &root).is_err());
+        remove_test_root(&root);
+        remove_test_root(&outside);
+    }
+
+    #[test]
+    fn pending_queue_cap_retains_the_snapshot_for_retry() {
+        let root = test_root("pending-cap");
+        let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+        let mut current = Snapshot::default();
+        for index in 0..=MAX_PENDING_EVENTS {
+            current.files.insert(
+                root.join(format!("note-{index}.md")),
+                FileState { modified, len: 1 },
+            );
+        }
+        let mut pending = BTreeMap::new();
+        let mut changed = None;
+        assert!(!collect_changes(
+            &Snapshot::default(),
+            &current,
+            &mut pending,
+            &mut changed
+        ));
+        assert_eq!(pending.len(), MAX_PENDING_EVENTS);
         remove_test_root(&root);
     }
 
@@ -942,7 +1212,8 @@ mod tests {
     #[test]
     fn commit_metadata_parser_keeps_author_time_and_no_diff() {
         let repo = PathBuf::from("/workspace/project");
-        let commits = parse_commits(&repo, "abc\x002024-01-02T03:04:05+00:00\0fix parser\x1e");
+        let commits =
+            parse_commits(&repo, "abc\x002024-01-02T03:04:05+00:00\0fix parser\x1e").unwrap();
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].sha, "abc");
         assert_eq!(
@@ -950,6 +1221,26 @@ mod tests {
             "2024-01-02T03:04:05+00:00"
         );
         assert!(!format!("{:?}", commits[0]).contains("diff"));
+    }
+
+    #[test]
+    fn git_commit_parser_caps_one_poll() {
+        let output: String = (0..=MAX_GIT_COMMITS_PER_POLL)
+            .map(|index| format!("sha-{index}\x002024-01-02T03:04:05+00:00\0message\x1e"))
+            .collect();
+        assert!(matches!(
+            parse_commits(Path::new("/workspace/project"), &output),
+            Err(GitFailure::TooManyCommits)
+        ));
+    }
+
+    #[test]
+    fn system_time_to_utc_preserves_pre_epoch_mtimes() {
+        let time = SystemTime::UNIX_EPOCH - Duration::new(1, 500_000_000);
+        assert_eq!(
+            system_time_to_utc(time).unwrap().to_rfc3339(),
+            "1969-12-31T23:59:58.500+00:00"
+        );
     }
 
     #[test]
@@ -1006,7 +1297,7 @@ mod tests {
             }
         });
         let watcher = Watcher {
-            cancel: Some(cancel),
+            cancel: Some((cancel, Arc::new(AtomicBool::new(false)))),
             task,
         };
         watcher.stop().await.unwrap();
