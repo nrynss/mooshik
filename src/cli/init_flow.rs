@@ -484,6 +484,17 @@ impl Session<'_> {
         if !self.embedder_needs_asking() {
             return self.verify_embedder();
         }
+        // kind is gemini here — that is when `embedder_needs_asking` is
+        // true. A gemini project or credentials key already in the file
+        // means gemini was a deliberate choice; re-asking the kind would
+        // default a plain Enter to bge_m3, silently clobbering it. Fill
+        // the gaps only, as the shared branch does.
+        if file_has(&self.source, "embedder.gemini_project")
+            || file_has(&self.source, "embedder.gemini_credentials")
+        {
+            self.shared_google_questions()?;
+            return self.verify_embedder();
+        }
         self.ask_embedder_kind_local()?;
         self.verify_embedder()
     }
@@ -538,12 +549,19 @@ impl Session<'_> {
     }
 
     /// The shared posture's two questions, asked once: the project fills
-    /// both `embedder.gemini_project` and `companion.google_project`, and the
-    /// credentials path fills both `embedder.gemini_credentials` and
-    /// `companion.google_credentials`. Each is asked only when it is still
-    /// unset on the side that needs it, so re-running asks only for the gap.
-    /// Both values are also stored in the vault for the MCP servers' env map.
+    /// both `embedder.gemini_project` and `companion.google_project` (with
+    /// an offer to differ, shared posture only) and the credentials path
+    /// fills both credential keys. Each is asked only when still unset on
+    /// the side that needs it, so re-running asks only for the gap. Both
+    /// values are also stored in the vault for the MCP servers' env map.
     fn shared_google_questions(&mut self) -> anyhow::Result<()> {
+        let companion_project_missing = self
+            .config
+            .companion
+            .google_project
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(|value| value.is_empty());
         let project_missing = self
             .config
             .embedder
@@ -551,20 +569,35 @@ impl Session<'_> {
             .as_deref()
             .map(str::trim)
             .is_none_or(|value| value.is_empty())
-            || self
-                .config
-                .companion
-                .google_project
-                .as_deref()
-                .map(str::trim)
-                .is_none_or(|value| value.is_empty());
+            || companion_project_missing;
         if project_missing {
             let project = self.ask(text::get("init.embedder_gemini_project"))?;
             self.set("embedder.gemini_project", &project)?;
-            self.set("companion.google_project", &project)?;
             self.vault_mut()
                 .set(GEMINI_PROJECT_SECRET, &project)
                 .map_err(|error| anyhow::Error::new(error))?;
+            if companion_project_missing {
+                // The plan's offer to differ: a cross-project setup is real
+                // (the deployed ingester runs from `mooshik` with
+                // roles/aiplatform.user on `nryn-personal`). Shared posture
+                // only — local inference is a static endpoint.
+                let shared = matches!(self.config.store.kind, StoreKind::Postgres | StoreKind::Cockroach);
+                let companion_project =
+                    if shared && !self.ask_yes(text::get("init.inference_same_project"), true)? {
+                        let answer = self.ask(
+                            &text::get("init.inference_differ_project")
+                                .replace("{default}", &project),
+                        )?;
+                        if answer.trim().is_empty() {
+                            project.clone()
+                        } else {
+                            answer.trim().to_owned()
+                        }
+                    } else {
+                        project.clone()
+                    };
+                self.set("companion.google_project", &companion_project)?;
+            }
         }
         let credentials_missing = self
             .config
@@ -653,13 +686,12 @@ impl Session<'_> {
     /// The shared posture's inference is derived, not asked: `auth = google`,
     /// `google_location = global`, `model = gemini-3.7-flash`. Applied only
     /// where the file still carries nothing or the shipped local default, so
-    /// a real choice is never clobbered.
+    /// a real choice is never clobbered — a `base_url` set with
+    /// `config set` keeps its static auth.
     fn derive_shared_inference(&mut self) -> anyhow::Result<()> {
-        let auth = file_value(&self.source, "companion.auth");
         let base = file_value(&self.source, "companion.base_url");
         let model = file_value(&self.source, "companion.model");
-        let placeholder_static =
-            auth.is_none() || (auth.as_deref() == Some("static") && base.as_deref() == Some(PLACEHOLDER_BASE_URL));
+        let placeholder_static = base.as_deref() == Some(PLACEHOLDER_BASE_URL);
         if placeholder_static {
             self.set("companion.auth", "google")?;
         }
@@ -755,6 +787,17 @@ impl Session<'_> {
                                 base.trim().to_owned()
                             };
                             self.set("companion.base_url", &base)?;
+                        } else {
+                            // Google inference: the likely wrong answer is
+                            // the credentials path — re-ask it, or the retry
+                            // is a loop that cannot change the outcome.
+                            let path =
+                                self.ask_secret(text::get("init.embedder_gemini_credentials"))?;
+                            self.set("embedder.gemini_credentials", &path)?;
+                            self.set("companion.google_credentials", &path)?;
+                            self.vault_mut()
+                                .set(GEMINI_CREDENTIALS_SECRET, &path)
+                                .map_err(|error| anyhow::Error::new(error))?;
                         }
                     } else {
                         return self.record_unverified(text::get("init.unverified_inference"));
@@ -778,19 +821,38 @@ impl Session<'_> {
         }
         self.say(&text::get("init.mcp_heading").replace("{venv}", &venv.display().to_string()))?;
 
-        let has_google = self
+        // The env map references vault names, so the offer is honest only
+        // when the vault holds them; a config-only setup is re-stored first
+        // (cloned out before the vault write, which borrows `self` mutably).
+        let project = self
             .config
             .embedder
             .gemini_project
-            .as_deref()
-            .map(str::trim)
-            .is_some_and(|value| !value.is_empty())
-            && self
-                .config
-                .embedder
-                .gemini_credentials
-                .as_ref()
-                .is_some_and(|path| !path.as_os_str().is_empty());
+            .clone()
+            .filter(|value| !value.trim().is_empty());
+        let credentials = self
+            .config
+            .embedder
+            .gemini_credentials
+            .clone()
+            .filter(|path| !path.as_os_str().is_empty())
+            .map(|path| path.to_string_lossy().into_owned());
+        if let Some(project) = &project {
+            if self.vault().get(GEMINI_PROJECT_SECRET).is_err() {
+                self.vault_mut()
+                    .set(GEMINI_PROJECT_SECRET, project)
+                    .map_err(|error| anyhow::Error::new(error))?;
+            }
+        }
+        if let Some(credentials) = &credentials {
+            if self.vault().get(GEMINI_CREDENTIALS_SECRET).is_err() {
+                self.vault_mut()
+                    .set(GEMINI_CREDENTIALS_SECRET, credentials)
+                    .map_err(|error| anyhow::Error::new(error))?;
+            }
+        }
+        let has_google = self.vault().get(GEMINI_PROJECT_SECRET).is_ok()
+            && self.vault().get(GEMINI_CREDENTIALS_SECRET).is_ok();
         let mut wired: Vec<&str> = Vec::new();
 
         if news.is_file() {
@@ -937,13 +999,15 @@ impl Session<'_> {
 }
 
 /// Read one line with terminal echo off, via termios on stdin. `libc` is
-/// already a dependency; the repo pins its dependencies deliberately and a
-/// prompt library is a large surface for one no-echo read. The terminal is
-/// restored even when the read fails.
+/// already a dependency; a prompt library is a large surface for one
+/// no-echo read. The terminal is restored even when the read fails, and a
+/// Ctrl-C/Ctrl-Z cannot leave it with echo off: the temporary SIGINT/
+/// SIGTSTP handler restores the attributes and re-raises with the default
+/// disposition.
 #[cfg(unix)]
 fn read_no_echo(reader: &mut dyn BufRead) -> io::Result<String> {
-    // Safety: termios operates on the process's own stdin; the attributes are
-    // saved first and restored in every path before returning.
+    // Safety: termios operates on the process's own stdin; `NoEchoRestore`
+    // restores the attributes on every return path.
     unsafe {
         let mut termios: libc::termios = std::mem::zeroed();
         if libc::tcgetattr(libc::STDIN_FILENO, &mut termios) != 0 {
@@ -954,9 +1018,78 @@ fn read_no_echo(reader: &mut dyn BufRead) -> io::Result<String> {
         if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &termios) != 0 {
             return Err(io::Error::last_os_error());
         }
+        ECHO_TERMIOS = Some(original);
+        let mut guard = NoEchoRestore { termios: original, sigint: None, sigtstp: None };
+        // SA_RESETHAND restores the default disposition on entry, so the
+        // handler's re-raise takes effect; SA_NODEFER unblocks that re-raise.
+        guard.sigint = Some(install_echo_handler(libc::SIGINT)?);
+        guard.sigtstp = Some(install_echo_handler(libc::SIGTSTP)?);
         let outcome = read_plain_line(reader);
-        libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &original);
+        drop(guard);
         outcome
+    }
+}
+
+/// Install the no-echo-read handler for one signal, returning the previous
+/// disposition for the guard to put back.
+#[cfg(unix)]
+fn install_echo_handler(signal: libc::c_int) -> io::Result<libc::sigaction> {
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = restore_echo_and_raise as *const () as libc::sighandler_t;
+        libc::sigemptyset(&mut action.sa_mask);
+        action.sa_flags = libc::SA_RESETHAND | libc::SA_NODEFER;
+        let mut previous: libc::sigaction = std::mem::zeroed();
+        if libc::sigaction(signal, &action, &mut previous) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(previous)
+    }
+}
+
+/// The termios saved by the no-echo read, for the signal handler to restore
+/// before re-raising. `Option` keeps the static initializer const.
+#[cfg(unix)]
+static mut ECHO_TERMIOS: Option<libc::termios> = None;
+
+/// Restore the terminal echo and re-raise with the default disposition.
+/// Only async-signal-safe calls: `tcsetattr`, `signal`, `raise`.
+#[cfg(unix)]
+extern "C" fn restore_echo_and_raise(signal: libc::c_int) {
+    // Safety: async-signal-safe calls on the process's own stdin.
+    unsafe {
+        if let Some(original) = ECHO_TERMIOS {
+            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &original);
+        }
+        libc::signal(signal, libc::SIG_DFL);
+        libc::raise(signal);
+    }
+}
+
+/// Restores the terminal attributes and the SIGINT/SIGTSTP dispositions the
+/// no-echo read changed. Dropping it is the only path out of the read, so
+/// echo cannot be left off — even when a signal interrupts it.
+#[cfg(unix)]
+struct NoEchoRestore {
+    termios: libc::termios,
+    sigint: Option<libc::sigaction>,
+    sigtstp: Option<libc::sigaction>,
+}
+
+#[cfg(unix)]
+impl Drop for NoEchoRestore {
+    fn drop(&mut self) {
+        // Safety: the inverse of the install in `read_no_echo`.
+        unsafe {
+            ECHO_TERMIOS = None;
+            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &self.termios);
+            if let Some(previous) = &self.sigint {
+                libc::sigaction(libc::SIGINT, previous, std::ptr::null_mut());
+            }
+            if let Some(previous) = &self.sigtstp {
+                libc::sigaction(libc::SIGTSTP, previous, std::ptr::null_mut());
+            }
+        }
     }
 }
 
@@ -997,7 +1130,6 @@ fn file_value(source: &str, key: &str) -> Option<String> {
         .as_str()
         .map(str::to_owned)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1079,7 +1211,6 @@ mod tests {
 
     fn read_vault(layout: &HomeLayout, name: &str) -> Option<String> {
         let root = crate::secure_path::open_dir(&layout.root, false, 0o700).unwrap();
-        let config = Config::load_at(&root).unwrap();
         let provider = Arc::new(PassphraseProvider::new("test-passphrase").unwrap());
         let vault = Vault::open_at(&layout.vault, root, provider).unwrap();
         vault
@@ -1087,14 +1218,28 @@ mod tests {
             .ok()
             .map(|token| token.expose().to_owned())
     }
+
+    fn seed_config(layout: &HomeLayout, text: &str) {
+        std::fs::write(&layout.config, text).unwrap();
+    }
+
+    /// A venv with the named MCP console scripts, so the offer path runs.
+    fn fake_venv(layout: &HomeLayout, scripts: &[&str]) -> PathBuf {
+        let bin = layout.root.join("venv/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        for script in scripts {
+            std::fs::write(bin.join(script), "#!/bin/sh\n").unwrap();
+        }
+        layout.root.join("venv")
+    }
     #[test]
     fn shared_posture_writes_a_working_config() {
         let layout = fixture_home("shared");
         // posture=1 (shared, default), store=1 (postgres you run), DSN,
-        // then project and credentials, then MCP declines (no venv).
-        let answers = "\n\npostgres://user@db.example/mooshik\nproj\n/key.json\n";
+        // then project, differ default (same project), credentials; MCP
+        // declines (no venv).
+        let answers = "\n\npostgres://user@db.example/mooshik\nproj\n\n/key.json\n";
         let (output, written) = drive(&layout, answers, &StubVerifier { fail_store: false, fail_embedder: false, fail_inference: false }, None);
-
         let config = Config::from_toml_and_env(&written, []).unwrap();
         assert_eq!(config.store.kind, StoreKind::Postgres);
         assert_eq!(config.store.dsn_secret.as_deref(), Some("store-dsn"));
@@ -1144,8 +1289,8 @@ mod tests {
     fn cloud_postgres_choice_says_the_proxy_caveat() {
         let layout = fixture_home("cloud");
         // posture default (shared), store=2 (cloud postgres), DSN, project,
-        // credentials.
-        let answers = "\n2\npostgres://user@db.example/mooshik\nproj\n/key.json\n";
+        // differ default (same project), credentials.
+        let answers = "\n2\npostgres://user@db.example/mooshik\nproj\n\n/key.json\n";
         let (output, written) = drive(&layout, answers, &StubVerifier { fail_store: false, fail_embedder: false, fail_inference: false }, None);
         assert!(output.contains("Auth Proxy"), "{output}");
         assert!(written.contains("dsn_secret = \"store-dsn\""), "{written}");
@@ -1157,8 +1302,8 @@ mod tests {
         // The store verification fails until the user says no to retrying.
         // Store answers: posture (default shared), store (default), DSN,
         // retry=yes -> DSN again, retry=no -> continue; then embedder and
-        // inference answers.
-        let answers = "\n\nfirst-dsn\ny\nsecond-dsn\nn\nproj\n/key.json\n";
+        // inference answers (project, differ default, credentials).
+        let answers = "\n\nfirst-dsn\ny\nsecond-dsn\nn\nproj\n\n/key.json\n";
         let verifier = StubVerifier { fail_store: true, fail_embedder: false, fail_inference: false };
         let (output, written) = drive(&layout, answers, &verifier, None);
         // The second DSN is the one that lands in the vault.
@@ -1173,18 +1318,11 @@ mod tests {
     #[test]
     fn mcp_servers_are_wired_when_the_venv_is_there() {
         let layout = fixture_home("mcp");
-        // A fake venv with the three console scripts.
-        let venv = layout.root.join("venv");
-        let bin = venv.join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        for script in ["mooshik-news-mcp", "mooshik-artifacts-mcp", "mooshik-coder-mcp"] {
-            std::fs::write(bin.join(script), "#!/bin/sh\n").unwrap();
-        }
-        // posture default (shared), store default, DSN, project, credentials,
-        // news=yes (default), artifacts=no, coder=yes, agent=claude (default),
-        // key.
-        let answers = "\n\npostgres://user@db.example/mooshik\nproj\n/key.json\n\nn\ny\n\nagent-key\n";
-        let (output, written) = drive(&layout, answers, &StubVerifier { fail_store: false, fail_embedder: false, fail_inference: false }, Some(venv));
+        // posture default (shared), store default, DSN, project, differ
+        // default (same project), credentials, news=yes (default),
+        // artifacts=no, coder=yes, agent=claude (default), key.
+        let answers = "\n\npostgres://user@db.example/mooshik\nproj\n\n/key.json\n\nn\ny\n\nagent-key\n";
+        let (output, written) = drive(&layout, answers, &StubVerifier { fail_store: false, fail_embedder: false, fail_inference: false }, Some(fake_venv(&layout, &["mooshik-news-mcp", "mooshik-artifacts-mcp", "mooshik-coder-mcp"])));
         assert!(written.contains("[mcp_servers.news]"), "{written}");
         assert!(written.contains("search_news"), "{written}");
         assert!(!written.contains("[mcp_servers.artifacts]"), "{written}");
@@ -1202,7 +1340,7 @@ mod tests {
     fn rerun_asks_only_for_what_is_still_missing() {
         let layout = fixture_home("rerun");
         // First run: full shared setup.
-        let answers = "\n\npostgres://user@db.example/mooshik\nproj\n/key.json\n";
+        let answers = "\n\npostgres://user@db.example/mooshik\nproj\n\n/key.json\n";
         drive(&layout, answers, &StubVerifier { fail_store: false, fail_embedder: false, fail_inference: false }, None);
         let before = std::fs::read_to_string(&layout.config).unwrap();
 
@@ -1236,11 +1374,120 @@ mod tests {
     fn secrets_never_appear_in_the_written_file_or_output() {
         let layout = fixture_home("secrets");
         let secret = "s3cret-dsn-value-with-password";
-        let answers = format!("\n\n{secret}\nproj\n/key.json\n");
+        let answers = format!("\n\n{secret}\nproj\n\n/key.json\n");
         let (output, written) = drive(&layout, &answers, &StubVerifier { fail_store: false, fail_embedder: false, fail_inference: false }, None);
         assert!(!written.contains(secret), "{written}");
         assert!(!output.contains(secret), "{output}");
         // And the secret is where it belongs.
         assert_eq!(read_vault(&layout, "store-dsn").as_deref(), Some(secret));
+    }
+
+    #[test]
+    fn rerun_keeps_a_real_static_endpoint() {
+        // A `config set companion.base_url` setup: real endpoint, no `auth`
+        // key in the file. A shared-posture re-run must keep the static auth.
+        let layout = fixture_home("static-rerun");
+        seed_config(
+            &layout,
+            r#"vault = { provider = "passphrase" }
+store = { kind = "postgres", dsn = "postgres://user@db.example/mooshik" }
+embedder = { kind = "gemini", gemini_project = "proj", gemini_credentials = "/key.json" }
+companion = { base_url = "https://my-llm.example/v1", model = "gemini-3.7-flash", google_location = "global", google_project = "proj", google_credentials = "/key.json" }
+"#,
+        );
+        let (output, written) = drive(&layout, "", &StubVerifier { fail_store: false, fail_embedder: false, fail_inference: false }, None);
+        let config = Config::from_toml_and_env(&written, []).unwrap();
+        assert_eq!(config.companion.auth, config::CompanionAuth::Static);
+        assert_eq!(config.companion.base_url, "https://my-llm.example/v1");
+        assert_eq!(config.companion.model, "gemini-3.7-flash");
+        assert!(!written.contains("auth = \"google\""), "{written}");
+        assert!(output.contains("Mooshik is set up."), "{output}");
+    }
+
+    #[test]
+    fn differ_offer_writes_a_separate_companion_project() {
+        let layout = fixture_home("differ");
+        // posture default (shared), store default, DSN, project=proj,
+        // differ=no -> companion project=inference-proj, credentials.
+        let answers = "\n\npostgres://user@db.example/mooshik\nproj\nn\ninference-proj\n/key.json\n";
+        let (output, written) = drive(&layout, answers, &StubVerifier { fail_store: false, fail_embedder: false, fail_inference: false }, None);
+        let config = Config::from_toml_and_env(&written, []).unwrap();
+        assert_eq!(config.embedder.gemini_project.as_deref(), Some("proj"));
+        assert_eq!(config.companion.google_project.as_deref(), Some("inference-proj"));
+        assert_eq!(config.companion.auth, config::CompanionAuth::Google);
+        // The vault keeps the embedder's project — what the env map names.
+        assert_eq!(read_vault(&layout, "gemini-project").as_deref(), Some("proj"));
+        assert!(output.contains("Mooshik is set up."), "{output}");
+    }
+
+    #[test]
+    fn mcp_offer_gates_on_the_vault_and_restores_missing_gemini_secrets() {
+        // A `secret set` + `config set` setup: values in the config, nothing
+        // in the vault. The offer must hold and the vault be re-stored, so
+        // the env-map names resolve when the server spawns.
+        let layout = fixture_home("mcp-gate");
+        seed_config(
+            &layout,
+            r#"vault = { provider = "passphrase" }
+store = { kind = "postgres", dsn = "postgres://user@db.example/mooshik" }
+embedder = { kind = "gemini", gemini_project = "proj", gemini_credentials = "/key.json" }
+companion = { auth = "google", model = "gemini-3.7-flash", google_location = "global", google_project = "proj", google_credentials = "/key.json" }
+"#,
+        );
+        // news=yes (default), artifacts=yes (default), coder absent.
+        let (output, written) = drive(&layout, "\n\n", &StubVerifier { fail_store: false, fail_embedder: false, fail_inference: false }, Some(fake_venv(&layout, &["mooshik-news-mcp", "mooshik-artifacts-mcp"])));
+        assert!(written.contains("[mcp_servers.news]"), "{written}");
+        assert!(written.contains("[mcp_servers.artifacts]"), "{written}");
+        // The re-store from config made the vault hold both names.
+        assert_eq!(read_vault(&layout, "gemini-project").as_deref(), Some("proj"));
+        assert_eq!(read_vault(&layout, "gemini-credentials").as_deref(), Some("/key.json"));
+        assert!(output.contains("news, artifacts wired"), "{output}");
+    }
+
+    #[test]
+    fn local_rerun_keeps_a_chosen_gemini_embedder() {
+        // An interrupted local first run: gemini chosen, project entered,
+        // credentials never completed. Re-run fills only the credentials.
+        let layout = fixture_home("gemini-rerun");
+        seed_config(
+            &layout,
+            r#"vault = { provider = "passphrase" }
+store = { kind = "sqlite", path = "/mnt/memory.db" }
+[embedder]
+kind = "gemini"
+gemini_project = "proj"
+[companion]
+base_url = "http://localhost:1234/v1"
+model = "my-model"
+google_project = "proj"
+"#,
+        );
+        let (output, written) = drive(&layout, "/key2.json\n", &StubVerifier { fail_store: false, fail_embedder: false, fail_inference: false }, None);
+        let config = Config::from_toml_and_env(&written, []).unwrap();
+        assert_eq!(config.embedder.kind, EmbedderKind::Gemini);
+        assert_eq!(config.embedder.gemini_project.as_deref(), Some("proj"));
+        assert_eq!(config.embedder.gemini_credentials.as_deref().map(Path::as_os_str), Some(std::ffi::OsStr::new("/key2.json")));
+        assert_eq!(config.companion.google_credentials.as_deref().map(Path::as_os_str), Some(std::ffi::OsStr::new("/key2.json")));
+        assert_eq!(read_vault(&layout, "gemini-credentials").as_deref(), Some("/key2.json"));
+        // The kind question was never asked.
+        assert!(!output.contains("bge_m3"), "{output}");
+        assert!(output.contains("Mooshik is set up."), "{output}");
+    }
+
+    #[test]
+    fn google_inference_retry_re_asks_the_credentials() {
+        let layout = fixture_home("inf-retry");
+        // posture default (shared), store default, DSN, project, differ
+        // default (same project), credentials; inference fails, retry=yes
+        // -> credentials re-asked, fails again, retry=no -> continue.
+        let answers = "\n\npostgres://user@db.example/mooshik\nproj\n\n/key.json\ny\n/key2.json\nn\n";
+        let (output, written) = drive(&layout, answers, &StubVerifier { fail_store: false, fail_embedder: false, fail_inference: true }, None);
+        let config = Config::from_toml_and_env(&written, []).unwrap();
+        // The re-asked credentials landed on both sides and in the vault.
+        assert_eq!(config.companion.google_credentials.as_deref().map(Path::as_os_str), Some(std::ffi::OsStr::new("/key2.json")));
+        assert_eq!(config.embedder.gemini_credentials.as_deref().map(Path::as_os_str), Some(std::ffi::OsStr::new("/key2.json")));
+        assert_eq!(read_vault(&layout, "gemini-credentials").as_deref(), Some("/key2.json"));
+        assert!(output.contains("Unverified"), "{output}");
+        assert!(output.contains("inference (one cheap completion)"), "{output}");
     }
 }

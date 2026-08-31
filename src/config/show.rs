@@ -6,6 +6,12 @@ use serde::Serialize;
 use crate::text;
 use super::Config;
 
+/// The shipped local-default endpoint and model — the "local posture nobody
+/// has running" state the missing report has to end. Mirrors
+/// `cli::init_flow`'s constants.
+const PLACEHOLDER_BASE_URL: &str = "http://127.0.0.1:8080/v1";
+const LOCAL_MODEL: &str = "local-model";
+
 #[derive(Serialize)]
 struct ShowConfig<'a> {
     vault: &'a super::VaultConfig,
@@ -263,6 +269,12 @@ impl Config {
                 missing.push(text::get("config.missing_companion_credentials").to_owned());
             }
         }
+        if self.companion.auth == super::CompanionAuth::Static
+            && (self.companion.base_url.trim().trim_end_matches('/') == PLACEHOLDER_BASE_URL
+                || self.companion.model == LOCAL_MODEL)
+        {
+            missing.push(text::get("config.missing_companion_endpoint").to_owned());
+        }
         missing
     }
 }
@@ -382,6 +394,29 @@ mod tests {
         assert!(joined.contains("store.path"), "{joined}");
         assert!(!joined.contains("store DSN"), "{joined}");
         assert!(!joined.contains("gemini"), "{joined}");
+    }
+
+    #[test]
+    fn missing_config_flags_the_placeholder_companion() {
+        // The shipped default is static auth at the placeholder endpoint —
+        // the "local posture nobody has running" state — and the missing
+        // report must say so, or `init` and `config show` disagree about
+        // the same file.
+        let missing = Config::default().missing_config();
+        let joined = missing.join("\n");
+        assert!(joined.contains("companion.base_url/model"), "{joined}");
+    }
+
+    #[test]
+    fn missing_config_does_not_flag_a_real_static_endpoint() {
+        let config = Config::from_toml_and_env(
+            "[companion]\nbase_url = 'https://my-llm.example/v1'\nmodel = 'my-model'\n",
+            [],
+        )
+        .unwrap();
+        let missing = config.missing_config();
+        let joined = missing.join("\n");
+        assert!(!joined.contains("companion.base_url/model"), "{joined}");
     }
 }
 
