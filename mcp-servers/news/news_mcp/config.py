@@ -25,6 +25,7 @@ from typing import Mapping
 
 from mooshik_common.models import DEFAULT_LOCATION as COMMON_LOCATION
 from mooshik_common.models import DEFAULT_MODEL as COMMON_MODEL
+from mooshik_common.vertex import credentials_description
 
 #: Gemini Developer API key. When set, the client runs in API-key mode and no
 #: project/location is needed. Secret: never logged, never echoed.
@@ -95,7 +96,7 @@ class Settings:
             if self.use_vertex
             else "developer-api"
         )
-        creds = "service-account-file" if self.credentials_path else "default"
+        creds = credentials_description(self.credentials_path)
         return (
             f"model={self.model} auth={auth} {where} credentials={creds} "
             f"timeout={self.timeout_secs}s max_chars={self.max_chars}"

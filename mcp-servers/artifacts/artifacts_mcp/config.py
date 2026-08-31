@@ -5,6 +5,7 @@ from typing import Mapping
 
 from mooshik_common.models import DEFAULT_LOCATION as COMMON_LOCATION
 from mooshik_common.models import DEFAULT_MODEL as COMMON_MODEL
+from mooshik_common.vertex import credentials_description
 
 API_KEY_ENV = "MOOSHIK_GEMINI_API_KEY"
 PROJECT_ENV = "MOOSHIK_GEMINI_PROJECT"
@@ -39,7 +40,7 @@ class Settings:
     def describe(self) -> str:
         auth = "api-key" if self.api_key else "vertex"
         where = f"project={self.project} location={self.location}" if self.use_vertex else "developer-api"
-        creds = "service-account-file" if self.credentials_path else "default"
+        creds = credentials_description(self.credentials_path)
         return f"model={self.model} auth={auth} {where} credentials={creds} timeout={self.timeout_secs}s"
 
     @classmethod

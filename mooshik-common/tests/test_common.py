@@ -18,7 +18,11 @@ from mooshik_common.models import (
     EMBEDDER_LOCATION_ENV,
     GLOBAL_LOCATION,
 )
-from mooshik_common.vertex import CLOUD_PLATFORM_SCOPE, make_client
+from mooshik_common.vertex import (
+    CLOUD_PLATFORM_SCOPE,
+    credentials_description,
+    make_client,
+)
 
 
 # ------------------------------------------------------------------ models --
@@ -132,6 +136,115 @@ def test_the_genai_import_is_lazy():
     probe = "import sys, mooshik_common.vertex; print('google.genai' in sys.modules)"
     out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
     assert out.stdout.strip() == "False", out.stdout + out.stderr
+
+
+class FakeOauth2(types.ModuleType):
+    """Records which credential constructor `make_client` chooses."""
+
+    def __init__(self):
+        super().__init__("google.oauth2")
+        self.calls = []
+        outer = self
+
+        class UserCredentials:
+            @classmethod
+            def from_authorized_user_file(cls, path, **kwargs):
+                outer.calls.append(("authorized_user", path, kwargs))
+                return "authorized-user-credentials"
+
+        class ServiceAccountCredentials:
+            @classmethod
+            def from_service_account_file(cls, path, **kwargs):
+                outer.calls.append(("service_account", path, kwargs))
+                return "service-account-credentials"
+
+        credentials = types.ModuleType("google.oauth2.credentials")
+        credentials.Credentials = UserCredentials
+        service_account = types.ModuleType("google.oauth2.service_account")
+        service_account.Credentials = ServiceAccountCredentials
+        self.credentials = credentials
+        self.service_account = service_account
+
+
+@pytest.fixture
+def fake_google(monkeypatch):
+    fake = FakeGenai()
+    oauth2 = FakeOauth2()
+    google = types.ModuleType("google")
+    google.genai = fake
+    google.oauth2 = oauth2
+    monkeypatch.setitem(sys.modules, "google", google)
+    monkeypatch.setitem(sys.modules, "google.genai", fake)
+    monkeypatch.setitem(sys.modules, "google.oauth2", oauth2)
+    return fake, oauth2
+
+
+SERVICE_ACCOUNT_JSON = (
+    '{"type": "service_account", "project_id": "p", '
+    '"client_email": "a@b", "private_key": "x"}'
+)
+AUTHORIZED_USER_JSON = (
+    '{"type": "authorized_user", "client_id": "c", '
+    '"client_secret": "s", "refresh_token": "t"}'
+)
+
+
+def test_a_service_account_file_builds_a_client_unchanged(fake_google, tmp_path):
+    fake, oauth2 = fake_google
+    path = tmp_path / "sa.json"
+    path.write_text(SERVICE_ACCOUNT_JSON)
+    make_client(project="p", location="global", credentials_path=str(path))
+    assert oauth2.calls == [
+        ("service_account", str(path), {"scopes": [CLOUD_PLATFORM_SCOPE]})
+    ]
+    assert fake.seen["credentials"] == "service-account-credentials"
+
+
+def test_an_authorized_user_file_builds_a_client(fake_google, tmp_path):
+    """The regression: a gcloud application-default file is `authorized_user`,
+    and the old loader rejected it with MalformedError."""
+    fake, oauth2 = fake_google
+    path = tmp_path / "adc.json"
+    path.write_text(AUTHORIZED_USER_JSON)
+    make_client(project="p", location="global", credentials_path=str(path))
+    assert oauth2.calls == [
+        ("authorized_user", str(path), {"scopes": [CLOUD_PLATFORM_SCOPE]})
+    ]
+    assert fake.seen["credentials"] == "authorized-user-credentials"
+
+
+def test_a_missing_credentials_file_fails_naming_the_path(fake_google, tmp_path):
+    with pytest.raises(ValueError) as exc:
+        make_client(project="p", credentials_path=str(tmp_path / "nope.json"))
+    assert "nope.json" in str(exc.value)
+    assert "does not exist" in str(exc.value)
+
+
+def test_a_malformed_credentials_file_fails_naming_the_path(fake_google, tmp_path):
+    path = tmp_path / "bad.json"
+    path.write_text("not json at all")
+    with pytest.raises(ValueError) as exc:
+        make_client(project="p", credentials_path=str(path))
+    assert str(path) in str(exc.value)
+
+
+def test_an_unknown_credential_type_fails_naming_the_path(fake_google, tmp_path):
+    path = tmp_path / "other.json"
+    path.write_text('{"type": "external_account"}')
+    with pytest.raises(ValueError) as exc:
+        make_client(project="p", credentials_path=str(path))
+    assert str(path) in str(exc.value)
+
+
+def test_credentials_description_says_what_the_file_is(tmp_path):
+    assert credentials_description(None) == "default"
+    service = tmp_path / "sa.json"
+    service.write_text(SERVICE_ACCOUNT_JSON)
+    assert credentials_description(str(service)) == "service-account-file"
+    adc = tmp_path / "adc.json"
+    adc.write_text(AUTHORIZED_USER_JSON)
+    assert credentials_description(str(adc)) == "authorized-user-file"
+    assert credentials_description(str(tmp_path / "missing.json")) == "unknown"
 
 
 def test_the_scope_is_cloud_platform():
