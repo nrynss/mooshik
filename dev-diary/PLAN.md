@@ -68,6 +68,7 @@ the surface landed, so the data behind it became worth building.
 | **M12d** | Built 2026-08-31. The live pane owns a cancellable polling watcher for the current workspace: `.md/.markdown/.txt/.rst` files only, generated directories and symlinks excluded, file contents scanned with the ingester's whole-document secret policy but never derived. Git changes carry SHA/message metadata only, with commit author time; file events carry mtime. A 250 ms debounce coalesces bursts, and every derive uses the pane's shared `WriteLane`. The task is joined before `Memory::close`; it is never a daemon. Focused offline tests cover discovery/filtering, debounce replacement, secret drops, git metadata/time, and cancellation. |
 | **M12e** | Built 2026-08-31, `49a504d` → `d5c5909`. `Enter` runs `Session::turn` on the pane runtime; tokens drain into the conversation; in-flight `Esc` cancels without quitting; a failed turn renders as a turn. Prompt-class tools denied on the pane path (stdin would hang). Execute-time diagnostics go through a sink, not `eprintln!`. Review rounds 1–2: **APPROVE**, zero residue (`m12e-round2.md`). See the M12 section. |
 | **M12f** | Built 2026-08-31. `mcp-servers/artifacts/`: an MCP server that extracts typed concepts from screenshots and audio recordings using ADK `LlmAgent` + Gemini 3.7 Flash at `global`, returning them over stdio for Mooshik to derive in-process. Whole-document secret scanning (pattern + vault values) runs before concepts cross the wire. Uses `mooshik-common` for model defaults, Vertex client, and concept vocabulary. 14 offline tests. Review rounds 1–3: **APPROVE**, zero residue (`m12f-round3.md`). |
+| **M12g** | Not started. The README, the docs site and `mooshik --help` all say Mooshik delegates code changes to coding agents. Nothing implements it — `delegate_to_coder` is in the spec only. Either this ships or the sentences change. See the M12 section. |
 
 Lambo pin: `nrynss/lambo` git `rev = 71334f0` (`lambo-for-mooshik`). E1/E2 (path dep, then rev pin) were done as the rev pin directly; bump the SHA after a Lambo fix.
 
@@ -730,6 +731,17 @@ a change to what feeds the model.
   closes that with an MCP server rather than a change to the ingester, so the capability is
   configuration and can be cut on the day without touching anything else.
 
+* **M12g — the coding contractor.** The one milestone here that starts from a claim rather than a
+  gap. `README.md:3`, the docs site's index and overview, and `text/en.toml:14` — which is what
+  `mooshik --help` prints — all state in the present tense that Mooshik delegates heavy code edits
+  to coding agents. `docs/SPEC.md` names the tool, `delegate_to_coder`, and is honest that it
+  describes where the product is going; the other three dropped that qualifier. Nothing implements
+  it: there is no `[coding_agent]` section, no delegation tool, and the shipped surface is the lambo
+  tools plus `run_scratch_script` plus whatever MCP servers are configured. The repo is public and
+  the contest requires the project to function as its text description says, so this is either built
+  or the sentences are rewritten — and drifting into the deadline without choosing is the one option
+  that is actually bad.
+
 **The daemon is explicitly out of scope.** A background process that outlives the terminal is a
 different product decision — install, supervision, a second lease holder, and a thing running on a
 machine when nobody asked it to. M12b's refresh happens inside the pane the user opened and stops
@@ -985,6 +997,56 @@ workspace and goes no further.
 and the extraction prompt. **Done when:** a screenshot and a voice note dropped in the workspace
 become typed concepts on the same threads the text corpus already names, and a secret in either one
 drops the whole artifact.
+
+### M12g — why it is a server, and why it cannot block
+
+**No Rust.** This is an MCP server, the third one, taking its shape from `mcp-servers/news/` and its
+constants from `mooshik-common`. That is the whole argument M10 exists to make: a new capability is
+configuration, not a Rust PR. Building a first-class `[coding_agent]` section instead would
+re-implement the host inside the binary.
+
+**It cannot be one blocking call.** `MCP_CALL_WAIT` is a hard 60 s per tool call
+(`mcp_host/mod.rs:64`) and it is a `const` with no per-server override. A real code change exceeds
+that routinely, so a `delegate` that waits for a diff is a design that times out by construction.
+
+**So it fires and the watcher learns the outcome.** `delegate(task, repo)` spawns the agent and
+returns immediately with what it started — agent, repo, task — comfortably inside the bound.
+`check(handle)` reports liveness and exit status. The *result* arrives the ambient way: M12d's
+watcher sees the edits land and derives them, so the pane fills with what the contractor did while
+it is still working. Nothing has to marshal a diff back through a tool call.
+
+The daemon boundary holds without special handling: MCP servers are children of the host, so a
+spawned agent dies when the pane closes — which is also the behaviour you want, since an agent
+editing a repository after the user closed Mooshik is exactly the thing M12 refused to build. Bound
+the child at spawn rather than relying on cleanup; a killed parent never runs its own teardown.
+
+**Constraints do not need injecting — that problem is already solved, twice.** Lambo ships an MCP
+server, and its README records three clients driving it model-first: OMP, Claude Code, and the
+Cursor Agent CLI. And `lambo/dev-diary/notes/video-shoot.md` records *what actually made an agent
+consult memory unprompted*: a standing rule it reads (`AGENTS.md`), plus a working directory where
+grep answers nothing. That note is explicit that the MCP server's own `initialize` instructions were
+**not enough on their own inside a code repository**. So `delegate` refreshes the standing rule in
+the target repo from the graph and ensures the agent's own MCP config points at Lambo. The
+contractor then consults memory itself, by the mechanism already proven to work.
+
+**Grant it `prompt`, never `allow`.** This runs a code-editing agent against a real repository. It
+is the clearest case in the product for asking first, and a better demonstration of M5 than the
+scratch runner is.
+
+**Ergonomics are the point, not an extra.** The friction is not the plumbing, it is that a user must
+hand-write an `[mcp_servers.coder]` block with the right command, args, tool allowlist and vault
+names. `mooshik configure coder --agent claude|omp|cursor` writes the block from a known-good
+template, stores the credential in the vault under a name it then references, sets the grant to
+`prompt`, and validates by spawning the server once and listing its tools. `mooshik config show`
+already validates, so the last step is reuse. That is the difference between "capability is
+configuration" as an architecture claim and as something a stranger can do in thirty seconds.
+
+**Depends on:** M10 for the host, M5 for the gate, M6 for the vault, M12d for the watcher that
+carries the result back. **Done when:** `mooshik configure coder --agent claude` writes a working
+block, a delegated change edits a real repository under a standing rule drawn from the graph, and
+the edits appear in the open pane without anyone describing them. **Or:** the four sentences are
+rewritten to say what M10 already makes true — that a coding agent connects as a configured server
+like any other tool — and this milestone is closed as a decision rather than left as a claim.
 
 **Depends on:** M11 for the surface, M2 for the graph. **Done when:** `mooshik tui` opens on the
 user's own week.
