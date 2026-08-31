@@ -13,6 +13,7 @@ export default defineConfig({
       social: {
         github: 'https://github.com/nrynss/mooshik',
       },
+      customCss: ['./src/styles/custom.css'],
       editLink: {
         baseUrl: 'https://github.com/nrynss/mooshik/edit/main/docs',
       },

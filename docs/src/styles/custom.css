@@ -1,0 +1,26 @@
+/* Custom style overrides for Mooshik documentation */
+
+:root {
+  --sl-sidebar-width: 16rem;
+  --sl-content-width: 58rem;
+}
+
+/* Constrain the right sidebar (Table of Contents) to a clean, compact width */
+@media (min-width: 72rem) {
+  .right-sidebar-container {
+    width: 14rem !important;
+  }
+
+  .right-sidebar {
+    width: 14rem !important;
+  }
+
+  :global([data-has-sidebar][data-has-toc]) .main-pane {
+    width: calc(100% - 14rem) !important;
+  }
+
+  .right-sidebar-panel .sl-container {
+    max-width: 12rem !important;
+    width: 12rem !important;
+  }
+}
