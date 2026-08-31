@@ -18,7 +18,7 @@ Only `.md`, `.markdown`, `.txt`, and `.rst` files outside Git repositories are e
 directories and symlinks are excluded. File contents are secret-scanned but only the relative path
 is remembered. Git repositories contribute commit metadata and author time, never working-tree
 files or diffs. Live watching is currently Unix-only; on unsupported non-Unix platforms it fails
-closed and the TUI remains available without the watcher. The watcher stops with the pane.
+closed at TUI startup. The watcher stops with the pane.
 
 ## Build
 

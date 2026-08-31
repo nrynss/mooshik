@@ -93,7 +93,9 @@ impl Watcher {
         {
             // There is no portable descriptor-relative, no-follow traversal
             // primitive in std on these targets. Refuse the live watcher
-            // instead of turning a path race into a workspace escape.
+            // instead of turning a path race into a workspace escape. The
+            // live command closes the pane and returns this error; the TUI
+            // does not remain available without the watcher.
             return Err(WatchError::WorkspaceUnavailable);
         }
         let (cancel, cancelled) = oneshot::channel();
@@ -459,12 +461,30 @@ fn collect_changes(
     !collect_changes_with_cancel(previous, current, pending, changed_at, &NEVER_CANCELLED).retry
 }
 
-fn collect_changes_with_cancel(
+/// Cancel checks in [`collect_changes_with_cancel`]. Production uses
+/// [`AtomicBool`]; tests may flip after the first load so the file-walk
+/// return is actually entered.
+trait CollectCancel {
+    fn load(&self, order: Ordering) -> bool;
+    fn git_cancel_flag(&self) -> &AtomicBool;
+}
+
+impl CollectCancel for AtomicBool {
+    fn load(&self, order: Ordering) -> bool {
+        AtomicBool::load(self, order)
+    }
+
+    fn git_cancel_flag(&self) -> &AtomicBool {
+        self
+    }
+}
+
+fn collect_changes_with_cancel<C: CollectCancel>(
     previous: &Snapshot,
     current: &Snapshot,
     pending: &mut BTreeMap<String, Pending>,
     changed_at: &mut Option<Instant>,
-    cancelled: &AtomicBool,
+    cancelled: &C,
 ) -> ChangeResult {
     let mut next = current.clone();
     let mut retry = false;
@@ -477,13 +497,17 @@ fn collect_changes_with_cancel(
         if let Some(old_head) = previous.heads.get(repo) {
             next.heads.insert(repo.clone(), old_head.clone());
         } else {
-            next.heads.remove(repo);
+            // The repository appeared after the previous snapshot but its
+            // first Git read failed. Keep an explicit marker so recovery is
+            // replayed from an unknown baseline rather than silently
+            // baselining the history that existed during the failure.
+            next.heads.insert(repo.clone(), GitHead::Unknown);
         }
     }
 
     if cancelled.load(Ordering::Acquire) {
         return ChangeResult {
-            snapshot: previous.clone(),
+            snapshot: snapshot_retaining_failed_discoveries(previous, current),
             changed: false,
             retry: true,
         };
@@ -491,7 +515,7 @@ fn collect_changes_with_cancel(
     for (path, state) in &current.files {
         if cancelled.load(Ordering::Acquire) {
             return ChangeResult {
-                snapshot: previous.clone(),
+                snapshot: snapshot_retaining_failed_discoveries(previous, current),
                 changed: false,
                 retry: true,
             };
@@ -539,7 +563,9 @@ fn collect_changes_with_cancel(
             (GitHead::Commit(_), GitHead::Unborn) | (GitHead::Unborn, GitHead::Unborn) => continue,
             (_, GitHead::Unknown) => continue,
         };
-        let Ok(commits) = git_commits_between_with_cancel(repo, old, new, cancelled) else {
+        let Ok(commits) =
+            git_commits_between_with_cancel(repo, old, new, cancelled.git_cancel_flag())
+        else {
             retry = true;
             next.heads.insert(repo.clone(), previous_head.clone());
             continue;
@@ -563,6 +589,20 @@ fn collect_changes_with_cancel(
         changed,
         retry,
     }
+}
+
+/// A cancelled poll must not apply a partial file walk, but it must still
+/// remember repositories whose Git read already failed. Dropping those
+/// markers would baseline history that existed during the failure once the
+/// next healthy poll arrives.
+fn snapshot_retaining_failed_discoveries(previous: &Snapshot, current: &Snapshot) -> Snapshot {
+    let mut snapshot = previous.clone();
+    for repo in &current.git_failures {
+        if !snapshot.heads.contains_key(repo) {
+            snapshot.heads.insert(repo.clone(), GitHead::Unknown);
+        }
+    }
+    snapshot
 }
 
 fn enqueue_pending(pending: &mut BTreeMap<String, Pending>, key: String, event: Pending) -> bool {
@@ -1495,6 +1535,66 @@ fn strip_optional_quote(value: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    struct CancelAfterFirstLoad {
+        loads: AtomicUsize,
+        git: AtomicBool,
+    }
+
+    impl CancelAfterFirstLoad {
+        fn new() -> Self {
+            Self {
+                loads: AtomicUsize::new(0),
+                git: AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl CollectCancel for CancelAfterFirstLoad {
+        fn load(&self, _order: Ordering) -> bool {
+            let cancelled = self.loads.fetch_add(1, Ordering::AcqRel) >= 1;
+            self.git.store(cancelled, Ordering::Release);
+            cancelled
+        }
+
+        fn git_cancel_flag(&self) -> &AtomicBool {
+            &self.git
+        }
+    }
+
+    fn flatten_readme_words(readme: &str) -> Vec<String> {
+        let lowered: String = readme
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c.is_whitespace() {
+                    c.to_ascii_lowercase()
+                } else {
+                    ' '
+                }
+            })
+            .collect();
+        lowered.split_whitespace().map(str::to_string).collect()
+    }
+
+    fn readme_claims_available_without_watcher(readme: &str) -> bool {
+        let words = flatten_readme_words(readme);
+        let has_without_article_watcher = words
+            .windows(3)
+            .any(|w| w[0] == "without" && (w[1] == "the" || w[1] == "a") && w[2] == "watcher");
+        if has_without_article_watcher {
+            return true;
+        }
+        // Punctuation is already spaces, so "available, without our watcher"
+        // is the word order available … without … watcher regardless of
+        // determiner.
+        words.iter().enumerate().any(|(i, word)| {
+            *word == "available"
+                && words[i + 1..].iter().enumerate().any(|(j, w)| {
+                    *w == "without" && words[i + 1 + j + 1..].iter().any(|rest| rest == "watcher")
+                })
+        })
+    }
 
     #[test]
     fn discovery_uses_allowlist_and_skips_generated_dirs_and_symlinks() {
@@ -1818,6 +1918,433 @@ mod tests {
             recovered.heads,
             result.snapshot.heads
         );
+        remove_test_root(&root);
+    }
+
+    #[test]
+    fn late_git_failure_without_a_previous_head_keeps_unknown() {
+        let repo = PathBuf::from("/workspace/late");
+        let previous = Snapshot::default();
+        let current = Snapshot {
+            heads: [(repo.clone(), GitHead::Unknown)].into_iter().collect(),
+            git_failures: vec![repo.clone()],
+            ..Snapshot::default()
+        };
+        let mut pending = BTreeMap::new();
+        let mut changed = None;
+        let result = collect_changes_with_cancel(
+            &previous,
+            &current,
+            &mut pending,
+            &mut changed,
+            &AtomicBool::new(false),
+        );
+        assert!(result.retry);
+        assert!(pending.is_empty());
+        assert_eq!(
+            result.snapshot.heads.get(&repo),
+            Some(&GitHead::Unknown),
+            "removing the head would baseline history that existed during the failure"
+        );
+    }
+
+    #[test]
+    fn git_failure_list_without_a_head_entry_still_records_unknown() {
+        let repo = PathBuf::from("/workspace/late");
+        let previous = Snapshot::default();
+        let current = Snapshot {
+            git_failures: vec![repo.clone()],
+            ..Snapshot::default()
+        };
+        let mut pending = BTreeMap::new();
+        let mut changed = None;
+        let result = collect_changes_with_cancel(
+            &previous,
+            &current,
+            &mut pending,
+            &mut changed,
+            &AtomicBool::new(false),
+        );
+        assert_eq!(result.snapshot.heads.get(&repo), Some(&GitHead::Unknown));
+    }
+
+    #[test]
+    fn cancelled_collect_keeps_unknown_for_a_late_failed_repository() {
+        let repo = PathBuf::from("/workspace/late");
+        let previous = Snapshot::default();
+        let current = Snapshot {
+            heads: [(repo.clone(), GitHead::Unknown)].into_iter().collect(),
+            git_failures: vec![repo.clone()],
+            ..Snapshot::default()
+        };
+        let mut pending = BTreeMap::new();
+        let mut changed = None;
+        let result = collect_changes_with_cancel(
+            &previous,
+            &current,
+            &mut pending,
+            &mut changed,
+            &AtomicBool::new(true),
+        );
+        assert!(result.retry);
+        assert!(!result.changed);
+        assert_eq!(
+            result.snapshot.heads.get(&repo),
+            Some(&GitHead::Unknown),
+            "cancel must not drop a failed discovery that already ran"
+        );
+    }
+
+    #[test]
+    fn cancelled_file_walk_keeps_unknown_for_a_late_failed_repository() {
+        let repo = PathBuf::from("/workspace/late");
+        let path = PathBuf::from("/workspace/note.md");
+        let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+        let previous = Snapshot::default();
+        let current = Snapshot {
+            files: [(path, FileState { modified, len: 1 })]
+                .into_iter()
+                .collect(),
+            heads: [(repo.clone(), GitHead::Unknown)].into_iter().collect(),
+            git_failures: vec![repo.clone()],
+        };
+        let mut pending = BTreeMap::new();
+        let mut changed = None;
+        let cancelled = CancelAfterFirstLoad::new();
+        let result = collect_changes_with_cancel(
+            &previous,
+            &current,
+            &mut pending,
+            &mut changed,
+            &cancelled,
+        );
+        assert_eq!(
+            cancelled.loads.load(Ordering::Acquire),
+            2,
+            "cancel must be false at the first load and flip during the file walk"
+        );
+        assert!(result.retry);
+        assert!(!result.changed);
+        assert_eq!(
+            result.snapshot.heads.get(&repo),
+            Some(&GitHead::Unknown),
+            "file-walk cancel must not drop a failed discovery that already ran"
+        );
+    }
+
+    #[test]
+    fn cancelled_atomicbool_with_files_keeps_unknown_without_walking() {
+        let repo = PathBuf::from("/workspace/late");
+        let path = PathBuf::from("/workspace/note.md");
+        let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+        let previous = Snapshot::default();
+        let current = Snapshot {
+            files: [(path, FileState { modified, len: 1 })]
+                .into_iter()
+                .collect(),
+            heads: [(repo.clone(), GitHead::Unknown)].into_iter().collect(),
+            git_failures: vec![repo.clone()],
+        };
+        let mut pending = BTreeMap::new();
+        let mut changed = None;
+        let result = collect_changes_with_cancel(
+            &previous,
+            &current,
+            &mut pending,
+            &mut changed,
+            &AtomicBool::new(true),
+        );
+        assert!(result.retry);
+        assert!(
+            !result.changed,
+            "a no-op AtomicBool load would walk the new file and look retained"
+        );
+        assert!(
+            pending.is_empty(),
+            "production AtomicBool cancel must not enqueue the file walk"
+        );
+        assert!(
+            result.snapshot.files.is_empty(),
+            "cancel must keep previous file state, not apply a walk that ignored the flag"
+        );
+        assert_eq!(
+            result.snapshot.heads.get(&repo),
+            Some(&GitHead::Unknown),
+            "production AtomicBool cancel must not drop a failed discovery that already ran"
+        );
+    }
+
+    #[test]
+    fn atomicbool_collect_cancel_forwards_load_and_git_flag() {
+        let impl_src = include_str!("watcher.rs")
+            .split("impl CollectCancel for AtomicBool {")
+            .nth(1)
+            .expect("CollectCancel for AtomicBool")
+            .split("fn collect_changes_with_cancel")
+            .next()
+            .unwrap();
+        let load = impl_src
+            .split("fn load(")
+            .nth(1)
+            .expect("AtomicBool load")
+            .split("fn git_cancel_flag")
+            .next()
+            .unwrap();
+        let load_flat = load.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            load_flat.contains("AtomicBool::load(self, order) }"),
+            "CollectCancel::load for AtomicBool must forward to AtomicBool::load"
+        );
+        assert!(
+            !load_flat.contains("false"),
+            "CollectCancel::load for AtomicBool must not discard the real load"
+        );
+        let git = impl_src
+            .split("fn git_cancel_flag")
+            .nth(1)
+            .expect("git_cancel_flag");
+        let git_flat = git.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            git_flat.contains("-> &AtomicBool { self }"),
+            "git_cancel_flag must return self so git subprocesses see the production flag"
+        );
+        assert!(
+            !git_flat.contains("AtomicBool::new"),
+            "git_cancel_flag must not substitute a static never-set flag"
+        );
+    }
+
+    #[test]
+    fn failed_git_discovery_does_not_baseline_away_an_unknown_head() {
+        let production = include_str!("watcher.rs")
+            .split("fn collect_changes_with_cancel")
+            .nth(1)
+            .expect("collect_changes_with_cancel")
+            .split("fn snapshot_retaining_failed_discoveries(")
+            .next()
+            .unwrap();
+        let failures = production
+            .split("for repo in &current.git_failures")
+            .nth(1)
+            .expect("git_failures loop")
+            .split("if cancelled.load")
+            .next()
+            .unwrap();
+        assert!(
+            failures.contains("GitHead::Unknown"),
+            "a late failed repository must keep Unknown"
+        );
+        assert!(
+            !failures.contains("heads.remove"),
+            "next.heads.remove(repo) baselines away history that existed during the failure"
+        );
+        let cancel_returns: Vec<&str> = production
+            .split("if cancelled.load(Ordering::Acquire)")
+            .skip(1)
+            .map(|rest| {
+                rest.split("return ChangeResult")
+                    .nth(1)
+                    .and_then(|body| body.split("};").next())
+                    .expect("cancel returns ChangeResult")
+            })
+            .collect();
+        assert_eq!(
+            cancel_returns.len(),
+            2,
+            "collect_changes_with_cancel must pin both the first-load cancel and the file-walk cancel"
+        );
+        for (i, block) in cancel_returns.iter().enumerate() {
+            assert!(
+                block.contains("snapshot_retaining_failed_discoveries(previous, current)"),
+                "cancel return {i} must retain Unknown markers from git_failures, not return previous.clone()"
+            );
+            assert!(
+                !block.contains("previous.clone()"),
+                "cancel return {i} must not snapshot previous.clone()"
+            );
+        }
+    }
+
+    #[test]
+    fn live_watching_fails_closed_at_tui_startup() {
+        let start = include_str!("watcher.rs")
+            .split("impl Watcher {")
+            .nth(1)
+            .expect("Watcher impl")
+            .split("pub(crate) async fn stop")
+            .next()
+            .unwrap();
+        assert!(
+            start.contains("#[cfg(not(unix))]"),
+            "non-Unix must refuse Watcher::start"
+        );
+        assert!(
+            start.contains("WatchError::WorkspaceUnavailable"),
+            "refusal is WorkspaceUnavailable so live() cannot open the pane without a watcher"
+        );
+        let live = include_str!("tui_cmd.rs")
+            .split("let watcher = match watcher::Watcher::start(")
+            .nth(1)
+            .expect("live starts the watcher")
+            .split("let workspace =")
+            .next()
+            .unwrap();
+        assert!(
+            live.contains("pane.close()"),
+            "Watcher::start failure must close the pane"
+        );
+        assert!(
+            live.contains("return Err(anyhow::Error::new(error))"),
+            "Watcher::start failure must not continue into draw"
+        );
+        let readme = include_str!("../../README.md");
+        let readme_flat = readme.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            readme_flat.contains("fails closed at TUI startup"),
+            "README must say live watching fails closed at TUI startup"
+        );
+        assert!(
+            readme.contains("The watcher stops with the pane"),
+            "README must say the watcher stops with the pane"
+        );
+        assert!(
+            !readme_claims_available_without_watcher(readme),
+            "README must not claim the pane runs without the watcher"
+        );
+    }
+
+    #[test]
+    fn readme_reject_sees_available_without_watcher_through_punct_and_determiners() {
+        for claim in [
+            "The pane remains available, without our watcher",
+            "The pane remains available, without this watcher",
+            "Live watching is available, without any watcher",
+        ] {
+            assert!(
+                readme_claims_available_without_watcher(claim),
+                "comma plus a determiner other than the/a is still an availability claim: {claim}"
+            );
+        }
+        assert!(!readme_claims_available_without_watcher(include_str!(
+            "../../README.md"
+        )));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn late_failed_repository_keeps_unknown_marker_for_first_commit_recovery() {
+        let root = test_root("late-git-failure");
+        let repo = root.join("nested");
+        let before = Snapshot::discover(&root);
+        assert!(!before.heads.contains_key(&repo));
+
+        fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q"]);
+        run_git(&repo, &["config", "user.email", "test@example.invalid"]);
+        run_git(&repo, &["config", "user.name", "Mooshik Test"]);
+        let original_head = fs::read_to_string(repo.join(".git/HEAD")).unwrap();
+        fs::write(repo.join(".git/HEAD"), "ref: refs/heads/broken\n").unwrap();
+        fs::write(repo.join(".git/refs/heads/broken"), "not-an-object-id\n").unwrap();
+
+        let failed = Snapshot::discover(&root);
+        let mut pending = BTreeMap::new();
+        let mut changed = None;
+        let failed_result = collect_changes_with_cancel(
+            &before,
+            &failed,
+            &mut pending,
+            &mut changed,
+            &AtomicBool::new(false),
+        );
+        assert!(failed_result.retry);
+        assert!(pending.is_empty());
+        assert_eq!(
+            failed_result.snapshot.heads.get(&repo),
+            Some(&GitHead::Unknown),
+            "removing the head would baseline history that existed during the failure"
+        );
+
+        fs::write(repo.join(".git/HEAD"), original_head).unwrap();
+        fs::remove_file(repo.join(".git/refs/heads/broken")).unwrap();
+        fs::write(repo.join("first.md"), "first commit after recovery").unwrap();
+        run_git(&repo, &["add", "first.md"]);
+        run_git(&repo, &["commit", "-qm", "first commit after recovery"]);
+        let recovered = Snapshot::discover(&root);
+        let mut recovered_pending = BTreeMap::new();
+        let mut recovered_changed = None;
+        let recovered_result = collect_changes_with_cancel(
+            &failed_result.snapshot,
+            &recovered,
+            &mut recovered_pending,
+            &mut recovered_changed,
+            &AtomicBool::new(false),
+        );
+        assert!(!recovered_result.retry);
+        assert!(
+            recovered_pending.values().any(|event| {
+                matches!(event, Pending::Commit(commit) if commit.message.trim_end() == "first commit after recovery")
+            }),
+            "recovery must enqueue the first commit after the repo becomes readable; pending={recovered_pending:?}"
+        );
+        remove_test_root(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancelled_late_failed_repository_replays_first_commit_after_recovery() {
+        let root = test_root("late-git-failure-cancel");
+        let repo = root.join("nested");
+        let before = Snapshot::discover(&root);
+
+        fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q"]);
+        run_git(&repo, &["config", "user.email", "test@example.invalid"]);
+        run_git(&repo, &["config", "user.name", "Mooshik Test"]);
+        let original_head = fs::read_to_string(repo.join(".git/HEAD")).unwrap();
+        fs::write(repo.join(".git/HEAD"), "ref: refs/heads/broken\n").unwrap();
+        fs::write(repo.join(".git/refs/heads/broken"), "not-an-object-id\n").unwrap();
+
+        let failed = Snapshot::discover(&root);
+        let mut pending = BTreeMap::new();
+        let mut changed = None;
+        let cancelled_result = collect_changes_with_cancel(
+            &before,
+            &failed,
+            &mut pending,
+            &mut changed,
+            &AtomicBool::new(true),
+        );
+        assert_eq!(
+            cancelled_result.snapshot.heads.get(&repo),
+            Some(&GitHead::Unknown)
+        );
+
+        fs::write(repo.join(".git/HEAD"), original_head).unwrap();
+        fs::remove_file(repo.join(".git/refs/heads/broken")).unwrap();
+        fs::write(
+            repo.join("first.md"),
+            "first commit after cancelled failure",
+        )
+        .unwrap();
+        run_git(&repo, &["add", "first.md"]);
+        run_git(
+            &repo,
+            &["commit", "-qm", "first commit after cancelled failure"],
+        );
+        let recovered = Snapshot::discover(&root);
+        let mut recovered_pending = BTreeMap::new();
+        let mut recovered_changed = None;
+        let recovered_result = collect_changes_with_cancel(
+            &cancelled_result.snapshot,
+            &recovered,
+            &mut recovered_pending,
+            &mut recovered_changed,
+            &AtomicBool::new(false),
+        );
+        assert!(!recovered_result.retry);
+        assert!(recovered_pending.values().any(|event| {
+            matches!(event, Pending::Commit(commit) if commit.message.trim_end() == "first commit after cancelled failure")
+        }));
         remove_test_root(&root);
     }
 

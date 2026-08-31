@@ -797,8 +797,10 @@ at most 2,048 events. Hitting a cap retains only the affected repository's old h
 explicit backpressure; unrelated file state advances, and history is never silently dropped. Recursive
 file reads use descriptor-relative `openat` traversal with
 `O_NOFOLLOW` on Unix; the live watcher is disabled on platforms without an equivalent race-safe
-descriptor/reparse-point primitive. A failed initial Git discovery retains an explicit unknown-head
-state and replays reachable history after recovery; only a genuinely new repository is baselined.
+descriptor/reparse-point primitive. A failed Git discovery — including a repository that appears
+after the first poll — retains an explicit unknown-head state and replays reachable history after
+recovery; only a genuinely new healthy repository is baselined. The live watcher is Unix-only and
+fails closed at TUI startup (`WatchError::WorkspaceUnavailable`); the pane does not run without it.
 Commit messages are byte-preserving for valid UTF-8, including
 embedded NUL and record-separator bytes; invalid UTF-8 is replaced with U+FFFD at the graph boundary
 so a valid commit can advance the repository head.
