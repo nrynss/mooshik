@@ -148,10 +148,27 @@ pub(crate) fn isolate_git_environment(command: &mut Command) {
 #[cfg(unix)]
 pub(crate) fn fd_path(fd: i32) -> PathBuf {
     #[cfg(target_os = "linux")]
-    let prefix = "/proc/self/fd";
-    #[cfg(not(target_os = "linux"))]
-    let prefix = "/dev/fd";
-    PathBuf::from(prefix).join(fd.to_string())
+    {
+        PathBuf::from("/proc/self/fd").join(fd.to_string())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut buf = vec![0u8; libc::PATH_MAX as usize];
+        let ret =
+            unsafe { libc::fcntl(fd, libc::F_GETPATH, buf.as_mut_ptr() as *mut libc::c_char) };
+        if ret >= 0 {
+            let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+            buf.truncate(len);
+            use std::os::unix::ffi::OsStringExt;
+            PathBuf::from(std::ffi::OsString::from_vec(buf))
+        } else {
+            PathBuf::from(format!("/dev/fd/{fd}"))
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        PathBuf::from("/dev/fd").join(fd.to_string())
+    }
 }
 
 #[cfg(unix)]
