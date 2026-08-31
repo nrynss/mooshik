@@ -38,6 +38,9 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, FromRawFd};
+
 use chrono::{DateTime, Utc};
 use lambo::{graph::derive::ParentOf, ConceptType, Memory};
 use tokio::{sync::oneshot, task::JoinHandle};
@@ -168,6 +171,10 @@ enum Pending {
 enum GitHead {
     Commit(String),
     Unborn,
+    /// Discovery could not establish a trustworthy HEAD. This is retained so
+    /// recovery can scan the repository from an unknown baseline instead of
+    /// silently treating its current history as already seen.
+    Unknown,
 }
 
 #[derive(Clone, Default, Eq, PartialEq)]
@@ -232,7 +239,10 @@ impl Snapshot {
                 Ok(head) => {
                     snapshot.heads.insert(root.to_path_buf(), head);
                 }
-                Err(_) => snapshot.git_failures.push(root.to_path_buf()),
+                Err(_) => {
+                    snapshot.heads.insert(root.to_path_buf(), GitHead::Unknown);
+                    snapshot.git_failures.push(root.to_path_buf());
+                }
             }
         } else {
             dirs.push(root.to_path_buf());
@@ -270,7 +280,10 @@ impl Snapshot {
                             Ok(head) => {
                                 snapshot.heads.insert(path.clone(), head);
                             }
-                            Err(_) => snapshot.git_failures.push(path.clone()),
+                            Err(_) => {
+                                snapshot.heads.insert(path.clone(), GitHead::Unknown);
+                                snapshot.git_failures.push(path.clone());
+                            }
                         }
                         continue; // repositories are metadata-only sources
                     }
@@ -519,8 +532,12 @@ fn collect_changes_with_cancel(
         }
         let (old, new) = match (previous_head, head) {
             (GitHead::Commit(old), GitHead::Commit(new)) => (Some(old.as_str()), new),
-            (GitHead::Unborn, GitHead::Commit(new)) => (None, new),
+            (GitHead::Unborn, GitHead::Commit(new)) | (GitHead::Unknown, GitHead::Commit(new)) => {
+                (None, new)
+            }
+            (GitHead::Unknown, GitHead::Unborn) => continue,
             (GitHead::Commit(_), GitHead::Unborn) | (GitHead::Unborn, GitHead::Unborn) => continue,
+            (_, GitHead::Unknown) => continue,
         };
         let Ok(commits) = git_commits_between_with_cancel(repo, old, new, cancelled) else {
             retry = true;
@@ -538,8 +555,9 @@ fn collect_changes_with_cancel(
             *changed_at = Some(Instant::now());
         }
     }
-    // A newly-created repository is baselined by `Snapshot::discover`, so its
-    // existing history is never replayed into the open pane.
+    // A newly-created repository is baselined by `Snapshot::discover`, but a
+    // repository whose prior discovery failed carries Unknown and is replayed
+    // from its current head when it recovers.
     ChangeResult {
         snapshot: next,
         changed,
@@ -719,8 +737,222 @@ enum GitFailure {
     TooManyCommits,
 }
 
+#[cfg(unix)]
+struct SecureGitRepo {
+    repo_dir: fs::File,
+    git_dir: fs::File,
+}
+
+#[cfg(unix)]
+impl SecureGitRepo {
+    fn open(path: &Path) -> Result<Self, GitFailure> {
+        let repo_dir = open_directory_path(path).map_err(|_| GitFailure::Command)?;
+        let marker_fd = openat_no_follow(&repo_dir, std::ffi::OsStr::new(".git"), false)
+            .map_err(|_| GitFailure::Command)?;
+        let marker_metadata = marker_fd.metadata().map_err(|_| GitFailure::Command)?;
+        let git_dir = if marker_metadata.is_dir() {
+            marker_fd
+        } else if marker_metadata.is_file() {
+            let marker = marker_fd;
+            if marker_metadata.len() > 4096 {
+                return Err(GitFailure::Command);
+            }
+            let mut bytes = Vec::new();
+            marker
+                .take(4097)
+                .read_to_end(&mut bytes)
+                .map_err(|_| GitFailure::Command)?;
+            let pointer = std::str::from_utf8(&bytes)
+                .map_err(|_| GitFailure::Command)?
+                .lines()
+                .next()
+                .and_then(|line| line.strip_prefix("gitdir:"))
+                .map(str::trim)
+                .filter(|target| !target.is_empty())
+                .ok_or(GitFailure::Command)?;
+            let target = Path::new(pointer);
+            if target.is_absolute() {
+                open_directory_path(target).map_err(|_| GitFailure::Command)?
+            } else {
+                open_directory_relative(&repo_dir, target).map_err(|_| GitFailure::Command)?
+            }
+        } else {
+            return Err(GitFailure::Command);
+        };
+        if !git_dir
+            .metadata()
+            .map_err(|_| GitFailure::Command)?
+            .is_dir()
+        {
+            return Err(GitFailure::Command);
+        }
+        Ok(Self { repo_dir, git_dir })
+    }
+
+    fn make_inheritable(&self) -> io::Result<()> {
+        for file in [&self.repo_dir, &self.git_dir] {
+            let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFD) };
+            if flags < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFD, flags & !libc::FD_CLOEXEC) }
+                < 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+
+    fn command(&self, args: &[&str]) -> Command {
+        self.command_with_git_dir(args, None)
+    }
+
+    fn command_with_git_dir(&self, args: &[&str], git_dir_override: Option<&Path>) -> Command {
+        let mut command = Command::new("git");
+        if let Some(git_dir) = git_dir_override {
+            // Test-only injection point used to prove that the sanitizer wins
+            // over an inherited repository-selection variable.
+            command.env("GIT_DIR", git_dir);
+        }
+        isolate_git_environment(&mut command);
+        command
+            .arg("-C")
+            .arg(fd_path(self.repo_dir.as_raw_fd()))
+            .arg("--git-dir")
+            .arg(fd_path(self.git_dir.as_raw_fd()))
+            .args(args);
+        command
+    }
+}
+
+#[cfg(unix)]
+fn isolate_git_environment(command: &mut Command) {
+    // Git's repository and object discovery is environment-controlled. Remove
+    // every GIT_* variable, not only the currently known subset, before
+    // supplying stable descriptor paths explicitly.
+    for key in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_INDEX_FILE",
+        "GIT_NAMESPACE",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    ] {
+        command.env_remove(key);
+    }
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn fd_path(fd: i32) -> PathBuf {
+    #[cfg(target_os = "linux")]
+    let prefix = "/proc/self/fd";
+    #[cfg(not(target_os = "linux"))]
+    let prefix = "/dev/fd";
+    PathBuf::from(prefix).join(fd.to_string())
+}
+
+#[cfg(unix)]
+fn openat_no_follow(
+    directory: &fs::File,
+    name: &std::ffi::OsStr,
+    require_directory: bool,
+) -> io::Result<fs::File> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let name = std::ffi::CString::new(name.as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in path component"))?;
+    let mut flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW;
+    if require_directory {
+        flags |= libc::O_DIRECTORY;
+    }
+    let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { fs::File::from_raw_fd(fd) })
+}
+
+#[cfg(unix)]
+fn open_directory_path(path: &Path) -> io::Result<fs::File> {
+    use std::path::Component;
+
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "repository path must be absolute",
+        ));
+    }
+    let root_name = std::ffi::CString::new("/").expect("literal has no NUL");
+    let root_fd = unsafe {
+        libc::open(
+            root_name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if root_fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let root = unsafe { fs::File::from_raw_fd(root_fd) };
+    let relative = path
+        .components()
+        .filter(|component| !matches!(component, Component::RootDir));
+    open_directory_components(root, relative)
+}
+
+#[cfg(unix)]
+fn open_directory_relative(base: &fs::File, path: &Path) -> io::Result<fs::File> {
+    use std::path::Component;
+
+    let relative = path.components().filter(|component| {
+        matches!(
+            component,
+            Component::CurDir | Component::ParentDir | Component::Normal(_)
+        )
+    });
+    let base = base.try_clone()?;
+    open_directory_components(base, relative)
+}
+
+#[cfg(unix)]
+fn open_directory_components<'a, I>(mut directory: fs::File, components: I) -> io::Result<fs::File>
+where
+    I: IntoIterator<Item = std::path::Component<'a>>,
+{
+    // This helper is fed by owned paths in this module. Keep the actual
+    // descriptor walk in one place so every component uses O_NOFOLLOW.
+    for component in components {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                directory = openat_no_follow(&directory, std::ffi::OsStr::new(".."), true)?;
+            }
+            std::path::Component::Normal(name) => {
+                directory = openat_no_follow(&directory, name, true)?;
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unexpected path component",
+                ));
+            }
+        }
+    }
+    Ok(directory)
+}
+
+#[cfg(unix)]
 fn git_head_with_cancel(repo: &Path, cancelled: &AtomicBool) -> Result<GitHead, GitFailure> {
-    match git_with_cancel(repo, &["rev-parse", "--verify", "HEAD"], cancelled) {
+    let repo = SecureGitRepo::open(repo)?;
+    match git_with_cancel(&repo, &["rev-parse", "--verify", "HEAD"], cancelled) {
         Ok(output) => {
             let head = output.trim();
             if head.is_empty() {
@@ -735,16 +967,17 @@ fn git_head_with_cancel(repo: &Path, cancelled: &AtomicBool) -> Result<GitHead, 
             // specific unborn marker; a detached/broken HEAD must not be
             // converted into an empty repository merely because `status`
             // happens to tolerate it.
-            let inside = git_with_cancel(repo, &["rev-parse", "--is-inside-work-tree"], cancelled)?;
+            let inside =
+                git_with_cancel(&repo, &["rev-parse", "--is-inside-work-tree"], cancelled)?;
             if inside.trim() != "true" {
                 return Err(GitFailure::Command);
             }
-            let symbolic_head = git_with_cancel(repo, &["symbolic-ref", "HEAD"], cancelled)?;
+            let symbolic_head = git_with_cancel(&repo, &["symbolic-ref", "HEAD"], cancelled)?;
             if symbolic_head.trim().is_empty() {
                 return Err(GitFailure::MalformedOutput);
             }
             let (ref_status, _) =
-                git_process_with_cancel_input(repo, &["show-ref", "--head"], &[], cancelled)?;
+                git_process_with_cancel_input(&repo, &["show-ref", "--head"], &[], cancelled)?;
             match ref_status.code() {
                 // `show-ref --head` uses status 1 for a healthy repository
                 // with no refs. Any refs (status 0), malformed refs, or
@@ -757,15 +990,22 @@ fn git_head_with_cancel(repo: &Path, cancelled: &AtomicBool) -> Result<GitHead, 
     }
 }
 
+#[cfg(not(unix))]
+fn git_head_with_cancel(_repo: &Path, _cancelled: &AtomicBool) -> Result<GitHead, GitFailure> {
+    Err(GitFailure::Command)
+}
+
+#[cfg(unix)]
 fn git_commits_between_with_cancel(
     repo: &Path,
     old: Option<&str>,
     new: &str,
     cancelled: &AtomicBool,
 ) -> Result<Vec<Commit>, GitFailure> {
+    let secure_repo = SecureGitRepo::open(repo)?;
     let range = old.map_or_else(|| new.to_owned(), |old| format!("{old}..{new}"));
     let output = git_with_cancel(
-        repo,
+        &secure_repo,
         &["log", "--no-patch", "--pretty=format:%H%x00%aI%x00", &range],
         cancelled,
     )?;
@@ -775,12 +1015,22 @@ fn git_commits_between_with_cancel(
     }
     let request: String = metadata.iter().map(|(sha, _)| format!("{sha}\n")).collect();
     let objects = git_bytes_with_cancel_input(
-        repo,
+        &secure_repo,
         &["cat-file", "--batch"],
         request.as_bytes(),
         cancelled,
     )?;
     parse_commit_messages(repo, &metadata, &objects)
+}
+
+#[cfg(not(unix))]
+fn git_commits_between_with_cancel(
+    _repo: &Path,
+    _old: Option<&str>,
+    _new: &str,
+    _cancelled: &AtomicBool,
+) -> Result<Vec<Commit>, GitFailure> {
+    Err(GitFailure::Command)
 }
 
 fn parse_commit_headers(output: &str) -> Result<Vec<(String, DateTime<Utc>)>, GitFailure> {
@@ -873,8 +1123,9 @@ fn is_object_id(value: &str) -> bool {
     matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+#[cfg(unix)]
 fn git_with_cancel(
-    repo: &Path,
+    repo: &SecureGitRepo,
     args: &[&str],
     cancelled: &AtomicBool,
 ) -> Result<String, GitFailure> {
@@ -882,8 +1133,9 @@ fn git_with_cancel(
     String::from_utf8(bytes).map_err(|_| GitFailure::MalformedOutput)
 }
 
+#[cfg(unix)]
 fn git_bytes_with_cancel_input(
-    repo: &Path,
+    repo: &SecureGitRepo,
     args: &[&str],
     input: &[u8],
     cancelled: &AtomicBool,
@@ -895,8 +1147,9 @@ fn git_bytes_with_cancel_input(
     Ok(bytes)
 }
 
+#[cfg(unix)]
 fn git_process_with_cancel_input(
-    repo: &Path,
+    repo: &SecureGitRepo,
     args: &[&str],
     input: &[u8],
     cancelled: &AtomicBool,
@@ -904,13 +1157,9 @@ fn git_process_with_cancel_input(
     if cancelled.load(Ordering::Acquire) {
         return Err(GitFailure::Command);
     }
-    let mut command = Command::new("git");
-    command
-        .arg("-C")
-        .arg(repo)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+    repo.make_inheritable().map_err(|_| GitFailure::Cleanup)?;
+    let mut command = repo.command(args);
+    command.stdout(Stdio::piped()).stderr(Stdio::null());
     if input.is_empty() {
         command.stdin(Stdio::null());
     } else {
@@ -985,6 +1234,7 @@ fn git_process_with_cancel_input(
     finish_git_process(child, reader, status.is_none(), termination_error)
 }
 
+#[cfg(unix)]
 fn reap_child(
     child: &mut std::process::Child,
     terminate: bool,
@@ -997,6 +1247,7 @@ fn reap_child(
     wait_result.map_err(|_| GitFailure::Cleanup)
 }
 
+#[cfg(unix)]
 fn finish_git_process(
     mut child: std::process::Child,
     reader: thread::JoinHandle<(io::Result<()>, Vec<u8>)>,
@@ -1244,6 +1495,7 @@ fn strip_optional_quote(value: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn discovery_uses_allowlist_and_skips_generated_dirs_and_symlinks() {
         let root = test_root("discovery");
@@ -1298,6 +1550,50 @@ mod tests {
         assert!(snapshot.git_failures.is_empty());
         remove_test_root(&root);
         remove_test_root(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_environment_cannot_redirect_repository_discovery() {
+        let root = test_root("git-env-root");
+        let outside = root.with_extension("git-env-outside");
+        initialize_repo(&root, "workspace commit");
+        initialize_repo(&outside, "outside commit");
+        let expected = git_output(&root, &["rev-parse", "HEAD"]);
+        let outside_head = git_output(&outside, &["rev-parse", "HEAD"]);
+        assert_ne!(expected, outside_head);
+
+        let secure = SecureGitRepo::open(&root).unwrap();
+        secure.make_inheritable().unwrap();
+        let mut command =
+            secure.command_with_git_dir(&["rev-parse", "HEAD"], Some(&outside.join(".git")));
+        let output = command.output().unwrap();
+        assert!(output.status.success());
+        let actual = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(actual, expected);
+        assert_ne!(actual, outside_head);
+        remove_test_root(&root);
+        remove_test_root(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secure_git_context_survives_repository_rename_and_replacement() {
+        let root = test_root("git-rename");
+        let moved = root.with_extension("git-rename-moved");
+        initialize_repo(&root, "stable commit");
+        let expected = git_output(&root, &["rev-parse", "HEAD"]);
+        let secure = SecureGitRepo::open(&root).unwrap();
+
+        fs::rename(&root, &moved).unwrap();
+        initialize_repo(&root, "replacement commit");
+        let cancelled = AtomicBool::new(false);
+        let actual = git_with_cancel(&secure, &["rev-parse", "HEAD"], &cancelled).unwrap();
+        assert_eq!(actual.trim(), expected.trim());
+
+        drop(secure);
+        remove_test_root(&root);
+        remove_test_root(&moved);
     }
 
     #[test]
@@ -1438,6 +1734,7 @@ mod tests {
         remove_test_root(&root);
     }
 
+    #[cfg(unix)]
     #[test]
     fn unborn_nested_repository_does_not_block_files_or_its_first_commit() {
         let root = test_root("unborn-repo");
@@ -1471,6 +1768,7 @@ mod tests {
         remove_test_root(&root);
     }
 
+    #[cfg(unix)]
     #[test]
     fn corrupt_head_is_retried_instead_of_classified_as_unborn() {
         let root = test_root("corrupt-head");
@@ -1480,8 +1778,46 @@ mod tests {
         fs::write(root.join(".git/refs/heads/broken"), "not-an-object-id\n").unwrap();
 
         let snapshot = Snapshot::discover(&root);
-        assert!(!snapshot.heads.contains_key(&root));
+        assert_eq!(snapshot.heads.get(&root), Some(&GitHead::Unknown));
         assert_eq!(snapshot.git_failures, vec![root.clone()]);
+        remove_test_root(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_initial_git_discovery_replays_history_after_recovery() {
+        let root = test_root("git-failure-recovery");
+        initialize_repo(&root, "commit missed during discovery failure");
+        let original_head = fs::read_to_string(root.join(".git/HEAD")).unwrap();
+        fs::write(root.join(".git/HEAD"), "ref: refs/heads/broken\n").unwrap();
+        fs::write(root.join(".git/refs/heads/broken"), "not-an-object-id\n").unwrap();
+
+        let failed = Snapshot::discover(&root);
+        assert_eq!(failed.heads.get(&root), Some(&GitHead::Unknown));
+        assert_eq!(failed.git_failures, vec![root.clone()]);
+
+        fs::write(root.join(".git/HEAD"), original_head).unwrap();
+        fs::remove_file(root.join(".git/refs/heads/broken")).unwrap();
+        let recovered = Snapshot::discover(&root);
+        let mut pending = BTreeMap::new();
+        let mut changed = None;
+        let result = collect_changes_with_cancel(
+            &failed,
+            &recovered,
+            &mut pending,
+            &mut changed,
+            &AtomicBool::new(false),
+        );
+        assert!(!result.retry);
+        assert!(
+            pending.values().any(|event| {
+                matches!(event, Pending::Commit(commit) if commit.message.trim_end() == "commit missed during discovery failure")
+            }),
+            "pending={pending:?} failed={:?} recovered={:?} result_heads={:?}",
+            failed.heads,
+            recovered.heads,
+            result.snapshot.heads
+        );
         remove_test_root(&root);
     }
 
@@ -1628,6 +1964,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn git_poll_emits_new_commit_metadata_with_author_time() {
         let root = test_root("git");
@@ -1748,6 +2085,30 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
+    fn initialize_repo(root: &Path, message: &str) {
+        fs::create_dir_all(root).unwrap();
+        run_git(root, &["init", "-q"]);
+        run_git(root, &["config", "user.email", "test@example.invalid"]);
+        run_git(root, &["config", "user.name", "Mooshik Test"]);
+        fs::write(root.join("note.md"), message).unwrap();
+        run_git(root, &["add", "note.md"]);
+        run_git(root, &["commit", "-qm", message]);
+    }
+
+    #[cfg(unix)]
+    fn git_output(root: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git command failed: {args:?}");
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    #[cfg(unix)]
     fn run_git(root: &Path, args: &[&str]) {
         let status = Command::new("git")
             .arg("-C")
@@ -1758,6 +2119,7 @@ mod tests {
         assert!(status.success(), "git command failed: {args:?}");
     }
 
+    #[cfg(unix)]
     fn run_git_with_date(root: &Path, args: &[&str], date: &str) {
         let status = Command::new("git")
             .arg("-C")
