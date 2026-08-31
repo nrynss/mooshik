@@ -132,7 +132,7 @@ cd ~/work
 mooshik tui
 ```
 
-Mooshik watches the directory where you launch it. Launching from a common parent directory allows the watcher to track multiple repositories efficiently.
+Mooshik watches the directory where you launch it. Launching from a common parent directory allows the watcher to track multiple repositories efficiently. The watcher fails closed at TUI startup. The watcher stops with the pane: if watching cannot start, the pane does not open.
 
 See the [CLI Reference](https://nrynss.github.io/mooshik/cli/) for secondary commands like `mooshik recall`, `mooshik chat`, and `mooshik reflect`.
 
@@ -160,19 +160,6 @@ Mooshik is built for the All Things Agentic Hackathon.
 | **Google Cloud Infrastructure** | Cloud SQL PostgreSQL with pgvector acts as the shared cross-machine graph store. Cloud Run Jobs run the bootstrap ingester with Cloud SQL Auth Proxy. | [`ingester/README.md`](ingester/README.md), [`src/memory/ops.rs`](src/memory/ops.rs) |
 
 Veo and Lyria were dropped because Mooshik does not generate media assets. Gemma is not configured in the active runtime.
-
-### Measurement findings
-
-We tested the claim that canonization filters extraction hallucination without semantic ground truth. The measurement harness in [`measurement/`](measurement/) evaluated the live graph built by the bootstrap ingester.
-
-Results from milestone testing:
-- **Embedding coverage:** 59.3%. This triggered the sub-90% warning gate, showing recall relied heavily on keyword matching.
-- **Raw extraction precision:** 10/10, Wilson 95% interval [0.722, 1.000].
-- **Canonical promotions:** 0. The canonical pool was empty. Every true extraction was initially counted as rejected.
-
-The investigation revealed that Lambo's recurrence score requires evidence across distinct sessions over event time. The MCP wire protocol lacked an `event_time` field, causing historical commits spanning a decade to arrive with identical flush timestamps. Each concept appeared as a single session and failed the promotion threshold.
-
-We resolved this by adding an optional `event_time` to Lambo's derive API (commit `71334f0`) and updating the ingester to pass commit dates. `created_at` remains server-stamped to preserve security boundaries.
 
 ### Submission checklist
 
