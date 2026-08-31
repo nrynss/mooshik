@@ -92,9 +92,105 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # The MCP servers are Python, and a binary-only release cannot run any of
+  # them. They are pure Python and therefore arch- and OS-independent, so they
+  # are built ONCE here and shipped as a SINGLE separate asset rather than
+  # embedded four times into the platform tarballs. Three reasons:
+  #
+  #   1. Embedding identical bytes in four archives implies the servers are
+  #      platform-specific. They are not; every wheel is `py3-none-any`.
+  #   2. The platform tarballs keep their exact current shape — one `mooshik`
+  #      binary and nothing else — so the binary-only install path cannot
+  #      regress, and anyone extracting a tarball by hand sees no change.
+  #   3. No cross-job artifact plumbing into the build matrix; this job runs
+  #      independently and in parallel with the four binary builds.
+  #
+  # Wheels rather than source trees: the target machine then needs no build
+  # backend (`pip install` on an sdist would want setuptools and a compiler
+  # toolchain for anything that is not pure Python). Only OUR four packages
+  # are vendored — their third-party dependencies (mcp, google-genai,
+  # google-adk) still resolve from PyPI at install time, so `install.sh`'s
+  # Python step needs network access.
+  wheels:
+    name: Build Python wheels (MCP servers)
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v7.0.1
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      # actions/setup-python v5 (pinned by tag SHA, matching ci.yml)
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.13"
+
+      - name: Build wheels
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          BUNDLE="mooshik-python-${VERSION}.tar.gz"
+
+          python -m pip install --upgrade pip wheel setuptools
+
+          mkdir -p wheelhouse dist
+          # --no-deps: vendor our four packages only. Third-party pins are
+          # resolved from PyPI on the user's machine by install.sh.
+          pip wheel --no-deps --wheel-dir wheelhouse \
+            ./mooshik-common \
+            ./mcp-servers/news \
+            ./mcp-servers/artifacts \
+            ./mcp-servers/coder
+
+          ls -l wheelhouse
+
+          count=$(find wheelhouse -maxdepth 1 -name '*.whl' | wc -l)
+          if [ "$count" -ne 4 ]; then
+            echo "::error::expected 4 wheels, built ${count}"
+            exit 1
+          fi
+
+          # A wheel that lost its console script would install cleanly and then
+          # be unaddressable from [mcp_servers.*], which is exactly the failure
+          # this whole asset exists to prevent. Read the metadata directly.
+          python - <<'PY'
+          import pathlib, sys, zipfile
+
+          want = {"mooshik-news-mcp", "mooshik-artifacts-mcp", "mooshik-coder-mcp"}
+          found = set()
+          for wheel in sorted(pathlib.Path("wheelhouse").glob("*.whl")):
+              with zipfile.ZipFile(wheel) as archive:
+                  for name in archive.namelist():
+                      if name.endswith(".dist-info/entry_points.txt"):
+                          text = archive.read(name).decode("utf-8")
+                          for line in text.splitlines():
+                              if "=" in line:
+                                  found.add(line.split("=", 1)[0].strip())
+
+          missing = sorted(want - found)
+          if missing:
+              print(f"::error::console scripts missing from the built wheels: {missing}")
+              sys.exit(1)
+          print("console scripts present:", sorted(want))
+          PY
+
+          tar -czf "dist/${BUNDLE}" -C wheelhouse .
+          cd dist
+          sha256sum "${BUNDLE}" > "${BUNDLE}.sha256"
+
+      - name: Upload artifact
+        # actions/upload-artifact v4.6.1
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1
+        with:
+          name: artifacts-python
+          path: dist/*
+          if-no-files-found: error
+
   publish:
     name: Publish GitHub Release
-    needs: [build]
+    needs: [build, wheels]
     runs-on: ubuntu-latest
     steps:
       # actions/checkout v7.0.1
@@ -107,12 +203,29 @@ jobs:
         with:
           path: release-artifacts
 
+      # Both globs are deliberately shape-based rather than name-based, so the
+      # Python wheel bundle (mooshik-python-<version>.tar.gz) and its .sha256
+      # are consolidated by the same two lines as the platform tarballs — that
+      # is what keeps checksums.txt covering every published asset.
       - name: Consolidate archives and checksums
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p release-files
           find release-artifacts -type f -name '*.tar.gz' -exec cp {} release-files/ \;
           find release-artifacts -type f -name '*.sha256' -exec cat {} + > release-files/checksums.txt
+
+          # 4 platform tarballs + 1 Python bundle. A missing asset here means a
+          # build job silently produced nothing; install.sh would then fail its
+          # checksum grep on the user's machine instead.
+          archives=$(find release-files -maxdepth 1 -name '*.tar.gz' | wc -l)
+          sums=$(wc -l < release-files/checksums.txt)
+          if [ "$archives" -ne 5 ] || [ "$sums" -ne 5 ]; then
+            echo "::error::expected 5 archives and 5 checksum lines; got ${archives} and ${sums}"
+            cat release-files/checksums.txt
+            exit 1
+          fi
+          cat release-files/checksums.txt
 
       - name: Create GitHub Release
         env:

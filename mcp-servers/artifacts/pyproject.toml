@@ -13,6 +13,11 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest==9.1.1"]
 
+# See mcp-servers/news/pyproject.toml: a stable executable name inside the
+# installed virtualenv, alongside the unchanged `python3 .../server.py` route.
+[project.scripts]
+mooshik-artifacts-mcp = "artifacts_mcp.__main__:main"
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

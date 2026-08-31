@@ -75,11 +75,28 @@ Mooshik separates memory, orchestration, and coding execution into three clear r
 
 ### One-Line Shell Installer
 
-Run this command in your terminal to install the latest pre-compiled binary for Linux or macOS:
+Run this command in your terminal on Linux or macOS:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/nrynss/mooshik/main/install.sh | sh
 ```
+
+The script installs two things, and they fail independently.
+
+1. **The `mooshik` binary**, into `~/.local/bin`. Required. If this step fails, the whole install fails.
+2. **The three Python MCP servers** (`news`, `artifacts`, `coder`), into a virtualenv of their own at `~/.local/share/mooshik/venv`. Optional.
+
+The virtualenv is not incidental. Mooshik pins its Python dependencies exactly (`mcp`, `google-genai`, `google-adk`), and exact pins in a shared `site-packages` silently break unrelated projects on the same machine. The virtualenv also gives each server a stable executable name. Your `~/.mooshik/config.toml` can then name `command = "~/.local/share/mooshik/venv/bin/mooshik-news-mcp"`, rather than an absolute path into a source checkout that a binary install never had.
+
+The installer prints the exact `[mcp_servers.*]` block to paste, paths already filled in. Values under `[mcp_servers.*.env]` name vault **secrets**, they are not literal values. Store each one with `mooshik secret set <name>`.
+
+**Without Python 3.10 or newer**, the script still installs the binary and exits 0. It names the three servers you are missing and says what each one does. Install Python and re-run the same command to add them later. Re-running is safe: the installer upgrades a working virtualenv in place instead of rebuilding it.
+
+The Python step needs network access to PyPI. The release ships only Mooshik's own four packages. Pip resolves their third-party pins on your machine at install time.
+
+**The coder server contains no coding agent.** It shells out to one. You install and authenticate that CLI yourself, whichever one you name in the server's `--agent` argument (Claude Code, OMP, Cursor Agent CLI, or Antigravity).
+
+Overrides, all optional: `INSTALL_DIR`, `MOOSHIK_VENV_DIR`, `MOOSHIK_PYTHON`, `MOOSHIK_VERSION`, `MOOSHIK_SKIP_PYTHON=1`.
 
 ### Build from Source
 
@@ -147,7 +164,7 @@ The artifact extractor scans extracted text for credentials and tokens. It drops
 The artifacts MCP server processes screenshots and audio recordings. It extracts structured decisions, relations, and values without polluting the graph with visual captions.
 
 ### Coding Contractor Delegation
-The coder MCP server delegates heavy repository edits to specialized coding agents (Claude Code, Gemini CLI, Cursor Agent, or Antigravity / agy) without blocking the companion. Tasks run under standing constraints (`AGENTS.md`) written from the memory graph, and ambient results are observed by the workspace watcher.
+The coder MCP server delegates heavy repository edits to specialized coding agents (Claude Code, OMP, Cursor Agent, or Antigravity / agy) without blocking the companion. Tasks run under standing constraints (`AGENTS.md`) written from the memory graph, and the workspace watcher observes the ambient results.
 
 ---
 
@@ -184,8 +201,9 @@ Mooshik supports two deployment postures through `~/.mooshik/config.toml`:
 
 Explore the full documentation in the `docs/` directory:
 
-- [Getting Started & Installation](docs/src/content/docs/getting-started/overview.md)
-- [System Architecture](docs/src/content/docs/architecture/system-overview.md)
-- [Memory & WriteLane Concurrency](docs/src/content/docs/architecture/writelane-concurrency.md)
-- [MCP Servers & Tools](docs/src/content/docs/mcp-and-tools/mcp-host.md)
-- [CLI Reference](docs/src/content/docs/reference/cli.md)
+- [Product Overview](docs/src/content/docs/overview.md)
+- [Installation & Releases](docs/src/content/docs/installation.md)
+- [System Architecture](docs/src/content/docs/system-overview.md)
+- [Memory & WriteLane Concurrency](docs/src/content/docs/writelane-concurrency.md)
+- [MCP Servers & Tools](docs/src/content/docs/mcp-host.md)
+- [CLI Reference](docs/src/content/docs/cli.md)
