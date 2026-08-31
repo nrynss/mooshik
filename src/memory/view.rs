@@ -3,9 +3,10 @@
 //! M11 built the surface and left it with no source — "the panels are empty,
 //! because the data the artboards show has no source behind Mooshik yet". This
 //! module is that source. It is a **pure function of a graph and a clock**:
-//! [`of_graph`] takes a borrowed [`Graph`], the session's [`MemoryStats`] and the
-//! instant to draw, and returns the same [`Workspace`] the screens already read,
-//! so nothing under `tui::screen` learns that a database exists.
+//! [`of_memory`] copies the open session's graph out from under its lock, and
+//! [`of_graph`] turns that copy, the session's [`MemoryStats`] and the instant
+//! to draw into the same [`Workspace`] the screens already read, so nothing
+//! under `tui::screen` learns that a database exists.
 //!
 //! ## Every placement resolves through `about_time`
 //!
@@ -79,10 +80,9 @@
 //! formatted for one screen size of one terminal, and thrown away on the next
 //! tick. Two words for two things.
 
-use std::collections::{HashMap, HashSet};
-
 use chrono::{DateTime, Datelike, Days, NaiveDate, TimeZone, Timelike, Utc};
-use lambo::{Concept, EdgeType, Graph, Interaction, Memory, MemoryStats, NodeId};
+use lambo::{Concept, Edge, EdgeType, Graph, Interaction, Memory, MemoryStats, NodeId};
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     text,
@@ -161,24 +161,90 @@ const JOIN: &str = "; ";
 /// the next tick asks the same question again. Consolidating the nodes
 /// themselves is a write, and M12c's.
 const PARAPHRASE: f32 = 0.02;
+/// The graph's contents, copied out from under its lock: everything
+/// [`of_graph`] reads and nothing it does not.
+///
+/// The build needs three slices of the session's [`Graph`] — every
+/// interaction, every concept, every edge — and nothing else. [`Memory`]
+/// hands the graph out only behind its own lock, so [`of_memory`] copies
+/// those slices out from under one short guard and the whole build then runs
+/// against the copies, holding no lock. That is the whole point of the shape:
+/// at a 250 ms tick a build that sat under the guard would park a writer for
+/// the length of the pass, four times a second.
+struct ViewData {
+    interactions: Vec<Interaction>,
+    concepts: Vec<Concept>,
+    edges: Vec<Edge>,
+}
 
-/// The workspace for an open [`Memory`], as of `now`.
+impl ViewData {
+    /// Copy the graph's contents out from under the caller's guard.
+    ///
+    /// One linear pass per slice, nothing built and nothing folded — the work
+    /// that decides what the panels say happens in [`of_graph`], after this
+    /// and with no guard held.
+    fn from_graph(graph: &Graph) -> ViewData {
+        ViewData {
+            interactions: graph.interactions().cloned().collect(),
+            concepts: graph.concepts().cloned().collect(),
+            edges: graph.edges().cloned().collect(),
+        }
+    }
+}
+
+/// The workspace for an open [`Memory`], as of `now` — what the tick rebuilds.
 ///
 /// **Two acquires, in this order and no other.** [`Memory::stats`] takes the
 /// graph lock itself, and `parking_lot`'s read lock is not recursion-safe: a
 /// writer queued between the two deadlocks a thread that already holds one
-/// reader, with no error, no timeout and no diagnostic — the pane simply stops.
-/// [`of_graph`] takes the figures ahead of the graph so that the one-expression
-/// form of this call, which is what a later reader writes while simplifying, is
-/// the safe one: Rust evaluates arguments left to right, so the figures are read
-/// before the guard exists. `the_figures_are_read_before_the_graph_guard` pins
-/// the order, and pins it by reading this body rather than by executing the
-/// fault: a test of the reversed order cannot fail, only fail to return.
+/// reader, with no error, no timeout and no diagnostic — the pane simply
+/// stops. `the_figures_are_read_before_the_graph_guard` pins the order by
+/// reading this body, because a test of the reversed order cannot fail, only
+/// fail to return.
+///
+/// The guard then lives for exactly one copy: the graph's contents are read
+/// under it into [`ViewData`], the guard drops, and [`of_graph`] builds the
+/// workspace from the copies. Holding the guard across the build would leave
+/// a writer starved for the whole pass on every tick — the fault the copy
+/// exists for. `of_graph` takes [`ViewData`], never a guard, so the span
+/// cannot widen without changing a signature, and
+/// `the_build_runs_against_the_copy_and_not_the_guard` reads this body to
+/// prove the copy sits between the guard and the build.
+///
+/// **Measured** against a session-sized graph, on a debug build, in
+/// `view_tick_tests.rs` — the two shapes the M12a reviews measured (1 000
+/// turns / 400 concepts and 4 000 / 1 500, each turn deriving one concept,
+/// all inside the week on screen), timed with the copy this function adds:
+/// the M12a records measured 6.5 ms / 18.2 ms for the pre-copy build; this
+/// milestone's build, with the `Derives` map folded into the same pass,
+/// measures ~8 ms / ~29 ms whole at the same shapes, of which the copy is
+/// ~0.6 ms / ~3.5 ms. The 250 ms tick holds with ~9× margin in debug at the
+/// larger shape; the release build `mooshik` ships measures
+/// ~0.9 ms / ~2.9 ms.
+///
+/// **The product's vectors are a separate, measured cost.** Once the
+/// embedder has run, every concept carries a 1536-dim vector and the
+/// paraphrase fold pays a real cosine per compared pair — bounded by its
+/// pool, ≤ 20 held per candidate. Measured at the same shapes: ~0.5 s /
+/// ~1.9 s per rebuild in debug, where the fold's scalar cosine dominates and
+/// which is the test-only build, and ~29 ms / ~108 ms in release — still
+/// inside the tick at ~2.3× margin on the larger shape. The fold is the
+/// first thing a faster tick would look at; the rebuild this milestone owns
+/// is the ~29 ms number.
 pub fn of_memory<Tz: TimeZone>(memory: &Memory, now: DateTime<Tz>) -> Workspace {
-    of_graph(&memory.stats(), &memory.graph().read(), now)
+    // Figures first, guard second: `Memory::stats` takes the graph lock
+    // itself, and the read lock is not recursion-safe.
+    let stats = memory.stats();
+    // One short critical section — the copy. The build below holds no guard.
+    let graph = {
+        let guard = memory.graph().read();
+        ViewData::from_graph(&guard)
+    };
+    of_graph(&stats, &graph, now)
 }
 
-/// The workspace for a graph and a clock, with nothing else behind it.
+/// The workspace for a graph's contents and a clock, with nothing else behind
+/// it.
 ///
 /// `now` carries its own time zone, and every stored instant is resolved into
 /// that zone before it is placed on a calendar day. The zone is a parameter
@@ -188,14 +254,22 @@ pub fn of_memory<Tz: TimeZone>(memory: &Memory, now: DateTime<Tz>) -> Workspace 
 /// and not an offset because those are different things on two days a year;
 /// `a_zone_is_not_an_offset_across_a_daylight_saving_change` is what holds the
 /// distinction.
-pub fn of_graph<Tz: TimeZone>(stats: &MemoryStats, graph: &Graph, now: DateTime<Tz>) -> Workspace {
+///
+/// **Private, on purpose.** This is the build, not a public entry: a caller
+/// holding the graph guard would deadlock the moment it asked for the figures
+/// (the order problem above, from the other side), and nothing outside this
+/// module has data to feed it. [`of_memory`] is the only route from a
+/// [`Memory`] to a [`Workspace`], which is what makes the two source-order
+/// pins cover every caller there can be.
+fn of_graph<Tz: TimeZone>(stats: &MemoryStats, graph: &ViewData, now: DateTime<Tz>) -> Workspace {
     let zone = now.timezone();
     let dates = week_dates(&now);
     let placed = placements(graph, &zone, &dates);
-    // Both collected once, in one pass each, because every panel below asks the
-    // same two questions of every node it considers: is this the engine's own
-    // record-keeping, and are these words the concepts a turn wrote.
-    let actions = action_nodes(graph);
+    // Each collected once, in one pass, because every panel below asks the
+    // same questions of every node it considers: is this the engine's own
+    // record-keeping, are these words the concepts a turn wrote, and which
+    // turns reached which thought.
+    let (actions, derives) = edge_verdicts(graph);
     let contents = concept_contents(graph);
     let days = days(graph, &zone, &dates, &placed, &contents);
     // Today is the last of the seven, and it is the same `Day` the ribbon's last
@@ -215,7 +289,7 @@ pub fn of_graph<Tz: TimeZone>(stats: &MemoryStats, graph: &Graph, now: DateTime<
             // can nominate.
             selected: WEEK - 1,
         },
-        threads: threads(graph, &placed, &actions),
+        threads: threads(graph, &placed, &actions, &derives),
         trickle: trickle(graph, &placed, &actions),
         // Not fed from the graph. The conversation is the chat loop's, and until
         // it can be driven from a redraw loop the panel stays as M11 left it.
@@ -287,12 +361,13 @@ struct Placed {
 /// — and a graph with an interaction per turn of a long session is not a thing
 /// to walk four times a tick.
 fn placements<Tz: TimeZone>(
-    graph: &Graph,
+    graph: &ViewData,
     zone: &Tz,
     dates: &[NaiveDate; WEEK],
 ) -> HashMap<NodeId, Placed> {
     graph
-        .interactions()
+        .interactions
+        .iter()
         .map(|interaction| {
             let at = interaction.about_time();
             (
@@ -366,7 +441,7 @@ fn day_index<Tz: TimeZone>(
 
 /// The week's seven days, each with its log and its bar.
 fn days<Tz: TimeZone>(
-    graph: &Graph,
+    graph: &ViewData,
     zone: &Tz,
     dates: &[NaiveDate; WEEK],
     placed: &HashMap<NodeId, Placed>,
@@ -378,7 +453,7 @@ fn days<Tz: TimeZone>(
     // that lets `Placed::at` and the value actually drawn drift apart.
     let mut logs: [Vec<(Placed, &Interaction)>; WEEK] = std::array::from_fn(|_| Vec::new());
     let mut counts = [0usize; WEEK];
-    for interaction in graph.interactions() {
+    for interaction in &graph.interactions {
         let Some(place) = placed.get(&interaction.id).copied() else {
             continue;
         };
@@ -469,37 +544,56 @@ fn said<'a>(contents: &HashSet<&str>, interaction: &'a Interaction) -> Option<&'
 
 /// Every concept's content, once, so [`said`] can ask whether a turn is quoting
 /// the graph back at itself without walking it per turn.
-fn concept_contents(graph: &Graph) -> HashSet<&str> {
+fn concept_contents(graph: &ViewData) -> HashSet<&str> {
     graph
-        .concepts()
+        .concepts
+        .iter()
         .map(|concept| concept.content.as_str())
         .collect()
 }
 
-/// The concepts `record_action` opened for an action, collected in one pass over
-/// the edges.
+/// The two verdicts the edges carry, in one pass over them.
 ///
-/// `Causal` and `Dependency` edges have exactly one writer in Lambo —
-/// `graph::action::record_action`, which plans them from the action node to what
-/// the action produces, modifies and depends on — so a concept at the source of
-/// one is an action node and not a thought. `ConceptType` cannot answer this: an
-/// action node is `Resource`, a document anchor is `Entity`, and concepts the
-/// user meant are both.
+/// **The action nodes.** `Causal` and `Dependency` edges have exactly one
+/// writer in Lambo — `graph::action::record_action`, which plans them from the
+/// action node to what the action produces, modifies and depends on — so a
+/// concept at the source of one is an action node and not a thought.
+/// `ConceptType` cannot answer this: an action node is `Resource`, a document
+/// anchor is `Entity`, and concepts the user meant are both.
 ///
-/// An action recorded with no targets has no such edge and reads as an ordinary
-/// thought. That is the honest limit of this: the bookkeeping this product
-/// actually writes always names what it produced. The reverse is also a limit:
-/// `record_action` resolves its action string through canonicalization and
-/// reuses an existing node on a key match, so an action whose text
-/// canonicalizes onto a thought the user already had turns that thought into
-/// the action node — and `bookkeeping` then hides a real thought from both
-/// panels permanently, because the `Causal` edge never goes away.
-fn action_nodes(graph: &Graph) -> HashSet<NodeId> {
-    graph
-        .edges()
-        .filter(|edge| matches!(edge.edge_type, EdgeType::Causal | EdgeType::Dependency))
-        .map(|edge| edge.source)
-        .collect()
+/// An action recorded with no targets has no such edge and reads as an
+/// ordinary thought. That is the honest limit of this: the bookkeeping this
+/// product actually writes always names what it produced. The reverse is also
+/// a limit: `record_action` resolves its action string through
+/// canonicalization and reuses an existing node on a key match, so an action
+/// whose text canonicalizes onto a thought the user already had turns that
+/// thought into the action node — and [`bookkeeping`] then hides a real
+/// thought from both panels permanently, because the `Causal` edge never goes
+/// away.
+///
+/// **The `Derives` in-neighbours.** What [`recurrence`] asks the graph's own
+/// `in_neighbors_typed` for — the turns that reached each concept — computed
+/// here, once, instead of once per concept. The sources are ordered by id the
+/// way Lambo's lookup returns them, so the map is deterministic however the
+/// edges were iterated.
+fn edge_verdicts(graph: &ViewData) -> (HashSet<NodeId>, HashMap<NodeId, Vec<NodeId>>) {
+    let mut actions = HashSet::new();
+    let mut derives: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+    for edge in &graph.edges {
+        match edge.edge_type {
+            EdgeType::Causal | EdgeType::Dependency => {
+                actions.insert(edge.source);
+            }
+            EdgeType::Derives => {
+                derives.entry(edge.target).or_default().push(edge.source);
+            }
+            _ => {}
+        }
+    }
+    for sources in derives.values_mut() {
+        sources.sort_by_key(|id| id.0);
+    }
+    (actions, derives)
 }
 
 /// Whether a concept is the engine's record of its own work rather than
@@ -582,14 +676,16 @@ struct Recurrence<'a> {
 /// [`PARAPHRASE`] radius. A copy with no vector yet — writes acknowledge before
 /// the embedder runs — is only caught by the key, and still takes its own row.
 fn threads(
-    graph: &Graph,
+    graph: &ViewData,
     placed: &HashMap<NodeId, Placed>,
     actions: &HashSet<NodeId>,
+    derives: &HashMap<NodeId, Vec<NodeId>>,
 ) -> Vec<Thread> {
     let mut found: Vec<Recurrence<'_>> = graph
-        .concepts()
+        .concepts
+        .iter()
         .filter(|concept| !bookkeeping(actions, concept))
-        .filter_map(|concept| recurrence(graph, placed, concept))
+        .filter_map(|concept| recurrence(derives, placed, concept))
         .collect();
     found.sort_by(strongest_first);
 
@@ -709,11 +805,11 @@ impl Recurrence<'_> {
 /// One concept's recurrence, or `None` if it is not something the user keeps
 /// coming back to this week.
 fn recurrence<'a>(
-    graph: &Graph,
+    derives: &HashMap<NodeId, Vec<NodeId>>,
     placed: &HashMap<NodeId, Placed>,
     concept: &'a Concept,
 ) -> Option<Recurrence<'a>> {
-    let supports = graph.in_neighbors_typed(concept.id, EdgeType::Derives);
+    let supports = derives.get(&concept.id).cloned().unwrap_or_default();
     if supports.len() < RETURNS {
         return None;
     }
@@ -747,12 +843,13 @@ fn recurrence<'a>(
 /// [`bookkeeping`] like the threads are: "Just remembered: Ingested file
 /// document:git:/Users/…" is not something anybody remembered.
 fn trickle(
-    graph: &Graph,
+    graph: &ViewData,
     placed: &HashMap<NodeId, Placed>,
     actions: &HashSet<NodeId>,
 ) -> Vec<Trickle> {
     let mut fresh: Vec<(DateTime<Utc>, &Concept)> = graph
-        .concepts()
+        .concepts
+        .iter()
         .filter(|concept| !bookkeeping(actions, concept))
         .filter_map(|concept| {
             let place = about(placed, concept)?;
@@ -865,6 +962,9 @@ fn month(date: &NaiveDate, short: bool) -> String {
 #[cfg(test)]
 #[path = "view_tests.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "view_tick_tests.rs"]
+mod tick_tests;
 
 #[cfg(test)]
 #[path = "view_clock_tests.rs"]

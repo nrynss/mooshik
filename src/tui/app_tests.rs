@@ -437,3 +437,57 @@ fn the_week_screen_has_no_narrow_variant() {
         );
     }
 }
+
+/// A tick's rebuild swaps the model in and takes the user's place with it:
+/// the draft survives — the view build always returns the conversation empty,
+/// so a rebuild that replaced it would erase typing four times a second —
+/// and so does the day the week screen has open, which a rebuild left open on
+/// today would fight `H`/`L` over. Everything the graph says is replaced.
+#[test]
+fn a_refresh_swaps_the_model_and_keeps_the_users_place() {
+    let mut app = app();
+    // The user's place: the week screen, another day open, a draft in hand.
+    app.apply(Action::ShowWeek);
+    app.apply(Action::Left);
+    app.apply(Action::ShowToday);
+    app.workspace.conversation.composer.draft.push('x');
+    let selected = app.workspace.week.selected;
+    let focus = app.focus;
+
+    app.refresh(Workspace {
+        person: "rebuilt".to_owned(),
+        week: Week {
+            // The build always opens on the last day; the refresh must keep
+            // the day the user had open instead.
+            selected: 6,
+            ..Week::default()
+        },
+        ..Workspace::default()
+    });
+
+    assert_eq!(app.workspace.person, "rebuilt", "the fresh model is not in");
+    assert_eq!(
+        app.workspace.conversation.composer.draft, "x",
+        "the rebuild ate the draft"
+    );
+    assert_eq!(
+        app.workspace.week.selected, selected,
+        "the rebuild moved the open day"
+    );
+    assert_eq!(app.view, View::Today);
+    assert_eq!(app.focus, focus);
+}
+
+/// A rebuild onto a smaller model does not break the next draw: a fresh
+/// session's workspace is empty, and the thread cursor still points where the
+/// old list ended — the screens compare against the cursor and never index
+/// with it, so the draw is safe even before the next keypress clamps it.
+#[test]
+fn a_refresh_onto_a_smaller_model_does_not_break_the_next_draw() {
+    let mut app = app();
+    app.apply(Action::Next);
+    assert_eq!(app.thread_cursor, 1);
+    app.refresh(Workspace::default());
+    let _ = screen(&mut app, 120, 40);
+    assert!(app.running, "the draw must not end the session");
+}

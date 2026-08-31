@@ -131,6 +131,24 @@ impl App {
         }
     }
 
+    /// Swap in a freshly rebuilt workspace, keeping the user's place.
+    ///
+    /// The live path rebuilds the model on every 250 ms tick, and two things
+    /// about that rebuild must not disturb the user: the **conversation** (the
+    /// draft in particular — the view build always returns it empty, and a
+    /// rebuild that replaced it would erase typing four times a second) and
+    /// the **day the week screen has open** (the build opens on today, and a
+    /// rebuild that reset the selection would fight `H`/`L`). Everything the
+    /// graph says — the clock, the week, the logs, the ribbon, the panels —
+    /// is taken from the fresh model. The view, the focus, both cursors and
+    /// the terminal size are [`App`] fields and survive untouched.
+    pub fn refresh(&mut self, workspace: Workspace) {
+        let mut fresh = workspace;
+        fresh.conversation = std::mem::take(&mut self.workspace.conversation);
+        fresh.week.selected = self.workspace.week.selected;
+        self.workspace = fresh;
+    }
+
     /// Apply `action`.
     ///
     /// Returns nothing: every effect is a field on `self`, which is what makes

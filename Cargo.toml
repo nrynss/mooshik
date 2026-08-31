@@ -52,3 +52,11 @@ keyring = { version = "3", default-features = false, features = ["apple-native"]
 
 [profile.release]
 lto = "thin"
+
+[dev-dependencies]
+# The build pin parses of_memory's body with `syn` instead of matching text:
+# the receiver-respelling and indirection class the text pin could not close
+# is gone at token level. "full" parses the fn item; "visit" powers the
+# structural walks. Reuses the 2.0.x already vendored transitively in the
+# lock (serde_derive/schemars build it), so no new compile weight.
+syn = { version = "2", features = ["full", "visit"] }

@@ -192,7 +192,7 @@ impl Corpus {
     }
 
     pub(super) fn view(&self) -> Workspace {
-        of_graph(&figures(), &self.graph, now())
+        of_graph(&figures(), &ViewData::from_graph(&self.graph), now())
     }
 }
 
@@ -314,7 +314,7 @@ fn a_week_that_crosses_a_month_names_both_of_them() {
         .with_ymd_and_hms(2026, 9, 2, 9, 0, 0)
         .single()
         .expect("an unambiguous local instant");
-    let workspace = of_graph(&figures(), &corpus.graph, across);
+    let workspace = of_graph(&figures(), &ViewData::from_graph(&corpus.graph), across);
     assert_eq!(workspace.week.label, "27 August - 2 September");
     assert_eq!(workspace.week.days[0].short_label, "Thu 27");
     assert_eq!(workspace.week.days[WEEK - 1].short_label, "Wed 2");

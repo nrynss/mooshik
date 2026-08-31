@@ -8,12 +8,16 @@
 //!   recall` adds `1c`'s quoted words and `--demo caution` adds `1d`'s one
 //!   careful sentence, because both artboards are states of the conversation and
 //!   nothing else can reach them until the chat loop lands.
-//! * Without it, the workspace is the graph — [`crate::memory::view`] reads the
-//!   open session into the same view model the artboards are drawn from.
+//! * Without it, the workspace is the graph — [`crate::memory::view`] reads
+//!   the open session into the same view model the artboards are drawn from,
+//!   and M12b's tick reads it again: the loop rebuilds on every 250 ms tick,
+//!   so a write from the ingester, an MCP client or the reflect pass appears
+//!   in the pane without a keystroke.
 //!
 //! Both paths hand a [`Workspace`](crate::tui::model::Workspace) to
-//! `crate::tui::run` and nothing else, which is what keeps the screens a pure
-//! function of the model.
+//! `crate::tui::run`; the live path also hands it the rebuild — a closure
+//! that answers with the graph as of now — and nothing else, which is what
+//! keeps the screens a pure function of the model.
 //!
 //! **The live path is an ordinary holder of the single-writer lease, exactly as
 //! `chat` is.** It takes it for the length of the session and gives it back on
@@ -47,12 +51,15 @@ use super::{resolve, runtime};
 
 pub(crate) fn tui(layout: &HomeLayout, args: &clap::ArgMatches) -> anyhow::Result<()> {
     match args.get_one::<String>("demo").map(String::as_str) {
-        Some(scene) => draw(crate::tui::demo(Scene::named(Some(scene)))),
+        // `--demo` opens no database and rebuilds nothing: its workspace is
+        // the design's own Thursday, fixed for the life of the loop.
+        Some(scene) => draw(crate::tui::demo(Scene::named(Some(scene))), None),
         None => live(layout),
     }
 }
 
-/// The live session: open the graph, draw it, put both back.
+/// The live session: open the graph, draw it — rebuilding the view on every
+/// tick — and put both back.
 fn live(layout: &HomeLayout) -> anyhow::Result<()> {
     // Same resolution as `mooshik stats`, because the store DSN may be a vault
     // reference and running on an unresolved one would show another database's
@@ -68,8 +75,14 @@ fn live(layout: &HomeLayout) -> anyhow::Result<()> {
         .block_on(crate::memory::open(&config))
         .map_err(anyhow::Error::new)?;
 
+    // The first model is built here, and the loop builds another on every
+    // quiet tick: `refresh` is the whole seam between the terminal and the
+    // graph — the loop asks, it answers with the graph as of now, and nothing
+    // in `crate::tui` knows a database exists. A write from anywhere else
+    // shows up on the next tick without a keystroke.
     let workspace = crate::memory::view::of_memory(&memory, chrono::Local::now());
-    let drawn = draw(workspace);
+    let mut refresh = || crate::memory::view::of_memory(&memory, chrono::Local::now());
+    let drawn = draw(workspace, Some(&mut refresh));
 
     // Both outcomes, in the order they happened: a session that failed to close
     // may have lost the tail of what it remembered, which is worse than a draw
@@ -81,7 +94,13 @@ fn live(layout: &HomeLayout) -> anyhow::Result<()> {
 }
 
 /// Take the terminal, run the loop, and give the terminal back.
-fn draw(workspace: crate::tui::model::Workspace) -> anyhow::Result<()> {
+///
+/// `refresh` is the live path's rebuild seam; `--demo` passes `None` and its
+/// fixed workspace is never rebuilt.
+fn draw(
+    workspace: crate::tui::model::Workspace,
+    refresh: Option<&mut dyn FnMut() -> crate::tui::model::Workspace>,
+) -> anyhow::Result<()> {
     // The context, not the `io::Error`: taking a terminal that is not there
     // fails with "Device not configured", which says nothing about what to do.
     // `Failure::rendered` prints the top-level `Display` only, so this sentence
@@ -95,6 +114,6 @@ fn draw(workspace: crate::tui::model::Workspace) -> anyhow::Result<()> {
     // calls with separate contexts.
     let terminal = crate::tui::start()
         .map_err(|error| anyhow::Error::new(error).context(text::get("tui.needs_a_terminal")))?;
-    crate::tui::run(terminal, workspace)
+    crate::tui::run(terminal, workspace, refresh)
         .map_err(|error| anyhow::Error::new(error).context(text::get("tui.session_failed")))
 }

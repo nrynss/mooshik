@@ -168,8 +168,7 @@ fn a_zone_is_not_an_offset_across_a_daylight_saving_change() {
         utc(2026, 11, 3, 12, 0),
         Some(utc(2026, 11, 1, 3, 30)),
     );
-
-    let workspace = of_graph(&figures(), &corpus.graph, now);
+    let workspace = of_graph(&figures(), &ViewData::from_graph(&corpus.graph), now);
     let labels: Vec<&str> = workspace
         .week
         .days
@@ -231,8 +230,11 @@ fn a_week_at_the_end_of_the_calendar_is_still_seven_distinct_days() {
     let dates = week_dates(&earliest);
     let distinct: std::collections::HashSet<NaiveDate> = dates.iter().copied().collect();
     assert_eq!(distinct.len(), WEEK, "{dates:?}");
-
-    let workspace = of_graph(&figures(), &Corpus::new().graph, earliest);
+    let workspace = of_graph(
+        &figures(),
+        &ViewData::from_graph(&Corpus::new().graph),
+        earliest,
+    );
     let days: Vec<&str> = workspace
         .week
         .days

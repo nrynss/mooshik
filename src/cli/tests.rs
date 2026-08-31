@@ -402,7 +402,7 @@ fn the_missing_terminal_sentence_is_attached_only_to_the_handshake() {
     let production = src.split("#[cfg(test)]").next().unwrap();
     for (call, context) in [
         ("crate::tui::start()", "tui.needs_a_terminal"),
-        ("crate::tui::run(terminal, workspace)", "tui.session_failed"),
+        ("crate::tui::run(terminal, workspace", "tui.session_failed"),
     ] {
         let at = production
             .find(call)

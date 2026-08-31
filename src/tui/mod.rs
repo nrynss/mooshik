@@ -35,7 +35,9 @@
 //! lands. On the live path the workspace is the graph: M12a's
 //! [`crate::memory::view`] fills the clock, the week, today's log, the ribbon,
 //! what keeps coming back and what was just remembered, all placed on the
-//! reader's own calendar days. What it deliberately leaves empty is prose —
+//! reader's own calendar days — and M12b's tick refills it, so a write from
+//! anywhere else appears in the pane without a keystroke. What it deliberately
+//! leaves empty is prose —
 //! a day's mood, its gutter summary, its trailing notes and a thread's reason —
 //! because nothing in a graph writes an English sentence; M12c's reflect pass
 //! does, and weather has no source at all. There are still exactly two
@@ -69,11 +71,16 @@ const DEMO_CAUTION: &str = include_str!("demo_caution.toml");
 
 /// How long to wait for a key before redrawing anyway.
 ///
-/// The screens are static between keystrokes today, so this only needs to be
-/// short enough that a resize is picked up promptly. It becomes load-bearing when
-/// the companion's stream arrives, at which point a tick is what paints a partial
-/// reply.
-const TICK: Duration = Duration::from_millis(250);
+/// The wait is also the rebuild's clock on the live path: when it runs out
+/// with no key, [`event_loop`] asks the refresh seam for a fresh workspace,
+/// so a write from the ingester, an MCP client or the reflect pass lands in
+/// the pane within one tick. The screens are static between keystrokes
+/// otherwise, so the length only has to be short enough that a resize is
+/// picked up promptly; 250 ms is both.
+///
+/// The rebuild's cost against a session-sized graph is measured against this
+/// budget in `crate::memory::view`'s own tick tests.
+pub(crate) const TICK: Duration = Duration::from_millis(250);
 
 /// Which of the three Today artboards `--demo` is showing.
 ///
@@ -299,16 +306,44 @@ fn restore_signals(_previous: ()) {}
 
 /// Run the TUI until the user leaves, putting the terminal back either way.
 ///
+/// `refresh` is the live path's rebuild seam and nothing else: [`event_loop`]
+/// calls it once per tick and swaps the answer into the app before the next
+/// draw, and the `--demo` path passes `None` so its fixed workspace is never
+/// rebuilt. The seam is a closure rather than a type so nothing here learns
+/// that a database exists — `tui_cmd` owns the session and answers with the
+/// graph as of now.
+///
 /// SIGTERM and SIGHUP are taken for the length of the loop and restored
 /// afterwards, so a signal after this returns — the session's `close` included
 /// — behaves under its old disposition again.
-pub fn run(mut terminal: ratatui::DefaultTerminal, workspace: Workspace) -> io::Result<()> {
+pub fn run(
+    mut terminal: ratatui::DefaultTerminal,
+    workspace: Workspace,
+    refresh: Option<&mut dyn FnMut() -> Workspace>,
+) -> io::Result<()> {
     LEAVING.store(false, Ordering::Relaxed);
     let previous = leave_on_signals();
-    let result = event_loop(&mut terminal, workspace);
+    let result = event_loop(&mut terminal, workspace, refresh);
     ratatui::restore();
     restore_signals(previous);
     result
+}
+
+/// One tick of the live path: ask the rebuild seam for the workspace as of
+/// now, and swap it in without disturbing the user's place.
+///
+/// This is the whole M12b behaviour, separated from the terminal so it can be
+/// pinned without one: the loop calls it when [`event::poll`] runs out its
+/// [`TICK`], and [`App::refresh`] is what decides which parts of the old model
+/// survive the swap. `None` is the `--demo` path, whose fixed workspace is
+/// deliberately never rebuilt.
+///
+/// Generic over the closure so the loop's `dyn` reborrow is not forced to
+/// outlive the whole loop — the seam's lifetime is one tick, not the session.
+fn on_tick<F: FnMut() -> Workspace + ?Sized>(app: &mut app::App, refresh: Option<&mut F>) {
+    if let Some(rebuild) = refresh {
+        app.refresh(rebuild());
+    }
 }
 
 /// The draw-and-read loop, separated from the terminal handshake so a failure
@@ -318,7 +353,16 @@ pub fn run(mut terminal: ratatui::DefaultTerminal, workspace: Workspace) -> io::
 /// [`TICK`]: `crossterm` retries a `poll` that EINTR interrupted instead of
 /// surfacing it, so the wait runs to its timeout and the condition below is
 /// tested on the next pass.
-fn event_loop(terminal: &mut ratatui::DefaultTerminal, workspace: Workspace) -> io::Result<()> {
+///
+/// The same timeout is what makes a write from anywhere else appear: a tick
+/// with no key means nobody is typing, so the model is rebuilt before the
+/// next draw. While keys arrive faster than the tick the rebuild waits — the
+/// user is interacting, and the next quiet tick catches the graph up.
+fn event_loop(
+    terminal: &mut ratatui::DefaultTerminal,
+    workspace: Workspace,
+    mut refresh: Option<&mut dyn FnMut() -> Workspace>,
+) -> io::Result<()> {
     let mut app = app::App::new(workspace);
     while app.running && !asked_to_leave() {
         terminal.draw(|frame| {
@@ -328,6 +372,7 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, workspace: Workspace) -> 
         })?;
 
         if !event::poll(TICK)? {
+            on_tick(&mut app, refresh.as_deref_mut());
             continue;
         }
         // Only keys carry actions. A resize needs no handling of its own: the
@@ -399,6 +444,34 @@ mod tests {
                 "signal {signal} was left with the session's handler installed",
             );
         }
+    }
+
+    /// A tick asks the rebuild seam and swaps the answer in; the demo path
+    /// asks nothing.
+    ///
+    /// The loop's per-tick work is `on_tick` so it can be pinned without a
+    /// terminal: the live closure itself — a write from elsewhere appearing
+    /// without a keystroke — is exercised end to end in `memory::view`'s own
+    /// session tests, and here the swap is held: a fresh model replaces the
+    /// old one, and `None` (the `--demo` path) leaves the fixed workspace
+    /// exactly as it was.
+    #[test]
+    fn a_tick_rebuilds_the_live_workspace_and_leaves_the_demo_alone() {
+        let mut live = app::App::new(Workspace::default());
+        let mut source = || Workspace {
+            person: "rebuilt".to_owned(),
+            ..Workspace::default()
+        };
+        on_tick(&mut live, Some(&mut source));
+        assert_eq!(
+            live.workspace.person, "rebuilt",
+            "the fresh model is not in"
+        );
+
+        let mut demo = app::App::new(Workspace::default());
+        let none: Option<&mut dyn FnMut() -> Workspace> = None;
+        on_tick(&mut demo, none);
+        assert_eq!(demo.workspace.person, "", "the demo workspace was rebuilt");
     }
 
     /// A run with no terminal is refused before anything is written, so the
