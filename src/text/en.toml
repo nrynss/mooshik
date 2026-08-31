@@ -182,7 +182,7 @@ store_verified = "Store: connected and the schema is provisioned."
 store_failed = "Store: could not connect or provision ({what})."
 # The embedder warning belongs at the moment of choosing, not in a README.
 embedder_sticky = "Embedder: the embedding contract is kind plus model plus dimension, stamped per session. Changing it afterwards means re-embedding."
-embedder_question = "  1) gemini: Vertex embeddings\n  2) bge_m3: a local llama.cpp server\nChoice [2]: "
+embedder_question = "  1) gemini: Vertex embeddings\n  2) bge_m3: a local llama.cpp server\nChoice [{default}]: "
 embedder_invalid = "Choose 1 or 2."
 embedder_gemini_project = "Google Cloud project for embeddings and inference (the next question can differ for inference): "
 inference_same_project = "Does inference run in the same Google Cloud project as embeddings? [Y/n] "
