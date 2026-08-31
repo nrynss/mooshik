@@ -1176,11 +1176,26 @@ DSN question while the user still remembers what they typed, not after five more
 
 *Then say what to run.* `mooshik tui`.
 
-**And close the honest gap: the pane opens empty.** A fresh install has an empty graph, so the first
-`mooshik tui` shows a week with nothing in it, which reads as broken rather than new. `init` has to
-address that in its last breath. Either offer to ingest a corpus the user points at, or say plainly
-that the pane fills as they work and that the watcher is what fills it. Saying nothing is the one
-option that makes a working install look like a failed one.
+**Say plainly that the pane starts empty.** A fresh install has an empty graph, so the first
+`mooshik tui` opens on a week with nothing in it, which reads as broken rather than new. One
+sentence at the end of `init` fixes that. No offer to ingest anything, no extra step. Just say the
+pane fills as you work, and that the watcher is what fills it.
+
+**Ambient is not configured. It is positional, and that has to be said out loud.**
+`cli::tui_cmd::live` takes `env::current_dir()` as the workspace root. There is no config key for
+it, nothing in `config set`'s settable list, and no way to name a different directory or watch more
+than one. **The pane watches wherever you launched it from.** So `init` has nothing to ask here and
+everything to explain:
+
+* Open the pane from the workspace you want remembered. `cd` is the configuration.
+* Launched from `$HOME`, it watches `$HOME`. That is a large and mostly meaningless tree.
+* It reads `.md`, `.markdown`, `.txt` and `.rst`, follows no symlinks, and skips `.git`, `.ingest`,
+  `.venv`, `venv`, `node_modules`, `target`, `__pycache__` and `.pytest_cache`. Git commits come
+  through a separate path, so `.git` being skipped as a directory does not mean commits are missed.
+* It polls on an adaptive 100 to 250 ms interval rather than using inotify.
+
+A configurable default root, or several roots, is a reasonable thing to want later. It is not what
+ships, and pretending otherwise in a first-run message would be worse than the limitation.
 
 **Errors should name the durable fix first.** `recall` currently says "Set MOOSHIK_POSTGRES_DSN",
 which is the environment escape hatch. The path that survives a reboot is
