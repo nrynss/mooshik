@@ -1,77 +1,91 @@
 // @ts-check
-import { defineConfig } from 'astro/config';
-import starlight from '@astrojs/starlight';
+import { defineConfig } from "astro/config";
+import starlight from "@astrojs/starlight";
 
 // https://astro.build/config
 export default defineConfig({
-  site: 'https://nrynss.github.io',
-  base: '/mooshik',
+  site: "https://nrynss.github.io",
+  base: "/mooshik",
   integrations: [
     starlight({
-      title: 'Mooshik',
-      description: 'Ambient, local-first AI cowork partner and workspace orchestrator.',
+      title: "Mooshik",
+      description: "Ambient, local-first AI cowork partner and workspace orchestrator.",
       social: {
-        github: 'https://github.com/nrynss/mooshik',
+        github: "https://github.com/nrynss/mooshik",
       },
-      customCss: ['./src/styles/custom.css'],
+      customCss: ["./src/styles/custom.css"],
       editLink: {
-        baseUrl: 'https://github.com/nrynss/mooshik/edit/main/docs',
+        baseUrl: "https://github.com/nrynss/mooshik/edit/main/docs",
       },
       sidebar: [
         {
-          label: 'Start here',
+          label: "Start here",
           items: [
-            { label: 'Product Overview', slug: 'overview' },
-            { label: 'Quickstart', slug: 'quickstart' },
+            { label: "What is Mooshik", slug: "overview" },
+            { label: "Why Lambo", slug: "why-lambo" },
+            { label: "Quickstart", slug: "quickstart" },
           ],
         },
         {
-          label: 'Install and configure',
+          label: "First run",
           items: [
-            { label: 'Installation', slug: 'installation' },
-            { label: 'Configuration', slug: 'configuration' },
+            { label: "Installation", slug: "installation" },
+            { label: "Guided Setup", slug: "guided-setup" },
+            { label: "Choosing a Posture", slug: "postures" },
+            { label: "Configuration", slug: "configuration" },
           ],
         },
         {
-          label: 'Architecture',
+          label: "Using Mooshik",
           items: [
-            { label: 'System Overview', slug: 'system-overview' },
-            { label: 'Memory & Lambo Substrate', slug: 'memory-and-lambo' },
-            { label: 'WriteLane Concurrency', slug: 'writelane-concurrency' },
-            { label: 'Security & Secret Vault', slug: 'security-and-vault' },
+            { label: "The Pane", slug: "tui-overview" },
+            { label: "Ambient Workspace Awareness", slug: "workspace-watcher" },
+            { label: "Chat and Recall", slug: "chat-and-recall" },
+            { label: "Reflection", slug: "reflection" },
+            { label: "Research and the Web", slug: "research" },
           ],
         },
         {
-          label: 'User Interface',
+          label: "Memory",
           items: [
-            { label: 'Terminal UI (TUI)', slug: 'tui-overview' },
-            { label: 'Workspace Watcher', slug: 'workspace-watcher' },
-            { label: 'Reflection & Synthesis', slug: 'reflection' },
+            { label: "How Lambo Memory Works", slug: "memory-and-lambo" },
+            { label: "Earned Canonization", slug: "canonization" },
+            { label: "WriteLane Concurrency", slug: "writelane-concurrency" },
+            { label: "Memory Consolidation", slug: "reflection-consolidation" },
           ],
         },
         {
-          label: 'MCP & Tool Hub',
+          label: "Tools and MCP",
           items: [
-            { label: 'MCP Client Host', slug: 'mcp-host' },
-            { label: 'News & Search Server', slug: 'news-server' },
-            { label: 'Artifacts Server', slug: 'artifacts-server' },
-            { label: 'Scratch Script Runner', slug: 'scratch-runner' },
+            { label: "MCP Host", slug: "mcp-host" },
+            { label: "News Server", slug: "news-server" },
+            { label: "Artifacts Server", slug: "artifacts-server" },
+            { label: "Coder Server", slug: "coder-server" },
+            { label: "Scratch Runner", slug: "scratch-runner" },
           ],
         },
         {
-          label: 'Reference',
+          label: "Security",
           items: [
-            { label: 'CLI Reference', slug: 'cli' },
-            { label: 'Configuration Schema', slug: 'config-schema' },
-            { label: 'Error Codes', slug: 'error-codes' },
+            { label: "The Vault", slug: "security-and-vault" },
+            { label: "Permissions and Grants", slug: "permissions" },
+            { label: "Secret Scanning", slug: "secret-scanning" },
           ],
         },
         {
-          label: 'Contributor Guide',
+          label: "Reference",
           items: [
-            { label: 'Development & Testing', slug: 'development' },
-            { label: 'Release Pipeline', slug: 'release-pipeline' },
-            { label: 'Adversarial Reviews', slug: 'adversarial-reviews' },
+            { label: "CLI Reference", slug: "cli" },
+            { label: "Configuration Schema", slug: "config-schema" },
+            { label: "Error Codes", slug: "error-codes" },
+          ],
+        },
+        {
+          label: "Contributing",
+          items: [
+            { label: "Development & Testing", slug: "development" },
+            { label: "Release Pipeline", slug: "release-pipeline" },
+            { label: "Adversarial Reviews", slug: "adversarial-reviews" },
           ],
         },
       ],

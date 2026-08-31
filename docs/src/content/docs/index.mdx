@@ -5,7 +5,7 @@ template: doc
 tableOfContents: false
 hero:
   title: "Mooshik"
-  tagline: "Ambient, local-first AI cowork partner and workspace orchestrator. Runs continuously alongside you as a peer."
+  tagline: "Ambient, local-first AI cowork partner and workspace orchestrator. Runs continuously beside you in the terminal."
   actions:
     - text: "Get Started"
       link: "/mooshik/quickstart/"
@@ -17,69 +17,64 @@ hero:
         target: _blank
 ---
 
-import Mermaid from '../../components/Mermaid.astro';
-import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+import Mermaid from "../../components/Mermaid.astro";
+import { CardGrid, LinkCard } from "@astrojs/starlight/components";
 
 <div class="badges" style="text-align: center; margin-top: 1.5rem;">
   <img src="https://img.shields.io/github/actions/workflow/status/nrynss/mooshik/ci.yml?branch=main&label=ci&logo=github" alt="CI status" height="20" />
   <img src="https://img.shields.io/github/license/nrynss/mooshik?color=%2316A34A&label=license" alt="License" height="20" />
 </div>
 
-Mooshik is an ambient AI cowork partner and workspace orchestrator. It runs continuously alongside you as a peer.
+Mooshik sits with you while you work. It runs in a terminal pane beside your editor, holds long-term memory across sessions, and acts on your behalf.
 
-Mooshik holds lifelong memory of your workspace. It coordinates web research and connects to tools over Model Context Protocol. When you need heavy code edits, Mooshik delegates tasks to coding agents.
+Mooshik connects to [Lambo](https://nrynss.github.io/lambo) in-process for graph memory. It watches your workspace, researches the web, ingests multimodal artifacts, and executes tools under strict security boundaries.
 
 <Mermaid
   code={`flowchart TB
-    subgraph Clients["Clients"]
-        TUI["Terminal UI (mooshik tui)"]
+    subgraph UI["Surfaces"]
+        TUI["Terminal Pane (mooshik tui)"]
         CLI["CLI Commands"]
     end
-    subgraph Core["Mooshik Core Runtime"]
+    subgraph Core["Mooshik Runtime"]
         Router["Event & Intent Router"]
         Companion["Companion Adapter (/v1)"]
-        Scratch["Scratch Script Runner"]
+        Watcher["Workspace Watcher"]
         MCPHost["MCP Client Host"]
-        Watcher["Workspace & Git Watcher"]
+        Runner["Scratch Sandbox Runner"]
     end
     subgraph Memory["Lambo Graph Memory"]
         Graph["In-Memory Concept Graph"]
-        WriteLane["WriteLane (Single Writer)"]
-        Seam["GraphStore Seam"]
+        WriteLane["WriteLane Serializer"]
+        StoreSeam["GraphStore Seam"]
     end
-    subgraph Vault["Secret Vault"]
-        V[("Local Encrypted Vault")]
+    subgraph Security["Security"]
+        Vault[("Local Encrypted Vault")]
+        Grants["Permission Boundary"]
     end
-    subgraph MCPServers["External MCP Servers"]
-        News["News & Search"]
-        Artifacts["Multimodal Artifacts"]
+    subgraph Storage["Persistent Stores"]
+        SQLite[("Local SQLite")]
+        Postgres[("Shared Postgres")]
     end
-    Clients <--> Core
-    Core --> Router
-    Router --> Vault
-    Core --> WriteLane --> Graph --> Seam
+    UI <--> Core
+    Core --> Grants
+    Core --> Vault
     Core --> Watcher
-    MCPHost <--> MCPServers
-    Core -.->|Delegate Tasks| Coding["Coding Contractor Agent"]`}
+    Core --> WriteLane --> Graph --> StoreSeam --> Storage
+    MCPHost <--> Servers["News · Artifacts · Coder · External MCP"]`}
 />
 
-## The Triad Model
+## Core Capabilities
 
-Mooshik separates memory, orchestration, and coding execution into three clear roles.
-
-| Role | Responsibility |
-| :--- | :--- |
-| **Mooshik** | Ambient awareness, local chat, research, MCP aggregation, and terminal UI. |
-| **Lambo** | Living graph memory substrate, in-memory graph, write-behind, and vector recall. |
-| **Coding Contractor** | Surgical code edits in repositories under constraints provided by Lambo memory. |
+- **Ambient workspace tracking:** Observes file and commit events without ingesting raw file contents into memory.
+- **Durable memory:** Recalls architecture constraints and project decisions by meaning across sessions and machines.
+- **Conversational terminal pane:** Runs continuous companion conversations with token streaming and instant cancellation.
+- **Tool and MCP integration:** Connects web research, artifact extraction, and delegated coding through isolated child processes.
 
 ## Explore Documentation
 
-The sidebar gives complete access to all guides and references.
-
 <CardGrid cols={2}>
-  <LinkCard title="Quickstart" href="/mooshik/quickstart/" description="Install the binary and initialize your workspace in under one minute." />
-  <LinkCard title="Product Overview" href="/mooshik/overview/" description="Understand Mooshik's design philosophy and the triad model." />
-  <LinkCard title="Architecture" href="/mooshik/system-overview/" description="Inspect the core runtime, memory substrate, and security model." />
-  <LinkCard title="Terminal UI" href="/mooshik/tui-overview/" description="Explore the multi-pane terminal interface and workspace timeline." />
+  <LinkCard title="Product Overview" href="/mooshik/overview/" description="Understand Mooshik's design philosophy, origins, and workflow." />
+  <LinkCard title="Why Lambo" href="/mooshik/why-lambo/" description="Learn how earned canonization and structural memory work." />
+  <LinkCard title="Quickstart" href="/mooshik/quickstart/" description="Install the binary, run guided setup, and enter the pane." />
+  <LinkCard title="The Pane (TUI)" href="/mooshik/tui-overview/" description="Explore the terminal user interface and live workspace timeline." />
 </CardGrid>
