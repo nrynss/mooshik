@@ -25,8 +25,8 @@ import os
 from dataclasses import dataclass
 from typing import Mapping
 
-#: The coding agent to delegate to. Required. One of ``claude``, ``omp``,
-#: ``cursor``, or ``agy``.
+#: The coding agent to delegate to. Required, via `--agent` or this
+#: variable. One of ``claude``, ``omp``, ``cursor``, or ``agy``.
 AGENT_ENV = "MOOSHIK_CODER_AGENT"
 #: The four agent values this server knows how to spawn.
 VALID_AGENTS = frozenset({"claude", "omp", "cursor", "agy"})
@@ -83,16 +83,30 @@ class Settings:
         )
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
-        """Resolve settings from the process environment, failing closed."""
+    def from_env(
+        cls,
+        env: Mapping[str, str] | None = None,
+        agent_override: str | None = None,
+    ) -> "Settings":
+        """Resolve settings from the process environment, failing closed.
+
+        `agent_override` is the `--agent` argument, and it wins over the
+        environment. It exists because `[mcp_servers.*.env]` in config.toml is
+        resolved as *vault secret names*, not literals: a plain
+        `MOOSHIK_CODER_AGENT = "claude"` there makes Mooshik look up a secret
+        called `claude`, fail, and refuse to spawn this server. The agent name
+        is not a secret, so it travels as an argument instead. Everything that
+        IS a secret still comes from the environment only — see `__main__`.
+        """
         env = os.environ if env is None else env
 
-        agent = _clean(env.get(AGENT_ENV))
+        agent = _clean(agent_override) or _clean(env.get(AGENT_ENV))
         if agent is None:
             raise ConfigError(
-                f"no coding agent configured: set {AGENT_ENV} to one of "
-                f"{', '.join(sorted(VALID_AGENTS))}. In config.toml this is "
-                "the env.MOOSHIK_CODER_AGENT value under [mcp_servers.coder]."
+                f"no coding agent configured: pass --agent with one of "
+                f"{', '.join(sorted(VALID_AGENTS))}, or set {AGENT_ENV}. In "
+                "config.toml it belongs in args under [mcp_servers.coder] — "
+                "NOT in env, whose values are read as vault secret names."
             )
         if agent not in VALID_AGENTS:
             raise ConfigError(

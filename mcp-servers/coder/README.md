@@ -33,7 +33,7 @@ blobs need to be marshalled across the JSON-RPC wire.
 
 ## Supported Coding Agents
 
-The server supports four external coding agents via `MOOSHIK_CODER_AGENT`:
+The server supports four external coding agents, selected with `--agent`:
 
 | Agent | Binary & Invocations | Required Credentials / Env |
 | --- | --- | --- |
@@ -49,13 +49,16 @@ In `~/.mooshik/config.toml`:
 ```toml
 [mcp_servers.coder]
 command = "python3"
-args = ["/absolute/path/to/mcp-servers/coder/server.py"]
+args = ["/absolute/path/to/mcp-servers/coder/server.py", "--agent", "claude"]
 expose = ["delegate", "check"]   # empty list = never spawned
 
 [mcp_servers.coder.env]
 # The KEY is the environment variable the server reads.
-# The VALUE is a vault secret NAME — never a literal token.
-MOOSHIK_CODER_AGENT = "claude"
+# The VALUE is a vault secret NAME — never a literal token. Mooshik resolves
+# every value here through the vault (`mcp_host::resolve_env`), so a literal
+# would be looked up as a secret of that name, not found, and the server would
+# refuse to spawn. That is exactly why `--agent` is an argument: the agent name
+# is not a secret and has no vault entry to point at.
 ANTHROPIC_API_KEY = "anthropic-api-key"
 ```
 
@@ -92,13 +95,15 @@ delegation:
 ## Environment
 
 All configuration is environment-only. No configuration file is read directly by
-the server and no secret is accepted as a command-line argument to prevent
-exposure in `ps` listings and shell history. A missing or invalid
-`MOOSHIK_CODER_AGENT` exits `2` with an explanatory message on stderr.
+the server. **`--agent` is the only argument accepted**, and no *secret* is
+ever accepted as one — a secret in `argv` is visible in `ps` listings and shell
+history, so credentials come from the environment and only from there. With
+neither `--agent` nor `MOOSHIK_CODER_AGENT`, or with an unknown agent name, the
+server exits `2` with an explanatory message on stderr.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `MOOSHIK_CODER_AGENT` | — | **Required.** Coding agent to delegate to: `claude`, `omp`, `cursor`, or `agy` |
+| `MOOSHIK_CODER_AGENT` | — | Coding agent to delegate to: `claude`, `omp`, `cursor`, or `agy`. Fallback for a direct invocation; under `[mcp_servers.coder]` use `--agent` in `args` instead, because values in that `env` table are read as vault secret names |
 | `ANTHROPIC_API_KEY` | — | Anthropic API key (used when agent is `claude`) |
 | `MOOSHIK_GEMINI_API_KEY` | — | Gemini Developer API key (used when agent is `omp` or `agy`) |
 | `MOOSHIK_GEMINI_PROJECT` | — | Vertex AI project ID (used when agent is `omp` or `agy`) |
@@ -159,9 +164,11 @@ pytest mcp-servers/coder/tests -q
 ## Running it by hand
 
 ```bash
-export MOOSHIK_CODER_AGENT=claude
 export ANTHROPIC_API_KEY=your-api-key
-python3 mcp-servers/coder/server.py      # speaks MCP JSON-RPC on stdin/stdout
+python3 mcp-servers/coder/server.py --agent claude   # MCP JSON-RPC on stdin/stdout
+
+# MOOSHIK_CODER_AGENT still works for a direct run, if you prefer it:
+#   MOOSHIK_CODER_AGENT=claude python3 mcp-servers/coder/server.py
 ```
 
 Like all stdio MCP servers, it awaits JSON-RPC frames on stdin. Drive it with

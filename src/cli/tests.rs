@@ -951,10 +951,7 @@ fn configure_coder_writes_block_and_permissions() {
 
     let written = std::fs::read_to_string(&layout.config).unwrap();
     assert!(written.contains("[mcp_servers.coder]"), "{written}");
-    assert!(
-        written.contains("MOOSHIK_CODER_AGENT = \"claude\""),
-        "{written}"
-    );
+    assert!(written.contains("\"--agent\", \"claude\""), "{written}");
     assert!(
         written.contains("ANTHROPIC_API_KEY = \"anthropic-api-key\""),
         "{written}"
@@ -970,7 +967,14 @@ fn configure_coder_writes_block_and_permissions() {
     let coder_cfg = &loaded.mcp_servers["coder"];
     assert_eq!(coder_cfg.expose, vec!["delegate", "check"]);
     assert_eq!(
-        coder_cfg.env.get("MOOSHIK_CODER_AGENT").map(String::as_str),
+        coder_cfg
+            .args
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .windows(2)
+            .find(|w| w[0] == "--agent")
+            .map(|w| w[1]),
         Some("claude")
     );
     assert_eq!(
@@ -996,10 +1000,7 @@ fn configure_coder_agy_writes_block_and_permissions() {
 
     let written = std::fs::read_to_string(&layout.config).unwrap();
     assert!(written.contains("[mcp_servers.coder]"), "{written}");
-    assert!(
-        written.contains("MOOSHIK_CODER_AGENT = \"agy\""),
-        "{written}"
-    );
+    assert!(written.contains("\"--agent\", \"agy\""), "{written}");
     assert!(
         written.contains("MOOSHIK_GEMINI_API_KEY = \"gemini-api-key\""),
         "{written}"
@@ -1015,7 +1016,14 @@ fn configure_coder_agy_writes_block_and_permissions() {
     let coder_cfg = &loaded.mcp_servers["coder"];
     assert_eq!(coder_cfg.expose, vec!["delegate", "check"]);
     assert_eq!(
-        coder_cfg.env.get("MOOSHIK_CODER_AGENT").map(String::as_str),
+        coder_cfg
+            .args
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .windows(2)
+            .find(|w| w[0] == "--agent")
+            .map(|w| w[1]),
         Some("agy")
     );
 }

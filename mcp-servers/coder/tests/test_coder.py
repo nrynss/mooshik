@@ -423,3 +423,76 @@ def test_args_rejected():
     assert done.returncode == 2
     assert done.stdout == ""
     assert "no arguments" in done.stderr.lower() or "takes no arguments" in done.stderr.lower()
+
+
+# ------------------------------------------------------- the --agent argument ----
+# `[mcp_servers.*.env]` values are resolved by Mooshik as vault secret NAMES
+# (mcp_host::resolve_env), so a literal `MOOSHIK_CODER_AGENT = "claude"` there
+# made the host look up a secret called `claude`, fail, and refuse to spawn this
+# server — `mooshik configure coder` wrote a config that could not start it.
+# The agent name is not a secret, so it travels as an argument instead.
+
+
+def test_the_agent_argument_wins_over_the_environment():
+    from coder_mcp.config import Settings
+
+    s = Settings.from_env({"MOOSHIK_CODER_AGENT": "omp"}, agent_override="claude")
+    assert s.agent == "claude"
+
+
+def test_the_environment_still_works_for_a_direct_invocation():
+    """Kept so `MOOSHIK_CODER_AGENT=claude python3 -m coder_mcp` still runs."""
+    from coder_mcp.config import Settings
+
+    assert Settings.from_env({"MOOSHIK_CODER_AGENT": "omp"}).agent == "omp"
+
+
+def test_neither_source_fails_closed_and_names_both():
+    from coder_mcp.config import ConfigError, Settings
+
+    with pytest.raises(ConfigError) as caught:
+        Settings.from_env({})
+    message = str(caught.value)
+    assert "--agent" in message
+    assert "MOOSHIK_CODER_AGENT" in message
+    # The old text sent people to env under [mcp_servers.coder], which is the
+    # exact configuration that cannot work.
+    assert "NOT in env" in message
+
+
+def test_an_unknown_agent_is_still_rejected_when_passed_as_an_argument():
+    from coder_mcp.config import ConfigError, Settings
+
+    with pytest.raises(ConfigError):
+        Settings.from_env({}, agent_override="notanagent")
+
+
+@pytest.mark.parametrize("argv", [["--agent"], ["--agent", "claude", "extra"], ["--rogue"]])
+def test_main_refuses_anything_that_is_not_a_lone_agent_flag(argv):
+    """The no-CLI-surface rule bends for exactly one non-secret argument and
+    no further: a secret passed as an argument is visible in `ps`."""
+    from coder_mcp.__main__ import main
+
+    assert main(argv) == 2
+
+
+@pytest.mark.parametrize("argv", [["--agent", "claude"], ["--agent=claude"]])
+def test_both_agent_spellings_reach_settings(argv):
+    """Both `--agent X` and `--agent=X` must arrive as the same override.
+
+    Asserted at the seam rather than through `main`'s return, because a server
+    with a valid agent and no credential starts and serves stdio — a credential
+    is not required until an agent is actually spawned — so the return code
+    says nothing about how the argument was parsed.
+    """
+    import coder_mcp.__main__ as entry
+
+    seen = {}
+
+    def capture(env=None, agent_override=None):
+        seen["agent"] = agent_override
+        raise entry.ConfigError("stop here")
+
+    with patch.object(entry.Settings, "from_env", staticmethod(capture)):
+        assert entry.main(argv) == 2
+    assert seen["agent"] == "claude"

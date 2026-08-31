@@ -27,17 +27,35 @@ log = logging.getLogger("coder_mcp")
 def main(argv: list[str] | None = None) -> int:
     """Resolve the environment, build the server, serve stdio. Never prints."""
     argv = sys.argv[1:] if argv is None else argv
-    if argv:
-        # No CLI surface on purpose: a secret passed as an argument is visible
-        # in `ps` and in shell history. Configuration is environment-only.
+
+    # `--agent` is the ONE argument this server accepts, and the rule it bends
+    # is worth restating rather than deleting: a secret passed as an argument
+    # is visible in `ps` and in shell history, so every secret still comes from
+    # the environment and only from there. An agent name is not a secret — and
+    # it cannot travel by environment anyway, because `[mcp_servers.*.env]` is
+    # resolved as vault secret NAMES, so a literal there is looked up as a
+    # secret, not found, and the server never spawns.
+    agent_override: str | None = None
+    rest = list(argv)
+    if rest and rest[0].startswith("--agent"):
+        head = rest.pop(0)
+        if "=" in head:
+            agent_override = head.split("=", 1)[1]
+        elif rest:
+            agent_override = rest.pop(0)
+        else:
+            print_stderr("--agent requires a value.")
+            return 2
+    if rest:
         print_stderr(
-            "coder_mcp takes no arguments; all configuration comes from the "
-            "environment (see mcp-servers/coder/README.md)."
+            "coder_mcp takes no arguments except --agent; every other setting, "
+            "and every secret, comes from the environment "
+            "(see mcp-servers/coder/README.md)."
         )
         return 2
 
     try:
-        settings = Settings.from_env()
+        settings = Settings.from_env(agent_override=agent_override)
     except ConfigError as error:
         configure_logging("INFO")
         log.error("configuration error: %s", error)

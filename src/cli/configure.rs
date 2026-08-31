@@ -211,9 +211,16 @@ fn apply_coder_config(
         result.push_str("\n[permissions]\n\"mcp.coder.*\" = \"prompt\"\n");
     }
 
-    // Append the coder mcp server block
+    // Append the coder mcp server block.
+    //
+    // The agent name travels in `args`, not `env`. Every value under
+    // `[mcp_servers.*.env]` is resolved as a vault secret NAME (see
+    // `mcp_host::resolve_env`), so a literal `MOOSHIK_CODER_AGENT = "claude"`
+    // there makes the host look up a secret called `claude`, fail to find it,
+    // and refuse to spawn the server. Only the credential — which really is a
+    // secret name — belongs in that table.
     result.push_str(&format!(
-        "\n[mcp_servers.coder]\ncommand = \"python3\"\nargs = [\"{}\"]\nexpose = [\"delegate\", \"check\"]\n\n[mcp_servers.coder.env]\nMOOSHIK_CODER_AGENT = \"{}\"\n{} = \"{}\"\n",
+        "\n[mcp_servers.coder]\ncommand = \"python3\"\nargs = [\"{}\", \"--agent\", \"{}\"]\nexpose = [\"delegate\", \"check\"]\n\n[mcp_servers.coder.env]\n{} = \"{}\"\n",
         script_path, agent, env_var, secret_name
     ));
 
