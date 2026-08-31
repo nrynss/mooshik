@@ -233,3 +233,27 @@ fn a_later_call_after_a_dead_initial_spawn_recovers() {
     let out = executor.execute("mcp.srv.echo", &json!({"k": "v"}));
     assert_eq!(out, "{\"k\": \"v\"}");
 }
+
+#[test]
+fn execute_time_diagnostics_do_not_print() {
+    // M12e: under the alternate screen a print corrupts the frame. These
+    // sites used to be eprintln!; they must go through Diagnostics so the
+    // pane can drain them. The CLI path still prints because the default
+    // sink is stderr.
+    // `with_call_wait` is `#[cfg(test)]` mid-file, so splitting on that
+    // marker would drop the execute path. The tests live in this sibling.
+    let production = include_str!("mod.rs")
+        .split("#[cfg(test)]\nmod tests;")
+        .next()
+        .unwrap();
+    for forbidden in ["eprintln!", "print!", "eprint!"] {
+        assert!(
+            !production.contains(forbidden),
+            "mcp_host execute-time diagnostics must not {forbidden}"
+        );
+    }
+    assert!(
+        production.contains(".emit("),
+        "execute-time diagnostics must go through the sink"
+    );
+}

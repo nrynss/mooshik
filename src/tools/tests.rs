@@ -315,6 +315,7 @@ fn the_production_composition_redacts_secrets_behaviorally() {
         Some(vault),
         grants,
         None,
+        super::Diagnostics::stderr(),
     );
     assert_eq!(
         executor.execute(
@@ -753,8 +754,13 @@ fn the_over_an_open_handle_factory_never_prints_and_never_opens() {
         );
     }
     assert!(
-        factory.contains("compose_chat_stack(composite, vault, grants, Some(confirm))"),
+        factory
+            .contains("compose_chat_stack(composite, vault, grants, Some(confirm), diagnostics)"),
         "the pane path must build the SAME stack, with the caller's confirm: {factory}"
+    );
+    assert!(
+        factory.contains("with_diagnostics(diagnostics.clone())"),
+        "execute-time diagnostics must be installed on the pane's tools: {factory}"
     );
 }
 
@@ -774,6 +780,7 @@ async fn the_pane_path_asks_the_caller_rather_than_stdin() {
             counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             false
         }),
+        super::Diagnostics::stderr(),
     );
     assert_eq!(
         stack.tools.execute(

@@ -16,8 +16,9 @@
 //!
 //! Both paths hand a [`Workspace`](crate::tui::model::Workspace) to
 //! `crate::tui::run`; the live path also hands it the rebuild — a closure
-//! that answers with the graph as of now — and nothing else, which is what
-//! keeps the screens a pure function of the model.
+//! that answers with the graph as of now — and the turn drive that spawns
+//! `Session::turn`. `--demo` passes `None` for both. The screens stay a pure
+//! function of the model.
 //!
 //! **The live path is an ordinary holder of the single-writer lease, exactly as
 //! `chat` is.** It takes it for the length of the session and gives it back on
@@ -53,18 +54,26 @@
 //! reachable from elsewhere in the crate would be a second way to name the
 //! lease, which is the thing this module exists to have exactly one of.
 
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 
 use lambo::Memory;
 
 use crate::{
+    companion::{
+        compose_session, Cancellation, CompanionClient, CompanionError, RecallInjector, Session,
+        ToolExecutor,
+    },
     config::Config,
     home::HomeLayout,
     memory::{MemoryError, WriteLane},
     text,
-    tools::{ChatStack, Confirm},
-    tui::Scene,
-    vault::SharedVault,
+    tools::{ChatStack, Confirm, Diagnostics},
+    tui::{
+        app::{stamp, TurnOutcome},
+        model::{Speaker, Turn},
+        Scene, TurnDrive,
+    },
+    vault::{SharedVault, Vault},
 };
 
 use super::{resolve, runtime};
@@ -151,7 +160,6 @@ impl Pane {
     /// `block_on`), it borrows the pane for as long as the loop holds it, and
     /// it invites `block_on` on the tick's own thread — the one thing the turn
     /// path must never do.
-    #[cfg_attr(not(test), allow(dead_code))]
     fn spawner(&self) -> tokio::runtime::Handle {
         self.runtime.handle().clone()
     }
@@ -169,14 +177,20 @@ impl Pane {
     /// choice — deny the prompt class outright, or make approval a turn in the
     /// conversation — is the caller's, and there is no default that is safe to
     /// make silently.
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn tools(&self, config: &Config, vault: Option<SharedVault>, confirm: Confirm) -> ChatStack {
+    fn tools(
+        &self,
+        config: &Config,
+        vault: Option<SharedVault>,
+        confirm: Confirm,
+        diagnostics: Diagnostics,
+    ) -> ChatStack {
         crate::tools::executor_over_memory(
             config,
             vault,
             Arc::clone(&self.memory),
             self.writes.clone(),
             confirm,
+            diagnostics,
         )
     }
 
@@ -198,7 +212,7 @@ pub(crate) fn tui(layout: &HomeLayout, args: &clap::ArgMatches) -> anyhow::Resul
     match args.get_one::<String>("demo").map(String::as_str) {
         // `--demo` opens no database and rebuilds nothing: its workspace is
         // the design's own Thursday, fixed for the life of the loop.
-        Some(scene) => draw(crate::tui::demo(Scene::named(Some(scene))), None),
+        Some(scene) => draw(crate::tui::demo(Scene::named(Some(scene))), None, None),
         None => live(layout),
     }
 }
@@ -206,27 +220,29 @@ pub(crate) fn tui(layout: &HomeLayout, args: &clap::ArgMatches) -> anyhow::Resul
 /// The live session: open the graph, draw it — rebuilding the view on every
 /// tick — and put both back.
 fn live(layout: &HomeLayout) -> anyhow::Result<()> {
-    // Same resolution as `mooshik stats`, because the store DSN may be a vault
-    // reference and running on an unresolved one would show another database's
-    // memory.
+    // Same resolution as `mooshik chat`: open the vault once and keep it for
+    // the tool stack (egress redaction, MCP env). `load_with_secrets` would
+    // drop the handle before tools could use it, and a second open is refused
+    // by the exclusive lock.
     let root = layout.open_existing_root().map_err(anyhow::Error::new)?;
-    let config = resolve::load_with_secrets(layout, &root)?;
+    let mut config = Config::load_at(&root).map_err(anyhow::Error::new)?;
+    let vault = resolve::open_vault(layout, &config, &root).ok();
+    match &vault {
+        Some(vault) => resolve::resolve_secrets(&mut config, vault).map_err(anyhow::Error::new)?,
+        None if resolve::needs_vault(&config) => {
+            return Err(anyhow::Error::new(
+                crate::config::ConfigError::VaultUnavailable,
+            ));
+        }
+        None => {}
+    }
 
     // The runtime, the handle and the lease, for the length of the pane. What
     // used to be two locals whose declaration order carried the drop order is
     // now [`Pane`], which carries it in its field order and says why.
     let pane = Pane::open(&config)?;
 
-    // The first model is built here, and the loop builds another on every
-    // quiet tick: `refresh` is the whole seam between the terminal and the
-    // graph — the loop asks, it answers with the graph as of now, and nothing
-    // in `crate::tui` knows a database exists. A write from anywhere else
-    // shows up on the next tick without a keystroke.
-    let workspace = crate::memory::view::of_memory(pane.memory(), chrono::Local::now());
-    let mut refresh = || crate::memory::view::of_memory(pane.memory(), chrono::Local::now());
-    // The rebuild seam borrows the pane. Its last use is here, which is what
-    // lets `close` consume the pane below.
-    let drawn = draw(workspace, Some(&mut refresh));
+    let drawn = converse(&pane, &config, vault.map(Vault::shared));
 
     // Both outcomes, in the order they happened: a session that failed to close
     // may have lost the tail of what it remembered, which is worse than a draw
@@ -237,13 +253,50 @@ fn live(layout: &HomeLayout) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Wire the companion onto the open pane and run the loop.
+///
+/// Isolated so `live` can still close the pane if composition fails: the
+/// lease must not be left held for its TTL by a process that never drew.
+fn converse(pane: &Pane, config: &Config, vault: Option<SharedVault>) -> anyhow::Result<()> {
+    let (events_tx, events_rx) = mpsc::channel();
+    let diagnostics = Diagnostics::sink({
+        let events_tx = events_tx.clone();
+        move |message: &str| {
+            let _ = events_tx.send(TurnEvent::Notice(message.to_owned()));
+        }
+    });
+    // Prompt-class tools are denied here: a Confirm that reads stdin hangs
+    // the pane, and making approval a `Turn::Cautioned` (artboard 1d) is a
+    // bigger shape than this milestone's contract. The caller still supplies
+    // the callback — the gate never falls through to stdin.
+    let confirm: Confirm = Box::new(|_| false);
+    let ChatStack { tools, notices } = pane.tools(config, vault, confirm, diagnostics);
+    let recall = crate::tools::recall_for_chat(config, Arc::clone(&tools));
+    let client = CompanionClient::from_config(&config.companion).map_err(anyhow::Error::new)?;
+    let session = compose_session(client, config.companion.context_window, tools, recall);
+    let mut drive = PaneTurn::new(pane.spawner(), session, events_tx, events_rx);
+
+    let mut workspace = crate::memory::view::of_memory(pane.memory(), chrono::Local::now());
+    for notice in notices {
+        workspace.conversation.turns.push(Turn::Said {
+            time: stamp(),
+            speaker: Speaker::Mooshik,
+            text: notice,
+        });
+    }
+    let mut refresh = || crate::memory::view::of_memory(pane.memory(), chrono::Local::now());
+    draw(workspace, Some(&mut refresh), Some(&mut drive))
+}
+
 /// Take the terminal, run the loop, and give the terminal back.
 ///
 /// `refresh` is the live path's rebuild seam; `--demo` passes `None` and its
-/// fixed workspace is never rebuilt.
+/// fixed workspace is never rebuilt. `turn` is the live path's companion seam
+/// and `--demo` passes `None` for that too.
 fn draw(
     workspace: crate::tui::model::Workspace,
     refresh: Option<&mut dyn FnMut() -> crate::tui::model::Workspace>,
+    turn: Option<&mut dyn TurnDrive>,
 ) -> anyhow::Result<()> {
     // The context, not the `io::Error`: taking a terminal that is not there
     // fails with "Device not configured", which says nothing about what to do.
@@ -258,8 +311,86 @@ fn draw(
     // calls with separate contexts.
     let terminal = crate::tui::start()
         .map_err(|error| anyhow::Error::new(error).context(text::get("tui.needs_a_terminal")))?;
-    crate::tui::run(terminal, workspace, refresh)
+    crate::tui::run(terminal, workspace, refresh, turn)
         .map_err(|error| anyhow::Error::new(error).context(text::get("tui.session_failed")))
+}
+
+/// One message from a spawned turn, or from execute-time diagnostics.
+enum TurnEvent {
+    Token(String),
+    Finished(Result<String, CompanionError>),
+    Notice(String),
+}
+
+type ChatSession = Session<Arc<dyn ToolExecutor>, Arc<dyn RecallInjector>>;
+
+/// The live path's [`TurnDrive`]: spawns `Session::turn` on the pane runtime
+/// and drains tokens into the app. Owned by `converse`, borrowed by the loop.
+struct PaneTurn {
+    spawner: tokio::runtime::Handle,
+    session: Arc<tokio::sync::Mutex<ChatSession>>,
+    events_tx: mpsc::Sender<TurnEvent>,
+    events_rx: mpsc::Receiver<TurnEvent>,
+    cancel: Option<Cancellation>,
+}
+
+impl PaneTurn {
+    fn new(
+        spawner: tokio::runtime::Handle,
+        session: ChatSession,
+        events_tx: mpsc::Sender<TurnEvent>,
+        events_rx: mpsc::Receiver<TurnEvent>,
+    ) -> Self {
+        Self {
+            spawner,
+            session: Arc::new(tokio::sync::Mutex::new(session)),
+            events_tx,
+            events_rx,
+            cancel: None,
+        }
+    }
+}
+
+impl TurnDrive for PaneTurn {
+    fn start(&mut self, user_text: &str) {
+        let cancel = Cancellation::new();
+        self.cancel = Some(cancel.clone());
+        let session = Arc::clone(&self.session);
+        let events_tx = self.events_tx.clone();
+        let user_text = user_text.to_owned();
+        self.spawner.spawn(async move {
+            let mut session = session.lock().await;
+            let result = session
+                .turn(&user_text, &cancel, |token| {
+                    let _ = events_tx.send(TurnEvent::Token(token.to_owned()));
+                })
+                .await;
+            let _ = events_tx.send(TurnEvent::Finished(result));
+        });
+    }
+
+    fn cancel(&mut self) {
+        if let Some(cancel) = &self.cancel {
+            cancel.cancel();
+        }
+    }
+
+    fn drain(&mut self, app: &mut crate::tui::app::App) {
+        while let Ok(event) = self.events_rx.try_recv() {
+            match event {
+                TurnEvent::Token(token) => app.append_token(&token),
+                TurnEvent::Finished(result) => {
+                    self.cancel = None;
+                    app.finish_turn(match result {
+                        Ok(reply) => TurnOutcome::Completed(reply),
+                        Err(CompanionError::Cancelled) => TurnOutcome::Cancelled,
+                        Err(error) => TurnOutcome::Failed(error.to_string()),
+                    });
+                }
+                TurnEvent::Notice(message) => app.note(&message),
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -470,6 +601,7 @@ mod tests {
             &fixture_config("stack"),
             None,
             Box::new(|_| panic!("the gate must not prompt on this path")),
+            Diagnostics::stderr(),
         );
         let answer = stack.tools.execute(
             crate::tools::TOOL_DERIVE,
@@ -496,7 +628,12 @@ mod tests {
         // frame, so the vault notice `mooshik chat` prints has to come back as
         // a value the pane can render.
         let pane = fixture_pane("notices");
-        let stack = pane.tools(&fixture_config("notices"), None, Box::new(|_| false));
+        let stack = pane.tools(
+            &fixture_config("notices"),
+            None,
+            Box::new(|_| false),
+            Diagnostics::stderr(),
+        );
         assert_eq!(
             stack.notices,
             vec![crate::text::get("tools.vault_unavailable").to_owned()],
@@ -524,5 +661,131 @@ mod tests {
                     .await
             });
         assert!(refused.is_err(), "a closed handle must refuse a write");
+    }
+
+    #[test]
+    fn the_live_path_wires_send_to_session_turn() {
+        // An implementation that only fills App::apply without spawning is
+        // the pre-M12e hole with a prettier model. The production half must
+        // compose through compose_session and spawn Session::turn on the pane
+        // runtime — never block_on the turn on the event-loop thread.
+        let source = production();
+        let converse = source
+            .split("fn converse(")
+            .nth(1)
+            .expect("converse must exist")
+            .split("fn draw(")
+            .next()
+            .unwrap();
+        assert!(
+            converse.contains("compose_session("),
+            "the live path must compose through compose_session: {converse}"
+        );
+        assert!(
+            converse.contains("pane.tools("),
+            "the live path must build tools over the pane's handle: {converse}"
+        );
+        assert!(
+            converse.contains("pane.spawner()"),
+            "the turn must be spawned on the pane runtime: {converse}"
+        );
+        assert!(
+            !converse.contains("std::io::stdin") && !converse.contains("interactive_confirm"),
+            "the pane path must not read stdin for confirm: {converse}"
+        );
+        let drive = source
+            .split("impl TurnDrive for PaneTurn")
+            .nth(1)
+            .expect("PaneTurn must implement TurnDrive")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        assert!(
+            drive.contains("self.spawner.spawn"),
+            "start must spawn on the pane handle: {drive}"
+        );
+        assert!(
+            drive.contains(".turn(") && drive.contains("&cancel"),
+            "the spawned work must be Session::turn with Cancellation: {drive}"
+        );
+        assert!(
+            !drive.contains("block_on"),
+            "the turn must not block_on the event-loop thread: {drive}"
+        );
+    }
+
+    #[test]
+    fn the_pane_turn_path_does_not_print() {
+        // Under the alternate screen a print corrupts the frame. Assembly
+        // notices are values; execute-time diagnostics go through the sink.
+        let source = production();
+        for chunk in [
+            source
+                .split("fn live(")
+                .nth(1)
+                .unwrap()
+                .split("fn draw(")
+                .next()
+                .unwrap(),
+            source
+                .split("impl TurnDrive for PaneTurn")
+                .nth(1)
+                .unwrap()
+                .split("#[cfg(test)]")
+                .next()
+                .unwrap(),
+        ] {
+            for forbidden in ["eprintln!", "print!", "eprint!"] {
+                assert!(
+                    !chunk.contains(forbidden),
+                    "the pane turn path must not {forbidden}: {chunk}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_session_turn_becomes_a_turn() {
+        // Drive a real Session::turn against MockServer (no Vertex, no
+        // Cloud SQL) and land the classified error on the conversation.
+        use crate::companion::mock::{MockServer, Script};
+        use crate::companion::{NoopExecutor, NoopRecall};
+        use crate::tui::app::{Action, App};
+
+        let server = MockServer::spawn(vec![Script::error(404, r#"{"error":"missing"}"#)]).await;
+        let companion = crate::config::CompanionConfig {
+            base_url: server.base_url.clone(),
+            ..crate::config::CompanionConfig::default()
+        };
+        let client = CompanionClient::from_config(&companion).unwrap();
+        let mut session = compose_session(
+            client,
+            32768,
+            Arc::new(NoopExecutor) as Arc<dyn ToolExecutor>,
+            Arc::new(NoopRecall) as Arc<dyn RecallInjector>,
+        );
+        let mut app = App::new(crate::tui::model::Workspace::default());
+        for character in "hello".chars() {
+            app.apply(Action::Type(character));
+        }
+        app.apply(Action::Send);
+        let error = session
+            .turn("hello", &Cancellation::new(), |token| {
+                app.append_token(token);
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(error, CompanionError::HttpStatus));
+        app.finish_turn(TurnOutcome::Failed(error.to_string()));
+        match app.workspace.conversation.turns.last() {
+            Some(Turn::Said {
+                speaker: Speaker::Mooshik,
+                text,
+                ..
+            }) => assert_eq!(text, crate::text::get("companion.http_status")),
+            other => panic!("the failure must be a turn, not {other:?}"),
+        }
+        assert!(!app.turn_in_flight());
+        assert!(app.running);
     }
 }

@@ -487,6 +487,7 @@ mod tests {
             Some(vault),
             config.permissions.grants(),
             None,
+            super::super::Diagnostics::stderr(),
         );
         let recall = super::super::recall_for_chat(&config, stack);
         let injected = recall

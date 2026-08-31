@@ -28,6 +28,7 @@ use crate::memory::WriteLane;
 use crate::text;
 use crate::vault::SharedVault;
 
+mod diagnostics;
 mod permissions;
 mod recall;
 pub mod redact;
@@ -35,6 +36,7 @@ mod schema;
 mod scratch;
 mod worker;
 
+pub use diagnostics::Diagnostics;
 pub use permissions::{Confirm, GatedTools};
 pub use redact::RedactingTools;
 pub use scratch::ScratchConfig;
@@ -136,6 +138,8 @@ pub struct MemoryTools {
     /// [`WriteLane`] for why lambo does not do this itself. On the chat path
     /// there is only one writer and the lane is never contended.
     writes: WriteLane,
+    /// Execute-time diagnostics. Stderr on the CLI path; a channel on the pane.
+    diagnostics: Diagnostics,
 }
 
 impl Drop for MemoryTools {
@@ -166,6 +170,7 @@ impl MemoryTools {
                 owner: Some(owner),
                 vault,
                 writes: WriteLane::new(),
+                diagnostics: Diagnostics::stderr(),
             }) as Arc<dyn ToolExecutor>
         })
     }
@@ -221,6 +226,7 @@ impl MemoryTools {
             owner: None,
             vault: None,
             writes,
+            diagnostics: Diagnostics::stderr(),
         }
     }
 
@@ -235,6 +241,13 @@ impl MemoryTools {
     /// Override the scratch permission/cap configuration (tests).
     pub fn with_scratch(mut self, scratch: ScratchConfig) -> Self {
         self.scratch = scratch;
+        self
+    }
+
+    /// Override where execute-time diagnostics go. The pane installs a sink
+    /// that does not print; the default is stderr, which is the CLI path.
+    pub fn with_diagnostics(mut self, diagnostics: Diagnostics) -> Self {
+        self.diagnostics = diagnostics;
         self
     }
     fn dispatch(&self, name: &str, arguments: &Value) -> String {
@@ -489,7 +502,7 @@ impl MemoryTools {
         // terminal nor the model sees it — same discipline as `gate_panicked`.
         drop(error);
         let notice = text::get("tools.memory_tool_failed");
-        eprintln!("{what}: {notice}");
+        self.diagnostics.emit(&format!("{what}: {notice}"));
         format!("{what}: {notice}")
     }
 
@@ -497,7 +510,8 @@ impl MemoryTools {
         match run {
             ToolRunError::TimedOut => format!("{what}: {}", text::get("tools.tool_timeout")),
             ToolRunError::Panicked | ToolRunError::Unavailable => {
-                eprintln!("{what}: tool runtime unavailable or panicked");
+                self.diagnostics
+                    .emit(&format!("{what}: tool runtime unavailable or panicked"));
                 tool_internal_error()
             }
         }
@@ -516,7 +530,7 @@ impl ToolExecutor for MemoryTools {
                 // A panic payload is arbitrary data — it may carry vault
                 // values — so it is dropped, never formatted.
                 drop(payload);
-                eprintln!("{}", text::get("tools.tool_panicked"));
+                self.diagnostics.emit(text::get("tools.tool_panicked"));
                 tool_internal_error()
             }
         }
@@ -558,7 +572,7 @@ pub fn executor_for_chat(config: &Config, vault: Option<SharedVault>) -> Arc<dyn
         vault.clone(),
     ));
     let composite: Arc<dyn ToolExecutor> = Arc::new(CompositeTools::new(inner, mcp));
-    compose_chat_stack(composite, vault, grants, None)
+    compose_chat_stack(composite, vault, grants, None, Diagnostics::stderr())
 }
 
 /// A composed tool stack and the notices assembling it produced.
@@ -610,6 +624,7 @@ pub fn executor_over_memory(
     memory: Arc<Memory>,
     writes: WriteLane,
     confirm: Confirm,
+    diagnostics: Diagnostics,
 ) -> ChatStack {
     let mut notices = Vec::new();
     if vault.is_none() {
@@ -619,15 +634,16 @@ pub fn executor_over_memory(
     let inner: Arc<dyn ToolExecutor> = Arc::new(
         MemoryTools::over(memory, writes)
             .with_vault(vault.clone())
-            .with_scratch(MemoryTools::chat_scratch(config)),
+            .with_scratch(MemoryTools::chat_scratch(config))
+            .with_diagnostics(diagnostics.clone()),
     );
-    let mcp = Arc::new(crate::mcp_host::McpTools::from_config(
-        config,
-        vault.clone(),
-    ));
+    let mcp = Arc::new(
+        crate::mcp_host::McpTools::from_config(config, vault.clone())
+            .with_diagnostics(diagnostics.clone()),
+    );
     let composite: Arc<dyn ToolExecutor> = Arc::new(CompositeTools::new(inner, mcp));
     ChatStack {
-        tools: compose_chat_stack(composite, vault, grants, Some(confirm)),
+        tools: compose_chat_stack(composite, vault, grants, Some(confirm), diagnostics),
         notices,
     }
 }
@@ -666,13 +682,18 @@ fn compose_chat_stack(
     vault: Option<SharedVault>,
     grants: Grants,
     confirm: Option<Confirm>,
+    diagnostics: Diagnostics,
 ) -> Arc<dyn ToolExecutor> {
     let redacting = Arc::new(RedactingTools::new(inner, vault));
     // Spelled out per arm rather than `Arc::new(gated.maybe_confirm(..))`, so
     // the wrap order is legible — and pinnable — as one expression either way.
     match confirm {
-        Some(confirm) => Arc::new(GatedTools::new(redacting, grants).with_confirm(confirm)),
-        None => Arc::new(GatedTools::new(redacting, grants)),
+        Some(confirm) => Arc::new(
+            GatedTools::new(redacting, grants)
+                .with_confirm(confirm)
+                .with_diagnostics(diagnostics),
+        ),
+        None => Arc::new(GatedTools::new(redacting, grants).with_diagnostics(diagnostics)),
     }
 }
 

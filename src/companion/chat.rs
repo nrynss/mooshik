@@ -121,7 +121,7 @@ async fn run_chat_async(
 /// the wire that makes turns dropped for context pressure come back as
 /// recalled memory instead of vanishing — is caught by *driving* this
 /// function, not only by reading its source.
-fn compose_session(
+pub(crate) fn compose_session(
     client: CompanionClient,
     window: u32,
     executor: Arc<dyn ToolExecutor>,
@@ -219,6 +219,10 @@ mod tests {
         assert!(
             body.contains("compose_session(client, config.context_window"),
             "run_chat_async must build its session through compose_session: {body}"
+        );
+        assert!(
+            production.contains("pub(crate) fn compose_session"),
+            "compose_session must be crate-visible so the pane composes through the same seam: {production}"
         );
         let seam = production
             .split("fn compose_session")

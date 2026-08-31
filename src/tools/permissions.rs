@@ -23,7 +23,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::scratch::answer_yes;
-use super::{tool_internal_error, ToolExecutor, ToolSpec};
+use super::{tool_internal_error, Diagnostics, ToolExecutor, ToolSpec};
 use crate::config::{GrantMode, Grants};
 use crate::text;
 
@@ -53,6 +53,7 @@ pub struct GatedTools {
     inner: Arc<dyn ToolExecutor>,
     grants: Grants,
     confirm: Confirm,
+    diagnostics: Diagnostics,
 }
 
 impl GatedTools {
@@ -61,12 +62,23 @@ impl GatedTools {
             inner,
             grants,
             confirm: Box::new(interactive_confirm),
+            diagnostics: Diagnostics::stderr(),
         }
     }
 
     /// Replace the prompt callback (tests).
     pub fn with_confirm(self, confirm: Confirm) -> Self {
         Self { confirm, ..self }
+    }
+
+    /// Override where a panicked confirm is reported. Stderr on the CLI path;
+    /// a channel on the pane, because a print under the alternate screen
+    /// corrupts the frame.
+    pub fn with_diagnostics(self, diagnostics: Diagnostics) -> Self {
+        Self {
+            diagnostics,
+            ..self
+        }
     }
 
     /// The resolved grant set this gate enforces.
@@ -99,7 +111,8 @@ impl ToolExecutor for GatedTools {
             Ok(true) => self.inner.execute(name, arguments),
             Ok(false) => text::get("permissions.denied").to_owned(),
             Err(_) => {
-                eprintln!("{}", text::get("permissions.gate_panicked"));
+                self.diagnostics
+                    .emit(text::get("permissions.gate_panicked"));
                 tool_internal_error()
             }
         }
@@ -322,6 +335,29 @@ mod tests {
         assert!(
             !production.contains("Memory"),
             "the gate must never touch a graph handle"
+        );
+    }
+
+    #[test]
+    fn a_panicked_confirm_is_not_printed() {
+        // M12e: the gate used to eprintln! the panic notice, which corrupts
+        // the pane's alternate screen. The notice still exists; it goes
+        // through Diagnostics, whose CLI default is still stderr.
+        let production = include_str!("permissions.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        let execute = production
+            .split("fn execute(")
+            .nth(1)
+            .expect("GatedTools::execute must exist");
+        assert!(
+            !execute.contains("eprintln!") && !execute.contains("eprint!"),
+            "execute-time gate diagnostics must not print: {execute}"
+        );
+        assert!(
+            execute.contains(".emit("),
+            "a panicked confirm must go through the sink: {execute}"
         );
     }
 }

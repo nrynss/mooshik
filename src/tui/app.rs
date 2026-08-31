@@ -19,10 +19,15 @@
 //! so a cursor that reordered the list would destroy the one thing the list
 //! encodes.
 
-use crate::tui::{
-    grid::Grid,
-    model::Workspace,
-    screen::{self, chrome::View, Focus},
+use chrono::Timelike;
+
+use crate::{
+    text,
+    tui::{
+        grid::Grid,
+        model::{Speaker, Turn, Workspace},
+        screen::{self, chrome::View, Focus},
+    },
 };
 
 /// Below this many columns the narrow layout is drawn instead of the wide one.
@@ -48,14 +53,20 @@ const DESIGN_ROWS: u16 = 40;
 /// variant for them, which is why those hints are not drawn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    /// Leave. Reached by `Esc`, `q` and `^C`.
+    /// Leave. Reached by `Esc` while idle, `q` and `^C`.
     ///
-    /// `Esc` quits from anywhere, including mid-draft, and takes the draft with
-    /// it — the design gives `Esc` "back" only on the settings and first-run
+    /// Idle `Esc` quits from anywhere, including mid-draft, and takes the draft
+    /// with it — the design gives `Esc` "back" only on the settings and first-run
     /// screens, and from Today and the week there is nothing to go back to. It
     /// is the one key that discards typing, which is the usual terminal
     /// convention; the draft is not persisted anywhere, so leaving is leaving.
+    /// In-flight `Esc` is [`Action::Cancel`], not this.
     Quit,
+    /// Stop an in-flight turn. Reached by `Esc` while a reply is streaming.
+    ///
+    /// Does not leave the pane. A second `Esc` after the turn has stopped is
+    /// [`Action::Quit`].
+    Cancel,
     /// Move focus to the next panel.
     NextPanel,
     /// Move focus to the previous panel.
@@ -115,6 +126,11 @@ pub struct App {
     pub rows: u16,
     /// Whether the loop should keep going.
     pub running: bool,
+    /// Index of the in-flight assistant turn, if a reply is streaming.
+    ///
+    /// An index rather than "the last turn", because an execute-time notice can
+    /// land as its own turn while the reply is still open. `None` is idle.
+    in_flight: Option<usize>,
 }
 
 impl App {
@@ -128,6 +144,7 @@ impl App {
             columns: DESIGN_COLUMNS,
             rows: DESIGN_ROWS,
             running: true,
+            in_flight: None,
         }
     }
 
@@ -172,15 +189,123 @@ impl App {
                 // accented letter must not be left holding half a code point.
                 self.workspace.conversation.composer.draft.pop();
             }
-            // Sending is where the companion loop attaches (it needs M3's chat
-            // restructured into something a redraw loop can drive). Until it
-            // does, `Enter` deliberately does *nothing*: it used to clear the
-            // draft, which looked like sending and was data loss — the words
-            // went, no turn appeared, and no message was sent anywhere. An
-            // inert key the user can press again is the honest version, and it
-            // leaves the draft where the composer can still draw it.
-            Action::Send => {}
+            Action::Send => self.send_draft(),
+            // The cancellation handle lives on the live path's turn drive;
+            // this only refuses to quit. The truncated turn stays until
+            // `finish_turn` hears that the stream actually stopped.
+            Action::Cancel => {}
             Action::Ignore => {}
+        }
+    }
+
+    /// Whether a companion turn is currently streaming.
+    pub fn turn_in_flight(&self) -> bool {
+        self.in_flight.is_some()
+    }
+
+    /// The user text of the in-flight turn, if Send just opened one.
+    ///
+    /// The live path reads this to spawn `Session::turn`. `--demo` never does.
+    pub fn outbound(&self) -> Option<&str> {
+        let index = self.in_flight?.checked_sub(1)?;
+        match self.workspace.conversation.turns.get(index) {
+            Some(Turn::Said {
+                speaker: Speaker::Person,
+                text,
+                ..
+            }) => Some(text.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Append a streamed token onto the in-flight assistant turn.
+    pub fn append_token(&mut self, token: &str) {
+        let pending = text::get("tui.turn_pending");
+        if let Some(body) = self.in_flight_text_mut() {
+            if body == pending {
+                body.clear();
+            }
+            body.push_str(token);
+        }
+    }
+
+    /// Close the in-flight turn: the completed reply, a cancellation, or a
+    /// classified failure rendered as the turn itself.
+    pub fn finish_turn(&mut self, outcome: TurnOutcome) {
+        match outcome {
+            TurnOutcome::Completed(reply) => {
+                if let Some(body) = self.in_flight_text_mut() {
+                    *body = reply;
+                }
+            }
+            TurnOutcome::Cancelled => {
+                let pending = text::get("tui.turn_pending");
+                if let Some(body) = self.in_flight_text_mut() {
+                    if body.is_empty() || body == pending {
+                        *body = text::get("companion.cancelled").to_owned();
+                    }
+                }
+            }
+            TurnOutcome::Failed(message) => {
+                if let Some(body) = self.in_flight_text_mut() {
+                    *body = message;
+                }
+            }
+        }
+        self.in_flight = None;
+    }
+
+    /// An execute-time diagnostic, drawn as a turn so it is not a print under
+    /// the alternate screen.
+    pub fn note(&mut self, message: &str) {
+        if message.is_empty() {
+            return;
+        }
+        self.workspace.conversation.turns.push(Turn::Said {
+            time: stamp(),
+            speaker: Speaker::Mooshik,
+            text: message.to_owned(),
+        });
+    }
+
+    /// Move a non-empty draft into a user turn and open a pending assistant.
+    ///
+    /// Empty (or whitespace-only) drafts are a no-op: Enter must not send a
+    /// blank turn. A Send while a turn is already in flight is ignored so the
+    /// draft is not consumed by a key that cannot start a second reply.
+    fn send_draft(&mut self) {
+        if self.in_flight.is_some() {
+            return;
+        }
+        let draft = self.workspace.conversation.composer.draft.trim();
+        if draft.is_empty() {
+            return;
+        }
+        let text = draft.to_owned();
+        self.workspace.conversation.composer.draft.clear();
+        let time = stamp();
+        self.workspace.conversation.turns.push(Turn::Said {
+            time: time.clone(),
+            speaker: Speaker::Person,
+            text,
+        });
+        self.workspace.conversation.turns.push(Turn::Said {
+            time,
+            speaker: Speaker::Mooshik,
+            text: text::get("tui.turn_pending").to_owned(),
+        });
+        self.in_flight = Some(self.workspace.conversation.turns.len() - 1);
+    }
+
+    fn in_flight_text_mut(&mut self) -> Option<&mut String> {
+        let index = self.in_flight?;
+        match self.workspace.conversation.turns.get_mut(index) {
+            Some(Turn::Said {
+                speaker: Speaker::Mooshik,
+                text,
+                ..
+            }) => Some(text),
+            _ => None,
         }
     }
 
@@ -285,12 +410,14 @@ impl App {
                 View::Week => true,
                 _ => self.focus() == Focus::Threads,
             },
+            in_flight: self.turn_in_flight(),
         }
     }
 }
 
 /// What a key means right now — the two things about the screen underneath that
-/// the keymap has to know.
+/// the keymap has to know, plus whether a turn is in flight so `Esc` can cancel
+/// rather than leave.
 ///
 /// It replaced a bare `typing: bool`, which was not enough to answer the second
 /// question: `j` and `k` moved the thread cursor from anywhere, including the
@@ -304,6 +431,33 @@ pub struct Mode {
     /// The panel that draws the thread cursor holds focus, so `J`/`K` move
     /// something the reader can see.
     pub thread_cursor: bool,
+    /// A companion reply is streaming, so `Esc` is cancellation not leave.
+    pub in_flight: bool,
+}
+
+/// How an in-flight turn ended.
+///
+/// Strings, not [`crate::companion::CompanionError`]: the screens stay a pure
+/// function of the model, and the live path classifies the error (through
+/// `Display` / `en.toml`) before it reaches here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnOutcome {
+    /// The model finished. The full reply replaces any streamed prefix.
+    Completed(String),
+    /// `Esc` (or the chat loop's Ctrl-C equivalent) stopped the stream.
+    /// A truncated reply is left in place; an empty one becomes the cancelled
+    /// sentence so the key is not silent.
+    Cancelled,
+    /// A classified failure, already rendered, becomes the turn.
+    Failed(String),
+}
+
+/// "14:22" in the locale's own clock template, for a turn stamped now.
+pub(crate) fn stamp() -> String {
+    let now = chrono::Local::now();
+    text::get("tui.clock")
+        .replace("{hour}", &format!("{:02}", now.hour()))
+        .replace("{minute}", &format!("{:02}", now.minute()))
 }
 
 /// Move `at` by `delta`, clamped to `0..=last`.

@@ -265,6 +265,11 @@ needs_a_terminal = "The terminal interface needs a terminal to draw on, and this
 # so not the same sentence.
 session_failed = "The terminal interface stopped because the terminal could not be drawn to or read from. Your shell has been put back the way it was; run `mooshik tui` again to reopen it."
 hint_composer = "Nothing here needs saving"
+# Placeholder on the in-flight assistant turn, replaced by the first token.
+# A blank Said draws as a speaker with no words, which is the inert-Enter
+# failure again; this glyph is the pending marker the artboards do not have
+# because they never showed a turn in flight.
+turn_pending = "…"
 # Only keys `tui::input` binds may appear here — a hint is a promise. See the
 # header of that module for the whole keymap.
 hint_today = "Tab panel · J/K a thread · ^2 week · Esc leave"

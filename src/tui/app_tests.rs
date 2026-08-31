@@ -7,7 +7,8 @@
 use super::*;
 use ratatui::{buffer::Buffer, layout::Rect};
 
-use crate::tui::model::{Day, Thread, Week};
+use crate::text;
+use crate::tui::model::{Day, Speaker, Thread, Turn, Week};
 
 fn app() -> App {
     App::new(Workspace {
@@ -273,22 +274,194 @@ fn backspace_on_an_empty_draft_does_nothing() {
     assert!(app.workspace.conversation.composer.draft.is_empty());
 }
 
-/// `Enter` does not destroy the draft. It cleared it, which read as a send
-/// that never happened: the words vanished, no turn was added, and nothing
-/// was sent. Until the chat loop is wired the key is inert.
+/// `Enter` moves a non-empty draft into a sent user turn, clears the composer,
+/// and opens a pending assistant so the key is not silent. This replaced
+/// `sending_does_not_discard_the_draft`, which documented the pre-M12e hole
+/// where Send was inert.
 #[test]
-fn sending_does_not_discard_the_draft() {
+fn sending_moves_the_draft_into_a_user_turn_and_shows_pending() {
     let mut app = app();
     for character in "Called Mum. No answer.".chars() {
         app.apply(Action::Type(character));
     }
     app.apply(Action::Send);
-    assert_eq!(
-        app.workspace.conversation.composer.draft, "Called Mum. No answer.",
-        "the draft was destroyed by a key that sent nothing"
+    assert!(
+        app.workspace.conversation.composer.draft.is_empty(),
+        "the composer must be clear after a send"
     );
-    // And no turn appeared, because nothing was sent.
+    assert!(
+        app.turn_in_flight(),
+        "a pending assistant must be in flight"
+    );
+    assert_eq!(
+        app.outbound(),
+        Some("Called Mum. No answer."),
+        "the live path needs the user text to spawn the turn"
+    );
+    let turns = &app.workspace.conversation.turns;
+    assert_eq!(
+        turns.len(),
+        2,
+        "user turn plus pending assistant: {turns:?}"
+    );
+    match &turns[0] {
+        Turn::Said {
+            speaker: Speaker::Person,
+            text,
+            ..
+        } => assert_eq!(text, "Called Mum. No answer."),
+        other => panic!("the draft must become a person turn, not {other:?}"),
+    }
+    match &turns[1] {
+        Turn::Said {
+            speaker: Speaker::Mooshik,
+            text,
+            ..
+        } => assert_eq!(text, text::get("tui.turn_pending")),
+        other => panic!("a pending assistant must appear, not {other:?}"),
+    }
+}
+
+/// An empty draft on Enter sends nothing — no blank turn, no pending marker.
+#[test]
+fn an_empty_draft_on_enter_sends_nothing() {
+    let mut app = app();
+    app.apply(Action::Send);
     assert!(app.workspace.conversation.turns.is_empty());
+    assert!(!app.turn_in_flight());
+    assert!(app.workspace.conversation.composer.draft.is_empty());
+
+    for character in "   ".chars() {
+        app.apply(Action::Type(character));
+    }
+    app.apply(Action::Send);
+    assert!(
+        app.workspace.conversation.turns.is_empty(),
+        "whitespace-only must not send a blank turn"
+    );
+    assert_eq!(app.workspace.conversation.composer.draft, "   ");
+    assert!(!app.turn_in_flight());
+}
+
+/// Tokens append to the in-flight assistant; a tick / `App::refresh` does not
+/// drop a partial turn. `memory::view` rebuilds conversation empty every time,
+/// and refresh already `mem::take`s it — this pin is that a growing Said
+/// survives that swap.
+#[test]
+fn tokens_append_and_a_refresh_does_not_drop_a_partial_turn() {
+    let mut app = app();
+    for character in "hello".chars() {
+        app.apply(Action::Type(character));
+    }
+    app.apply(Action::Send);
+    app.append_token("Hel");
+    app.append_token("lo");
+    match app.workspace.conversation.turns.last() {
+        Some(Turn::Said {
+            speaker: Speaker::Mooshik,
+            text,
+            ..
+        }) => assert_eq!(text, "Hello"),
+        other => panic!("tokens must land on the pending assistant, not {other:?}"),
+    }
+
+    app.refresh(Workspace {
+        person: "rebuilt".to_owned(),
+        ..Workspace::default()
+    });
+    assert_eq!(app.workspace.person, "rebuilt");
+    match app.workspace.conversation.turns.last() {
+        Some(Turn::Said {
+            speaker: Speaker::Mooshik,
+            text,
+            ..
+        }) => assert_eq!(text, "Hello", "the partial turn must survive the tick"),
+        other => panic!("refresh dropped the in-flight turn: {other:?}"),
+    }
+    assert!(app.turn_in_flight());
+}
+
+/// A classified companion failure becomes the assistant turn — not a panic,
+/// and not silence. Cancelled with no tokens is the cancelled sentence;
+/// cancelled with tokens keeps the truncated reply.
+#[test]
+fn a_failed_companion_error_becomes_a_turn() {
+    {
+        let mut app = app();
+        for character in "hello".chars() {
+            app.apply(Action::Type(character));
+        }
+        app.apply(Action::Send);
+        app.finish_turn(TurnOutcome::Failed(
+            text::get("companion.http_status").to_owned(),
+        ));
+        assert!(!app.turn_in_flight());
+        match app.workspace.conversation.turns.last() {
+            Some(Turn::Said {
+                speaker: Speaker::Mooshik,
+                text,
+                ..
+            }) => assert_eq!(text, text::get("companion.http_status")),
+            other => panic!("the failure must be a turn, not {other:?}"),
+        }
+    }
+
+    {
+        let mut app = app();
+        for character in "again".chars() {
+            app.apply(Action::Type(character));
+        }
+        app.apply(Action::Send);
+        app.append_token("partial-");
+        app.finish_turn(TurnOutcome::Cancelled);
+        match app.workspace.conversation.turns.last() {
+            Some(Turn::Said { text, .. }) => {
+                assert_eq!(text, "partial-", "a truncated turn must stay honest")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    {
+        let mut app = app();
+        for character in "once".chars() {
+            app.apply(Action::Type(character));
+        }
+        app.apply(Action::Send);
+        app.finish_turn(TurnOutcome::Cancelled);
+        match app.workspace.conversation.turns.last() {
+            Some(Turn::Said { text, .. }) => {
+                assert_eq!(text, text::get("companion.cancelled"))
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
+/// `Esc` while in-flight cancels and does not set `running = false`. Idle
+/// `Esc` still quits. A second Cancel after the turn has stopped may quit
+/// only via `Action::Quit` — Cancel itself is idle-inert.
+#[test]
+fn esc_while_in_flight_does_not_quit() {
+    let mut app = app();
+    for character in "hello".chars() {
+        app.apply(Action::Type(character));
+    }
+    app.apply(Action::Send);
+    assert!(app.running);
+    assert!(app.turn_in_flight());
+    app.apply(Action::Cancel);
+    assert!(app.running, "in-flight Esc must not end the session");
+    assert!(
+        app.turn_in_flight(),
+        "the turn stays in flight until finish_turn hears the stream stop"
+    );
+
+    app.finish_turn(TurnOutcome::Cancelled);
+    assert!(app.running);
+    assert!(!app.turn_in_flight());
+    app.apply(Action::Quit);
+    assert!(!app.running, "idle Esc (Quit) still leaves");
 }
 
 /// Quitting stops the loop.

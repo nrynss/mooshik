@@ -14,10 +14,9 @@
 //! `Buffer::set_stringn` filters control characters, so nothing appeared — and
 //! the composer has one interior text row, so nothing could have. Typing `abc`,
 //! `Alt-Enter`, `Backspace` looked like two keys doing nothing and then a third
-//! eating a letter. So it is unbound, and the rule no longer names it. Both come
-//! back with the chat loop, which is also what gives `Enter` something to do:
-//! it is bound and deliberately inert (see [`Action::Send`]), which is why the
-//! rule does not promise `Enter send` either.
+//! eating a letter. So it is unbound, and the rule no longer names it. `Enter`
+//! is [`Action::Send`]; the rule still does not promise `Enter send`, because
+//! the artboard never printed that hint.
 //!
 //! Modifiers Mooshik does not use are refused rather than ignored. `Alt-h` used
 //! to fall through the `Char('h')` arm and move the week's day cursor, so a key
@@ -57,6 +56,7 @@ pub fn action(key: KeyEvent, mode: Mode) -> Action {
     let Mode {
         typing,
         thread_cursor,
+        in_flight,
     } = mode;
     // Windows terminals report both press and release; acting on both would
     // double every keystroke.
@@ -101,9 +101,10 @@ pub fn action(key: KeyEvent, mode: Mode) -> Action {
         KeyCode::Left => Action::Left,
         KeyCode::Right => Action::Right,
 
-        // Esc leaves the app from a plain screen. The design gives it "back" on
-        // the settings and first-run screens, which will claim it when those
-        // land; from Today and the week there is nothing to go back to.
+        // Esc leaves the app from a plain screen. In-flight it is cancellation
+        // — the wiring `mooshik chat` gives Ctrl-C — and does not quit. A
+        // second Esc after the turn has stopped is leave again.
+        KeyCode::Esc if in_flight => Action::Cancel,
         KeyCode::Esc => Action::Quit,
 
         // A letter is a letter while typing, and a movement otherwise.
@@ -159,6 +160,7 @@ mod tests {
         Mode {
             typing: true,
             thread_cursor: false,
+            in_flight: false,
         }
     }
 
@@ -166,6 +168,15 @@ mod tests {
         Mode {
             typing: false,
             thread_cursor: true,
+            in_flight: false,
+        }
+    }
+
+    fn streaming() -> Mode {
+        Mode {
+            typing: true,
+            thread_cursor: false,
+            in_flight: true,
         }
     }
 
@@ -388,6 +399,31 @@ mod tests {
         let press =
             KeyEvent::new_with_kind(KeyCode::Char('a'), KeyModifiers::NONE, KeyEventKind::Press);
         assert_eq!(action(press, typing()), Action::Type('a'));
+    }
+
+    /// Idle `Esc` leaves; in-flight `Esc` cancels and does not leave. `q` and
+    /// `^C` still leave when they are not letters in the draft — they are not
+    /// the cancel binding.
+    #[test]
+    fn esc_cancels_an_in_flight_turn_and_quits_when_idle() {
+        assert_eq!(action(plain(KeyCode::Esc), typing()), Action::Quit);
+        assert_eq!(action(plain(KeyCode::Esc), streaming()), Action::Cancel);
+        let watching = Mode {
+            typing: false,
+            thread_cursor: false,
+            in_flight: true,
+        };
+        assert_eq!(action(plain(KeyCode::Char('q')), watching), Action::Quit);
+        assert_eq!(
+            action(plain(KeyCode::Char('q')), streaming()),
+            Action::Type('q')
+        );
+        assert_eq!(
+            action(with(KeyCode::Char('c'), KeyModifiers::CONTROL), streaming()),
+            Action::Quit
+        );
+        // After the turn has stopped, in_flight is false and Esc leaves.
+        assert_eq!(action(plain(KeyCode::Esc), typing()), Action::Quit);
     }
 
     /// An unmapped key does nothing rather than falling through to something.

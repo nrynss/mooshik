@@ -16,11 +16,12 @@ mod google_tests;
 #[cfg(test)]
 mod loop_tests;
 #[cfg(test)]
-mod mock;
+pub(crate) mod mock;
 #[cfg(test)]
 mod pins;
 
 pub use cancel::Cancellation;
+pub(crate) use chat::compose_session;
 pub use chat::run_chat;
 pub use client::{chat_completions_url, CompanionClient, CONNECT_TIMEOUT, REQUEST_TIMEOUT};
 pub use pack::{estimate_tokens, pack_messages, NoopRecall, RecallInjector};

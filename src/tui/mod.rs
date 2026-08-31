@@ -82,6 +82,14 @@ const DEMO_CAUTION: &str = include_str!("demo_caution.toml");
 /// budget in `crate::memory::view`'s own tick tests.
 pub(crate) const TICK: Duration = Duration::from_millis(250);
 
+/// How long to wait for a key while a turn is streaming.
+///
+/// [`TICK`] is the rebuild's clock, and a token arriving mid-poll does not wake
+/// it — the reply would grow in 250 ms steps, which reads as typing. This is
+/// short enough that streamed text feels like a conversation; idle restores
+/// [`TICK`] so the live panels still refresh four times a second.
+pub(crate) const STREAM: Duration = Duration::from_millis(16);
+
 /// Which of the three Today artboards `--demo` is showing.
 ///
 /// Three scenes rather than three screens, because `1a`, `1c` and `1d` *are* one
@@ -304,26 +312,43 @@ fn leave_on_signals() {}
 #[cfg(not(unix))]
 fn restore_signals(_previous: ()) {}
 
+/// The live path's turn seam. `--demo` passes `None`.
+///
+/// Start, cancel and drain live here rather than in the screens: the screens
+/// stay a pure function of the model, and the companion, the channel and the
+/// cancel handle stay in `tui_cmd::live`.
+pub(crate) trait TurnDrive {
+    /// Spawn `Session::turn` for this user text. The app has already moved the
+    /// draft into a sent turn and opened a pending assistant.
+    fn start(&mut self, user_text: &str);
+    /// Cancel the in-flight turn. Does not quit the pane.
+    fn cancel(&mut self);
+    /// Drain tokens, notices and a finished turn into `app`. Called every loop
+    /// pass, not only on a tick timeout — a token must not wait for [`TICK`].
+    fn drain(&mut self, app: &mut app::App);
+}
+
 /// Run the TUI until the user leaves, putting the terminal back either way.
 ///
-/// `refresh` is the live path's rebuild seam and nothing else: [`event_loop`]
-/// calls it once per tick and swaps the answer into the app before the next
-/// draw, and the `--demo` path passes `None` so its fixed workspace is never
-/// rebuilt. The seam is a closure rather than a type so nothing here learns
-/// that a database exists — `tui_cmd` owns the session and answers with the
-/// graph as of now.
+/// `refresh` is the live path's rebuild seam: [`event_loop`] calls it once per
+/// tick and swaps the answer into the app before the next draw, and the
+/// `--demo` path passes `None` so its fixed workspace is never rebuilt. `turn`
+/// is the live path's companion seam and `--demo` passes `None` for that too.
+/// Both seams are traits/closures rather than types so nothing here learns that
+/// a database or a model endpoint exists — `tui_cmd` owns those.
 ///
 /// SIGTERM and SIGHUP are taken for the length of the loop and restored
 /// afterwards, so a signal after this returns — the session's `close` included
 /// — behaves under its old disposition again.
-pub fn run(
+pub(crate) fn run(
     mut terminal: ratatui::DefaultTerminal,
     workspace: Workspace,
     refresh: Option<&mut dyn FnMut() -> Workspace>,
+    turn: Option<&mut dyn TurnDrive>,
 ) -> io::Result<()> {
     LEAVING.store(false, Ordering::Relaxed);
     let previous = leave_on_signals();
-    let result = event_loop(&mut terminal, workspace, refresh);
+    let result = event_loop(&mut terminal, workspace, refresh, turn);
     ratatui::restore();
     restore_signals(previous);
     result
@@ -362,16 +387,21 @@ fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     workspace: Workspace,
     mut refresh: Option<&mut dyn FnMut() -> Workspace>,
+    mut turn: Option<&mut dyn TurnDrive>,
 ) -> io::Result<()> {
     let mut app = app::App::new(workspace);
     while app.running && !asked_to_leave() {
+        if let Some(drive) = turn.as_mut() {
+            drive.drain(&mut app);
+        }
         terminal.draw(|frame| {
             let area = frame.area();
             let mut screen = grid::Grid::new(frame.buffer_mut(), area);
             app.draw(&mut screen);
         })?;
 
-        if !event::poll(TICK)? {
+        let wait = if app.turn_in_flight() { STREAM } else { TICK };
+        if !event::poll(wait)? {
             on_tick(&mut app, refresh.as_deref_mut());
             continue;
         }
@@ -380,7 +410,22 @@ fn event_loop(
         // layout from it, which is what the grid's clipping is for.
         if let Event::Key(key) = event::read()? {
             let action = input::action(key, app.mode());
-            app.apply(action);
+            match action {
+                app::Action::Send => {
+                    app.apply(action);
+                    if let (Some(drive), Some(text)) = (turn.as_mut(), app.outbound()) {
+                        let text = text.to_owned();
+                        drive.start(&text);
+                    }
+                }
+                app::Action::Cancel => {
+                    app.apply(action);
+                    if let Some(drive) = turn.as_mut() {
+                        drive.cancel();
+                    }
+                }
+                other => app.apply(other),
+            }
         }
     }
     Ok(())
@@ -444,6 +489,44 @@ mod tests {
                 "signal {signal} was left with the session's handler installed",
             );
         }
+    }
+
+    /// The loop drains the turn channel every pass, shortens the poll while a
+    /// turn is in flight, and restores [`TICK`] when it closes. An
+    /// implementation that only fills `App::apply` without this would stream
+    /// in 250 ms steps — or not at all, if it only drained on tick timeout.
+    #[test]
+    fn the_event_loop_drains_every_pass_and_shortens_the_poll_in_flight() {
+        let production = include_str!("mod.rs").split("#[cfg(test)]").next().unwrap();
+        let body = production
+            .split("fn event_loop(")
+            .nth(1)
+            .expect("event_loop must exist");
+        assert!(
+            body.contains("drive.drain(&mut app)"),
+            "the loop must drain the turn channel every pass: {body}"
+        );
+        assert!(
+            body.contains("app.turn_in_flight()"),
+            "the poll must know whether a turn is in flight: {body}"
+        );
+        assert!(
+            body.contains("STREAM"),
+            "in-flight must poll the short interval, not TICK: {body}"
+        );
+        assert!(body.contains("TICK"), "idle must restore TICK: {body}");
+        assert!(
+            !body.contains("eprintln!") && !body.contains("print!") && !body.contains("eprint!"),
+            "the event loop must not print under the alternate screen: {body}"
+        );
+        assert!(
+            body.contains("drive.start(&text)"),
+            "Send must spawn through the live drive, not only mutate the model: {body}"
+        );
+        assert!(
+            body.contains("drive.cancel()"),
+            "in-flight Esc must cancel through the live drive: {body}"
+        );
     }
 
     /// A tick asks the rebuild seam and swaps the answer in; the demo path

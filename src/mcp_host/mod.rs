@@ -55,7 +55,7 @@ use tokio::time::timeout;
 use crate::companion::{ToolExecutor, ToolSpec};
 use crate::config::Config;
 use crate::text;
-use crate::tools::{ToolRunError, ToolRuntime};
+use crate::tools::{Diagnostics, ToolRunError, ToolRuntime};
 use crate::vault::{lock_shared, SharedVault};
 
 /// Bound on spawning one MCP server (child startup + MCP initialize + discovery).
@@ -147,6 +147,8 @@ pub struct McpTools {
     spawned: Mutex<bool>,
     /// Cached merged tool specs, refreshed after spawn.
     all_specs: Mutex<Vec<ToolSpec>>,
+    /// Execute-time diagnostics. Stderr on the CLI path; a channel on the pane.
+    diagnostics: Diagnostics,
 }
 
 impl McpTools {
@@ -182,7 +184,15 @@ impl McpTools {
             call_wait: MCP_CALL_WAIT,
             spawned: Mutex::new(false),
             all_specs: Mutex::new(Vec::new()),
+            diagnostics: Diagnostics::stderr(),
         }
+    }
+
+    /// Override where execute-time diagnostics go. The pane installs a sink
+    /// that does not print; the default is stderr.
+    pub fn with_diagnostics(mut self, diagnostics: Diagnostics) -> Self {
+        self.diagnostics = diagnostics;
+        self
     }
 
     /// Override the per-call bound (tests only; shrinks the hung-child pin).
@@ -214,12 +224,15 @@ impl McpTools {
         let servers = self.servers.clone();
         let lives = self.lives.clone();
         let vault = self.vault.clone();
+        let diagnostics = self.diagnostics.clone();
         let total_budget = MCP_SPAWN_WAIT * self.servers.len().max(1) as u32;
 
         let ok = self
             .worker
             .run(
-                move |rt: &Runtime| rt.block_on(spawn_all(&servers, &lives, vault.as_ref())),
+                move |rt: &Runtime| {
+                    rt.block_on(spawn_all(&servers, &lives, vault.as_ref(), &diagnostics))
+                },
                 total_budget,
             )
             .is_ok();
@@ -261,6 +274,7 @@ impl McpTools {
         let vault = self.vault.clone();
         let tool = tool_name.to_owned();
         let args = arguments.clone();
+        let diagnostics = self.diagnostics.clone();
 
         let call_wait = self.call_wait;
         let outcome: Result<Result<String, String>, ToolRunError> = self.worker.run(
@@ -273,6 +287,7 @@ impl McpTools {
                     &tool,
                     &args,
                     wait,
+                    &diagnostics,
                 ))
             },
             call_wait + MCP_SPAWN_WAIT,
@@ -281,18 +296,21 @@ impl McpTools {
         match outcome {
             Ok(Ok(output)) => output,
             Ok(Err(msg)) => {
-                eprintln!("mcp.{}: {msg}", self.servers[idx].name);
+                self.diagnostics
+                    .emit(&format!("mcp.{}: {msg}", self.servers[idx].name));
                 text::get("tools.mcp_tool_failed")
                     .replace("{server}", &self.servers[idx].name)
                     .replace("{tool}", tool_name)
             }
             Err(ToolRunError::TimedOut) => {
                 let msg = text::get("tools.tool_timeout");
-                eprintln!("mcp.{}: {msg}", self.servers[idx].name);
+                self.diagnostics
+                    .emit(&format!("mcp.{}: {msg}", self.servers[idx].name));
                 text::get("tools.internal_error").to_owned()
             }
             Err(_) => {
-                eprintln!("mcp.{}: worker panicked", self.servers[idx].name);
+                self.diagnostics
+                    .emit(&format!("mcp.{}: worker panicked", self.servers[idx].name));
                 text::get("tools.internal_error").to_owned()
             }
         }
@@ -310,7 +328,7 @@ impl ToolExecutor for McpTools {
             Ok(output) => output,
             Err(payload) => {
                 drop(payload);
-                eprintln!("{}", text::get("tools.tool_panicked"));
+                self.diagnostics.emit(text::get("tools.tool_panicked"));
                 text::get("tools.internal_error").to_owned()
             }
         }
@@ -349,9 +367,10 @@ async fn spawn_all(
     servers: &[Arc<ServerConfig>],
     lives: &[Arc<Mutex<Option<LiveServer>>>],
     vault: Option<&SharedVault>,
+    diagnostics: &Diagnostics,
 ) {
     for (idx, cfg) in servers.iter().enumerate() {
-        let result = timeout(MCP_SPAWN_WAIT, spawn_one(cfg, vault)).await;
+        let result = timeout(MCP_SPAWN_WAIT, spawn_one(cfg, vault, diagnostics)).await;
         let live = match result {
             Ok(Some(live)) => live,
             _ => continue,
@@ -361,12 +380,16 @@ async fn spawn_all(
 }
 
 /// Spawn one MCP server: child process, rmcp handshake, tool discovery.
-async fn spawn_one(cfg: &ServerConfig, vault: Option<&SharedVault>) -> Option<LiveServer> {
+async fn spawn_one(
+    cfg: &ServerConfig,
+    vault: Option<&SharedVault>,
+    diagnostics: &Diagnostics,
+) -> Option<LiveServer> {
     // Resolve vault refs.
     let env = match resolve_env(&cfg.secret_env, vault) {
         Ok(env) => env,
         Err(msg) => {
-            eprintln!("{}", msg);
+            diagnostics.emit(&msg);
             return None;
         }
     };
@@ -384,10 +407,10 @@ async fn spawn_one(cfg: &ServerConfig, vault: Option<&SharedVault>) -> Option<Li
     let transport = match rmcp::transport::child_process::TokioChildProcess::new(cmd) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!(
+            diagnostics.emit(&format!(
                 "mcp_host: failed to spawn '{}' ({}): {e}",
                 cfg.name, cfg.command
-            );
+            ));
             return None;
         }
     };
@@ -396,10 +419,10 @@ async fn spawn_one(cfg: &ServerConfig, vault: Option<&SharedVault>) -> Option<Li
     let session = match rmcp::service::serve_client((), transport).await {
         Ok(s) => s,
         Err(e) => {
-            eprintln!(
+            diagnostics.emit(&format!(
                 "mcp_host: MCP handshake failed for '{}' ({}): {e}",
                 cfg.name, cfg.command
-            );
+            ));
             return None;
         }
     };
@@ -408,10 +431,10 @@ async fn spawn_one(cfg: &ServerConfig, vault: Option<&SharedVault>) -> Option<Li
     let tools = match session.peer().list_all_tools().await {
         Ok(t) => t,
         Err(e) => {
-            eprintln!(
+            diagnostics.emit(&format!(
                 "mcp_host: tools/list failed for '{}' ({}): {e}",
                 cfg.name, cfg.command
-            );
+            ));
             return None;
         }
     };
@@ -462,11 +485,12 @@ async fn execute_on_worker(
     tool: &str,
     arguments: &Value,
     call_wait: Duration,
+    diagnostics: &Diagnostics,
 ) -> Result<String, String> {
     // Phase 1: ensure a live session exists. Lock, decide, release.
     let needs_spawn = slot.lock().as_ref().is_none_or(|live| !live.alive());
     if needs_spawn {
-        let fresh = timeout(MCP_SPAWN_WAIT, spawn_one(cfg, vault))
+        let fresh = timeout(MCP_SPAWN_WAIT, spawn_one(cfg, vault, diagnostics))
             .await
             .unwrap_or(None);
         *slot.lock() = fresh;
@@ -494,7 +518,7 @@ async fn execute_on_worker(
         }
         Err(CallError::Transport) => {
             drop(live);
-            let revived = timeout(MCP_SPAWN_WAIT, spawn_one(cfg, vault))
+            let revived = timeout(MCP_SPAWN_WAIT, spawn_one(cfg, vault, diagnostics))
                 .await
                 .unwrap_or(None);
             match revived {
