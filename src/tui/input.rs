@@ -2,7 +2,8 @@
 //!
 //! Everything bound, in full: `Tab`/`Shift-Tab` cycle panels, `^1` and `^2`
 //! choose the view, `Enter` sends, `Backspace` edits the draft, the arrows and
-//! `H`/`J`/`K`/`L` move the two cursors, and `Esc`, `q` and `^C` leave. That list
+//! `H`/`J`/`K`/`L` move the two cursors, `Esc` stops a reply then leaves, and
+//! `q` and `^C` leave. That list
 //! and the hints in `src/text/en.toml` are the same list, deliberately: the
 //! design's rules also printed `Alt-H/L resize`, `^K a day`, `? keys`, `/ find`,
 //! `^, settings` and `Enter open the day`, none of which is bound to anything,

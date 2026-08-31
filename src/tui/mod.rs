@@ -412,10 +412,16 @@ fn event_loop(
             let action = input::action(key, app.mode());
             match action {
                 app::Action::Send => {
+                    // outbound() stays Some for the whole flight, so gating
+                    // start on it would spawn again and replace the cancel
+                    // handle the first Esc is supposed to signal.
+                    let opened = !app.turn_in_flight();
                     app.apply(action);
-                    if let (Some(drive), Some(text)) = (turn.as_mut(), app.outbound()) {
-                        let text = text.to_owned();
-                        drive.start(&text);
+                    if opened {
+                        if let (Some(drive), Some(text)) = (turn.as_mut(), app.outbound()) {
+                            let text = text.to_owned();
+                            drive.start(&text);
+                        }
                     }
                 }
                 app::Action::Cancel => {
@@ -526,6 +532,44 @@ mod tests {
         assert!(
             body.contains("drive.cancel()"),
             "in-flight Esc must cancel through the live drive: {body}"
+        );
+        let drain_at = body
+            .find("drive.drain(&mut app)")
+            .expect("drain must be in the loop body");
+        let poll_at = body.find("event::poll(wait)").expect("the loop must poll");
+        assert!(
+            drain_at < poll_at,
+            "drain must run before poll so a key does not skip tokens"
+        );
+    }
+
+    /// A second Enter while a turn is already on screen must not spawn. The
+    /// live Send arm used to `start` whenever `outbound()` was `Some`, which
+    /// it is for the whole flight, and `PaneTurn::start` then replaced the
+    /// cancel handle the first Esc is supposed to signal.
+    #[test]
+    fn a_second_enter_does_not_spawn() {
+        let production = include_str!("mod.rs").split("#[cfg(test)]").next().unwrap();
+        let body = production
+            .split("fn event_loop(")
+            .nth(1)
+            .expect("event_loop must exist");
+        let opened = body
+            .find("let opened = !app.turn_in_flight()")
+            .expect("start must be gated on Send having just opened a flight");
+        let gated = body
+            .find("if opened")
+            .expect("start must run only when this Send opened a flight");
+        let start = body
+            .find("drive.start(&text)")
+            .expect("Send must spawn through the live drive");
+        assert!(
+            opened < gated && gated < start,
+            "start must sit inside the opened gate, not beside it: {body}"
+        );
+        assert!(
+            body.contains("drive.cancel()"),
+            "Esc after one Enter must still cancel the turn on screen: {body}"
         );
     }
 

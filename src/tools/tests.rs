@@ -762,6 +762,63 @@ fn the_over_an_open_handle_factory_never_prints_and_never_opens() {
         factory.contains("with_diagnostics(diagnostics.clone())"),
         "execute-time diagnostics must be installed on the pane's tools: {factory}"
     );
+    assert!(
+        factory.contains("with_scratch(MemoryTools::chat_scratch"),
+        "the pane path must hold the inner scratch confirm shut: {factory}"
+    );
+}
+
+#[test]
+fn execute_time_failures_go_through_diagnostics_not_print() {
+    // A pane-path eprintln! at PLAN's named MemoryTools execute-time sites
+    // corrupts the alternate screen. The other print pins never read these
+    // three functions.
+    let production = include_str!("mod.rs").split("#[cfg(test)]").next().unwrap();
+    let execute = production
+        .split("impl ToolExecutor for MemoryTools")
+        .nth(1)
+        .expect("MemoryTools must implement ToolExecutor")
+        .split("fn execute(")
+        .nth(1)
+        .expect("execute must exist")
+        .split("/// The CLI-facing factory")
+        .next()
+        .unwrap();
+    for (name, body) in [
+        (
+            "lambo_err",
+            production
+                .split("fn lambo_err(")
+                .nth(1)
+                .expect("lambo_err must exist")
+                .split("fn lambo_run_err(")
+                .next()
+                .unwrap(),
+        ),
+        (
+            "lambo_run_err",
+            production
+                .split("fn lambo_run_err(")
+                .nth(1)
+                .expect("lambo_run_err must exist")
+                .split("impl ToolExecutor for MemoryTools")
+                .next()
+                .unwrap(),
+        ),
+        ("execute", execute),
+    ] {
+        for forbidden in ["eprintln!", "print!", "eprint!"] {
+            assert!(
+                !body.contains(forbidden),
+                "{name} must not {forbidden}: {body}"
+            );
+        }
+        let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            compact.contains("diagnostics.emit"),
+            "{name} must emit through Diagnostics: {body}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -795,6 +852,30 @@ async fn the_pane_path_asks_the_caller_rather_than_stdin() {
         1,
         "the gate must ask the caller exactly once"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_pane_path_holds_the_inner_scratch_confirm_shut() {
+    // On scratch = 'allow' the gate never asks, so the inner confirm is the
+    // one that runs. MemoryTools::over defaults to stdin; chat_scratch is
+    // what holds that shut.
+    let config = Config::from_toml_and_env("[permissions]\nscratch = 'allow'\n", []).unwrap();
+    let stack = super::executor_over_memory(
+        &config,
+        None,
+        Arc::new(fixture_memory().await),
+        crate::memory::WriteLane::new(),
+        Box::new(|_| false),
+        super::Diagnostics::stderr(),
+    );
+    let out = stack.tools.execute(
+        TOOL_SCRATCH,
+        &json!({ "language": "bash", "code": "echo hi" }),
+    );
+    let value: Value = serde_json::from_str(&out)
+        .unwrap_or_else(|_| panic!("inner confirm must not be stdin (got {out})"));
+    assert_eq!(value["exit_code"], 0, "{out}");
+    assert!(value["stdout"].as_str().unwrap().contains("hi"), "{out}");
 }
 
 #[test]

@@ -219,7 +219,7 @@ inert_list = "deny-until-a-tool-matches"
 # rather than chrome and arrives in the view model, so none of it is here.
 [tui]
 help = "Open the terminal interface"
-after_help = "The conversation, what the graph is doing underneath it, and what keeps coming back — in one pane you leave open.\n\nExamples:\n  mooshik tui                  the live workspace\n  mooshik tui --demo           the design's demo day, touching nothing\n  mooshik tui --demo recall    the same day with Monday's words quoted back\n  mooshik tui --demo caution   the same day with one careful sentence standing\n\nKeys: Tab cycles panels · ^1 today · ^2 the week · Esc or ^C leaves. Needs a terminal; 80x24 is the smallest useful size."
+after_help = "The conversation, what the graph is doing underneath it, and what keeps coming back — in one pane you leave open.\n\nExamples:\n  mooshik tui                  the live workspace\n  mooshik tui --demo           the design's demo day, touching nothing\n  mooshik tui --demo recall    the same day with Monday's words quoted back\n  mooshik tui --demo caution   the same day with one careful sentence standing\n\nKeys: Tab cycles panels · ^1 today · ^2 the week · Esc stops a reply then leaves · ^C leaves. Needs a terminal; 80x24 is the smallest useful size."
 demo_help = "Draw the design's demo day instead of the live workspace, reading no configuration and opening no database. Takes an optional scene: today (the default), recall, or caution."
 brand = "Mooshik"
 separator = "  ·  "
@@ -272,15 +272,15 @@ hint_composer = "Nothing here needs saving"
 turn_pending = "…"
 # Only keys `tui::input` binds may appear here — a hint is a promise. See the
 # header of that module for the whole keymap.
-hint_today = "Tab panel · J/K a thread · ^2 week · Esc leave"
-hint_week = "H/L a day · J/K a thread · ^1 today · Esc leave"
+hint_today = "Tab panel · J/K a thread · ^2 week · Esc stops"
+hint_week = "H/L a day · J/K a thread · ^1 today · Esc stops"
 # No `Tab panel` here. `1h` collapses the three right-hand panels to two summary
 # rows and drops the third, so the narrow layout has exactly one focus — the
 # conversation and the composer, which share it — and `Tab` deliberately moves
 # nothing. A key that is bound and does nothing is the same broken promise as a
 # key that is not bound at all. `J/K a thread` is absent for the same reason:
 # this screen draws no thread cursor.
-hint_narrow = "^2 week · Esc leave"
+hint_narrow = "^2 week · Esc stops"
 # Not a key hint: how many threads the collapsed line did not have room for.
 # `{count}` is spelled where the artboards spell it — see [tui.numbers].
 narrow_more = "{count} more"

@@ -353,6 +353,11 @@ impl PaneTurn {
 
 impl TurnDrive for PaneTurn {
     fn start(&mut self, user_text: &str) {
+        // A second Enter while in flight used to replace this handle, so Esc
+        // signalled a turn that was not the one on screen.
+        if self.cancel.is_some() {
+            return;
+        }
         let cancel = Cancellation::new();
         self.cancel = Some(cancel.clone());
         let session = Arc::clone(&self.session);
@@ -670,6 +675,21 @@ mod tests {
         // compose through compose_session and spawn Session::turn on the pane
         // runtime — never block_on the turn on the event-loop thread.
         let source = production();
+        let live = source
+            .split("fn live(")
+            .nth(1)
+            .expect("live must exist")
+            .split("fn converse(")
+            .next()
+            .unwrap();
+        assert!(
+            live.contains("converse("),
+            "live must call converse, not skip it: {live}"
+        );
+        assert!(
+            !live.contains("draw("),
+            "live must not pass None as the turn drive by drawing directly: {live}"
+        );
         let converse = source
             .split("fn converse(")
             .nth(1)
@@ -711,6 +731,49 @@ mod tests {
         assert!(
             !drive.contains("block_on"),
             "the turn must not block_on the event-loop thread: {drive}"
+        );
+        let guard = drive
+            .find("if self.cancel.is_some()")
+            .expect("start must refuse to replace a live cancel handle");
+        let assign = drive
+            .find("self.cancel = Some")
+            .expect("start must install the cancel handle it spawned with");
+        assert!(
+            guard < assign,
+            "a live cancel handle must not be replaced: {drive}"
+        );
+    }
+
+    /// Esc after one Enter still stops the turn on screen: `start` must not
+    /// clobber a live handle, and the Cancel arm still signals it.
+    #[test]
+    fn esc_after_one_enter_still_stops_the_turn_on_screen() {
+        let source = production();
+        let drive = source
+            .split("impl TurnDrive for PaneTurn")
+            .nth(1)
+            .expect("PaneTurn must implement TurnDrive")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        assert!(
+            drive.contains("if self.cancel.is_some()"),
+            "start must not replace a live cancel handle: {drive}"
+        );
+        let loop_body = include_str!("../tui/mod.rs")
+            .split("fn event_loop(")
+            .nth(1)
+            .expect("event_loop must exist")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        assert!(
+            loop_body.contains("drive.cancel()"),
+            "in-flight Esc must still cancel the turn on screen: {loop_body}"
+        );
+        assert!(
+            loop_body.contains("let opened = !app.turn_in_flight()"),
+            "Esc after one Enter only holds if a second Enter did not start: {loop_body}"
         );
     }
 

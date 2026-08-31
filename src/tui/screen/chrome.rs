@@ -553,7 +553,7 @@ mod tests {
             short_scope: "214 remembered".to_owned(),
             well: true,
         };
-        let keys = "Tab panel · J/K a thread · ^2 week · Esc leave";
+        let keys = crate::text::get("tui.hint_today");
         for width in [70u16, 90, 100, 104, 108, 109, 120] {
             let buf = drawn(width, 1, |grid| {
                 health_rule(grid, Margins::WIDE, 0, &health, &health.scope, keys);

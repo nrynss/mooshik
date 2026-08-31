@@ -322,6 +322,42 @@ fn sending_moves_the_draft_into_a_user_turn_and_shows_pending() {
     }
 }
 
+/// A second Enter while a turn is already in flight is ignored: the draft
+/// stays, the open flight stays the first one. The event loop gates `start`
+/// on that same fact, so this is the model half of "second Enter does not
+/// spawn".
+#[test]
+fn a_send_while_in_flight_is_ignored() {
+    let mut app = app();
+    for character in "first".chars() {
+        app.apply(Action::Type(character));
+    }
+    app.apply(Action::Send);
+    let flight = app
+        .outbound()
+        .expect("the first Send opened a flight")
+        .to_owned();
+    let turns = app.workspace.conversation.turns.len();
+    for character in "second".chars() {
+        app.apply(Action::Type(character));
+    }
+    app.apply(Action::Send);
+    assert_eq!(
+        app.workspace.conversation.composer.draft, "second",
+        "an in-flight Send must not consume the draft"
+    );
+    assert_eq!(
+        app.outbound(),
+        Some(flight.as_str()),
+        "the open flight must stay the first question"
+    );
+    assert_eq!(
+        app.workspace.conversation.turns.len(),
+        turns,
+        "a second Enter must not open another pair of turns"
+    );
+}
+
 /// An empty draft on Enter sends nothing — no blank turn, no pending marker.
 #[test]
 fn an_empty_draft_on_enter_sends_nothing() {

@@ -566,7 +566,7 @@ mod tests {
         assert!(!row.contains("J/K"), "{row:?}");
         // What it does promise is bound and does something.
         assert!(row.contains("^2 week"), "{row:?}");
-        assert!(row.contains("Esc leave"), "{row:?}");
+        assert!(row.contains("Esc stops"), "{row:?}");
     }
 
     /// The nav abbreviates rather than wrapping, and Today is lit.

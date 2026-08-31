@@ -203,9 +203,11 @@ impl App {
         self.in_flight.is_some()
     }
 
-    /// The user text of the in-flight turn, if Send just opened one.
+    /// The user text of the in-flight turn.
     ///
-    /// The live path reads this to spawn `Session::turn`. `--demo` never does.
+    /// Some for the whole flight, not a one-shot: the live path reads this to
+    /// spawn `Session::turn` only when Send just opened that flight.
+    /// `--demo` never does.
     pub fn outbound(&self) -> Option<&str> {
         let index = self.in_flight?.checked_sub(1)?;
         match self.workspace.conversation.turns.get(index) {
