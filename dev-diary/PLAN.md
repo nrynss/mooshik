@@ -1141,6 +1141,47 @@ tool calls work with no grant written and `init` should not raise the subject. S
 `session.id`, `session.agent`, `vault.provider`, `daemon.flush_interval_ms`, and the embedder's
 `gemini_location` (`us-central1`), `gemini_model` and `dim`, all of which are already right.
 
+**The flow, end to end.**
+
+*Opening.* Say two things before the first question. That every answer is also a line in
+`~/.mooshik/config.toml`, editable at any time, and that re-running `init` asks only for what is
+still missing. Nobody should feel they are being walked into a one-way door.
+
+*Then the vault, because everything else stores secrets in it.* `keyring` is the default and puts
+the master key in the OS Secret Service, as `vault-master@mooshik:default`. That needs a session
+bus, so a headless box or an SSH session without one has no keyring, and `passphrase` is the answer
+there. `init` should say which one it picked and why, rather than silently choosing.
+
+*Then the store, named as what it is.* Mooshik keeps memory in Lambo, and Lambo writes to SQLite or
+Postgres. Three user-facing answers, two kinds: a local SQLite file, a Postgres you run, or a cloud
+Postgres. The third is the same `kind` as the second and differs only in what has to be true first,
+which is exactly why it deserves its own line: Cloud SQL usually means the Auth Proxy has to be
+running before `init` can reach the database at all. **Never offer `memory`.** It is a test double
+that keeps nothing across a restart.
+
+*Then the embedder, and warn that the answer is sticky.* `gemini` or `bge_m3`, never `fixture`. The
+embedding contract is kind plus model plus dimension, stamped per session, and a later mismatch is
+refused rather than silently mixed. So changing this afterwards means re-embedding. That warning
+belongs at the moment of choosing, not in a README a user reads later.
+
+*Then inference.* Any OpenAI-compatible `/v1` endpoint, or Vertex. The Vertex branch asks for
+project and credentials and derives the rest. The local branch asks for a URL and a model name.
+
+*Verify each answer as it is given, not all of them at the end.* Connect to the store and provision
+the schema. Embed one probe string. Make one cheap completion. A wrong DSN should be caught at the
+DSN question while the user still remembers what they typed, not after five more questions.
+
+*Then MCP servers, offered.* If the venv from `install.sh` is there, offer `news`, `artifacts` and
+`coder`. Ask for the coding agent only if `coder` is wanted. Declining is one keystroke.
+
+*Then say what to run.* `mooshik tui`.
+
+**And close the honest gap: the pane opens empty.** A fresh install has an empty graph, so the first
+`mooshik tui` shows a week with nothing in it, which reads as broken rather than new. `init` has to
+address that in its last breath. Either offer to ingest a corpus the user points at, or say plainly
+that the pane fills as they work and that the watcher is what fills it. Saying nothing is the one
+option that makes a working install look like a failed one.
+
 **Errors should name the durable fix first.** `recall` currently says "Set MOOSHIK_POSTGRES_DSN",
 which is the environment escape hatch. The path that survives a reboot is
 `mooshik secret set <name>` plus `mooshik config set store.dsn_secret <name>`, and the message
