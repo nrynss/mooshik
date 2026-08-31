@@ -28,6 +28,7 @@ mod render;
 mod resolve;
 mod secret;
 mod tui_cmd;
+mod watcher;
 
 #[cfg(test)]
 mod tests;

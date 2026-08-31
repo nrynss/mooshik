@@ -65,7 +65,7 @@ the surface landed, so the data behind it became worth building.
 | **M12a** | Built 2026-08-30, `cf3dcbb`. `memory::view` reads the open graph into the view model: the week ending today, each day's log, the ribbon, what keeps coming back and what was just remembered, every placement resolved through `Interaction::about_time`. `mooshik tui` now holds the session for the length of the pane and closes it on the way out. Prose is deliberately unwritten — mood, gutter summaries, notes and a thread's reason are M12c's. Review rounds 2–6: **APPROVE**, zero residue (`m12a-round6.md`) — the graph's `-wal`/`-shm` claimed private, the scratch sandbox pinned 0700/0600 under a deterministic pin, signals restored after the session. See M12 below. |
 | **M12b** | Built 2026-08-31. The tick: the redraw loop rebuilds the view model every 250 ms, so a write from the ingester, an MCP client or the reflect pass appears in the open pane without a keystroke. R1-3's deferred guard-duration item landed: the graph is copied out from under one short guard and the build runs against the copy, pinned by a structural (`syn`) guard-duration pin and measured (release embedded ~29 ms at the 4k shape vs the 250 ms budget). Review rounds 1–8: **APPROVE**, zero residue within the documented limits (`m12b-round8.md`). |
 | **M12c** | Built 2026-08-31. `mooshik reflect [--dry-run]`: a one-shot consolidation pass that writes the prose M12a left empty — a day's mood, its four-words-a-line gutter summary, the trailing notes, and a thread's reason — as `mooshik-prose:` concepts the pane shows on the next tick, and merges the paraphrase twins into their strongest (loser content preserved, edges rerouted, audit row per cluster; re-runs are a true no-op). First-write-only by design. Review rounds 1–3: **APPROVE**, zero residue (`m12c-round3.md`). |
-| **M12d** | Not started. The seam it builds on landed in `ac4cfdc` (pane runtime, shared `Memory`, `WriteLane`). See the M12 section. |
+| **M12d** | Built 2026-08-31. The live pane owns a cancellable polling watcher for the current workspace: `.md/.markdown/.txt/.rst` files only, generated directories and symlinks excluded, file contents scanned with the ingester's whole-document secret policy but never derived. Git changes carry SHA/message metadata only, with commit author time; file events carry mtime. A 250 ms debounce coalesces bursts, and every derive uses the pane's shared `WriteLane`. The task is joined before `Memory::close`; it is never a daemon. Focused offline tests cover discovery/filtering, debounce replacement, secret drops, git metadata/time, and cancellation. |
 | **M12e** | Not started. The composer takes typing and `Enter` answers nothing; the pane cannot converse. Its three structural blockers are gone — the seam landed in `ac4cfdc`. See the M12 section. |
 | **M12f** | Not started. The memory reads `.md/.txt/.rst` and nothing else; every screenshot and recording in the workspace is invisible to it. See the M12 section. |
 
@@ -775,6 +775,19 @@ the pathology `backdate.py` exists to prevent, arriving by a different route.
 **Depends on:** the seam (`ac4cfdc`), M2 for the graph, M12b for the tick that shows the result.
 **Done when:** work done in an editor and a commit made in a terminal both appear in the open pane
 with nothing typed into it.
+
+**Implementation decision:** M12d takes the metadata-only option. A saved file is scanned in full,
+including configured vault values while the vault lock is held, and a clean event derives only
+`workspace file changed: <relative allowlisted path>` as an `Observation`; allowlisted files inside
+repositories are deliberately excluded because repositories are metadata-only sources. A commit is scanned
+for the same secret classes and derives `git commit <sha> in <repo>: <message>` as an `Observation`;
+the git command is `--no-patch` and requests no parent, stat, or patch fields. This keeps the
+ambient signal useful for recall without putting workspace prose or credentials into the graph.
+The watcher polls the process's current working directory, because M12d has no separate workspace
+setting, and stops with the pane; an existing repository's history is baselined rather than
+replayed on open. Different historical event times are kept in separate derive groups so every
+file mtime and commit author time remains truthful, even when one debounce window contains several
+sources.
 
 ### M12e — what to move, and what not to break
 

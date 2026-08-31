@@ -264,6 +264,9 @@ needs_a_terminal = "The terminal interface needs a terminal to draw on, and this
 # a poll or a read went wrong. Not the same fault as having no terminal at all,
 # so not the same sentence.
 session_failed = "The terminal interface stopped because the terminal could not be drawn to or read from. Your shell has been put back the way it was; run `mooshik tui` again to reopen it."
+watcher_workspace_unavailable = "The current workspace could not be watched. Check that it is a readable directory, then run `mooshik tui` again."
+watcher_task_failed = "The workspace watcher stopped unexpectedly. Run `mooshik tui` again to resume live changes."
+watcher_memory_failed = "A workspace change could not be written to memory. The watcher will retry while the pane remains open."
 hint_composer = "Nothing here needs saving"
 # Only keys `tui::input` binds may appear here — a hint is a promise. See the
 # header of that module for the whole keymap.
