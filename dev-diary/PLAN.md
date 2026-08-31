@@ -1197,6 +1197,29 @@ everything to explain:
 A configurable default root, or several roots, is a reasonable thing to want later. It is not what
 ships, and pretending otherwise in a first-run message would be worse than the limitation.
 
+**So `init` closes by telling the user where to open the pane.** Plain sentences, not a warning
+block. The shape of the advice, and the measurements behind it (this machine, 2026-08-31, walking
+the same rules the watcher uses):
+
+| Opened from | Loose files | Nested repos | Dirs walked | One walk |
+| --- | --- | --- | --- | --- |
+| a single repo | 213 | 0 | 109 | 2 ms |
+| a parent of several repos | 4,712 | 32 | 3,919 | 58 ms |
+| `$HOME` | 28,202 | 84 | 156,851 | **2,487 ms** |
+
+* **A parent directory holding your projects is the right answer**, and it is what the operator
+  chose. Repos under it contribute their commits, loose notes contribute file events, and the walk
+  stays inside the poll budget.
+* **Not `$HOME`.** It is not merely noisy. The watcher re-walks on every poll rather than using
+  inotify, and one walk of a home directory took roughly ten times the 250 ms budget. Say this as a
+  fact about cost, not as a scolding.
+* **Inside a single repo is the narrow choice**, and worth naming so a user understands the
+  difference: the root is always walked, so opening the pane *inside* a repository watches that
+  repository's own files, while opening it from the parent takes only that repository's commits.
+
+Re-measure before quoting numbers in the shipped text. The shape of the advice will hold, the
+figures are one machine on one day.
+
 **Errors should name the durable fix first.** `recall` currently says "Set MOOSHIK_POSTGRES_DSN",
 which is the environment escape hatch. The path that survives a reboot is
 `mooshik secret set <name>` plus `mooshik config set store.dsn_secret <name>`, and the message
