@@ -60,7 +60,7 @@ server closed — no tools contributed, other servers unaffected.
 
 **Only secrets need to be listed here.** The child inherits Mooshik's own
 environment, so non-secret settings — `MOOSHIK_GEMINI_PROJECT`,
-`MOOSHIK_GEMINI_LOCATION`, `NEWS_MODEL`, the timeouts — can simply be exported
+`NEWS_LOCATION`, `NEWS_MODEL`, the timeouts — can simply be exported
 wherever Mooshik is started. A Vertex setup on a machine with application
 default credentials often needs no `[mcp_servers.news.env]` block at all.
 
@@ -93,9 +93,9 @@ prints a value.
 | --- | --- | --- |
 | `MOOSHIK_GEMINI_API_KEY` | — | Gemini Developer API key. When set, runs in API-key mode and needs no project |
 | `MOOSHIK_GEMINI_PROJECT` | — | Vertex AI project id. **Required** unless an API key is set |
-| `MOOSHIK_GEMINI_LOCATION` | `global` | Vertex region; `global` is where Search grounding is served |
+| `NEWS_LOCATION` | `global` | Vertex region. Its own variable, never `MOOSHIK_GEMINI_LOCATION` — that is the embedder's region, and no Gemini 3.x model is served outside `global` |
 | `MOOSHIK_GEMINI_CREDENTIALS` | *(ADC)* | Path to a service-account JSON file |
-| `NEWS_MODEL` | `gemini-2.5-flash` | Grounding model |
+| `NEWS_MODEL` | `gemini-3.7-flash` | Grounding model |
 | `NEWS_TIMEOUT_SECS` | `45` | Per-call wall clock, deliberately inside Mooshik's own 60 s bound |
 | `NEWS_MAX_CHARS` | `6000` | Character budget for the answer body, before sources |
 | `NEWS_LOG_LEVEL` | `INFO` | Level for this package's stderr logging |

@@ -25,6 +25,7 @@ from typing import Any, Sequence
 
 from google.genai import types
 
+from .config import DEFAULT_MODEL
 from .errors import NewsToolError, redact
 from .render import collect_sources, render
 
@@ -118,7 +119,7 @@ class GroundedBackend:
         self,
         client: Any,
         *,
-        model: str = "gemini-2.5-flash",
+        model: str = DEFAULT_MODEL,
         max_chars: int = 6_000,
         timeout_secs: float = 45.0,
         secrets: Sequence[str] = (),

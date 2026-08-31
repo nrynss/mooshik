@@ -28,9 +28,14 @@ from typing import Mapping
 API_KEY_ENV = "MOOSHIK_GEMINI_API_KEY"
 #: Vertex AI project id. Required unless `MOOSHIK_GEMINI_API_KEY` is set.
 PROJECT_ENV = "MOOSHIK_GEMINI_PROJECT"
-#: Vertex AI location; defaults to `global`, which is where Search grounding
-#: is served.
-LOCATION_ENV = "MOOSHIK_GEMINI_LOCATION"
+#: Vertex AI location for grounding. Its own variable, deliberately NOT
+#: `MOOSHIK_GEMINI_LOCATION`: that one is the embedder's region
+#: (`gemini-embedding-001`, us-central1) and reading it here overrides the
+#: correct `global` default with a region where no Gemini 3.x model exists —
+#: `404 NOT_FOUND: Publisher model ... was not found`, the same trap the
+#: ingester hit on 2026-08-31. `global` is also where Search grounding is
+#: served, so this variable has two reasons to be independent.
+LOCATION_ENV = "NEWS_LOCATION"
 #: Path to a service-account JSON file. Optional: without it the client falls
 #: back to application-default credentials.
 CREDENTIALS_ENV = "MOOSHIK_GEMINI_CREDENTIALS"
@@ -40,7 +45,7 @@ TIMEOUT_ENV = "NEWS_TIMEOUT_SECS"
 MAX_CHARS_ENV = "NEWS_MAX_CHARS"
 LOG_LEVEL_ENV = "NEWS_LOG_LEVEL"
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.7-flash"
 DEFAULT_LOCATION = "global"
 #: Per-call wall clock. Mooshik applies its own 60s bound per MCP call; this
 #: one is deliberately shorter so the server answers with a contained timeout
