@@ -139,13 +139,25 @@ cargo build --release
 
 ## First run
 
-Run the interactive setup:
+On the shared posture, log in to Google Cloud first:
+
+```bash
+gcloud auth application-default login
+```
+
+```bash
+gcloud auth application-default set-quota-project YOUR_PROJECT
+```
+
+`login` writes the credentials file and `set-quota-project` writes the quota project into it, which Vertex requires. Run both before the next step, because Mooshik reads credentials once at startup. A service-account key file works instead, and the local posture needs neither.
+
+Then run the interactive setup:
 
 ```bash
 mooshik init
 ```
 
-The setup asks for your deployment posture, storage configuration, embedder, and inference credentials. All secrets are read without terminal echo and stored in the encrypted vault.
+The setup asks for your deployment posture, storage configuration, embedder, and inference credentials. It finds your gcloud credentials on its own and offers them as the default, so that question is a single Enter. All secrets are read without terminal echo and stored in the encrypted vault.
 
 Launch the terminal interface from your project parent directory:
 

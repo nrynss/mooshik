@@ -22,7 +22,7 @@ The following 19 keys can be updated using `mooshik config set <key> <value>`:
 | `embedder.gemini_credentials` | File Path | Path to service account JSON for embeddings. |
 | `daemon.flush_interval_ms` | Positive Integer | Background flush interval in milliseconds. |
 | `companion.base_url` | URL | Endpoint URL for OpenAI-compatible `/v1` companion. |
-| `companion.model` | String | Language model identifier (e.g. `gemini-3.7-flash`). |
+| `companion.model` | String | Language model identifier. On the Google posture this needs the publisher prefix: `google/gemini-3.7-flash`. |
 | `companion.api_key_secret` | Secret Name | Vault secret name holding companion API bearer key. |
 | `companion.auth` | `none` \| `bearer` \| `google` | Authentication method for the companion endpoint. |
 | `companion.google_project` | String | Google Cloud project ID for Vertex AI companion. |
@@ -73,7 +73,7 @@ Configures the language model for conversational turns and tool execution.
 auth = "google"
 google_project = "my-project"
 google_location = "global"
-model = "gemini-3.7-flash"
+model = "google/gemini-3.7-flash"
 context_window = 32768
 temperature = 0.2
 ```

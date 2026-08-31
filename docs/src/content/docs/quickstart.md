@@ -27,6 +27,9 @@ Run the interactive setup wizard:
 mooshik init
 ```
 
+> [!NOTE]
+> On the shared posture, log in to Google Cloud first. Run `gcloud auth application-default login`, then `gcloud auth application-default set-quota-project YOUR_PROJECT`. Both must run before `mooshik init`, because Mooshik reads credentials once at startup. A service-account key file works instead. The local posture needs neither.
+
 The wizard guides you through choosing a posture, connecting storage, and configuring model endpoints. All secrets are stored directly in the local encrypted vault.
 
 ## 3. Launch the Terminal Pane

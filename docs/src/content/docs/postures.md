@@ -17,7 +17,7 @@ Your posture determines where your memory graph is stored, how embeddings are ge
 | **Embedding Model** | BGE-M3 (1024 dimensions) | `gemini-embedding-001` (1536 dimensions) |
 | **Companion Auth** | `none` or `bearer` | `google` |
 | **Companion Endpoint** | Local `/v1` endpoint (llama.cpp, Ollama) | Vertex AI endpoint |
-| **Companion Model** | `local-model` (e.g. Qwen, Llama) | `gemini-3.7-flash` |
+| **Companion Model** | `local-model` (e.g. Qwen, Llama) | `google/gemini-3.7-flash` |
 | **Network Access** | Completely offline | Requires internet access for Vertex AI |
 | **Multi-Machine Sync** | No (single machine) | Yes (shared cross-machine graph) |
 
@@ -55,8 +55,9 @@ temperature = 0.2
 The shared posture connects multiple computers to a single graph memory.
 
 - **Continuous cross-machine memory:** Your desktop, laptop, and background batch jobs share the same knowledge graph.
-- **Hosted inference:** Uses `gemini-3.7-flash` via Vertex AI for fast companion responses.
+- **Hosted inference:** Uses `google/gemini-3.7-flash` via Vertex AI for fast companion responses.
 - **Requirements:** A PostgreSQL database with the `vector` extension (such as Google Cloud SQL) and Google Cloud Vertex AI access.
+- **Credentials:** Either a gcloud login, which is `gcloud auth application-default login` followed by `gcloud auth application-default set-quota-project YOUR_PROJECT`, or a service-account key file. Run both gcloud commands before `mooshik init`, since Mooshik reads credentials at startup. See [Guided Setup](/mooshik/guided-setup/).
 
 Example `~/.mooshik/config.toml` for the shared posture:
 
@@ -81,7 +82,7 @@ auth = "google"
 google_project = "my-project"
 google_location = "global"
 google_credentials = "/path/to/credentials.json"
-model = "gemini-3.7-flash"
+model = "google/gemini-3.7-flash"
 context_window = 32768
 temperature = 0.2
 ```

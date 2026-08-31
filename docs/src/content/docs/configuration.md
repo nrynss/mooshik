@@ -18,7 +18,7 @@ mooshik config show
 Update a setting:
 
 ```bash
-mooshik config set companion.model "gemini-3.7-flash"
+mooshik config set companion.model "google/gemini-3.7-flash"
 ```
 
 ### Storing Credentials in the Vault

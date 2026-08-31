@@ -11,6 +11,28 @@ Run the wizard from your terminal:
 mooshik init
 ```
 
+## Before You Start: Google Credentials
+
+The shared posture talks to Vertex AI, so it needs Google credentials. You have two ways in.
+
+**A gcloud login is the usual one.** Run both commands before you start `mooshik init`:
+
+```bash
+gcloud auth application-default login
+```
+
+```bash
+gcloud auth application-default set-quota-project YOUR_PROJECT
+```
+
+`login` writes the Application Default Credentials file. `set-quota-project` writes the quota project into that same file, and Vertex rejects calls that have no quota project. Order matters, because the second command edits the file the first one creates.
+
+Both must run before `mooshik init` starts. Mooshik reads credentials once at startup, so setting a quota project while the wizard is waiting at a prompt does not help. The wizard checks for this up front. If your credentials file has no quota project, it names the command and stops rather than offering a retry that cannot succeed. Rerunning keeps everything you already answered.
+
+**A service-account key file also works.** Give the wizard the path when it asks. This is the right answer on a headless machine, or when you already run a service account.
+
+The local posture needs none of this.
+
 ## Design Principles
 
 - **One question at a time.** The wizard prompts for one setting at a time and writes the answer immediately using the same verified writer as `mooshik config set`.
@@ -33,11 +55,14 @@ When you select the shared posture, the wizard collects the following settings:
 
 1. **Database connection string (DSN):** Read without echo into the vault under the name `store-dsn`. The wizard sets `store.dsn_secret = "store-dsn"`, `store.kind = "postgres"`, and provisions the graph schema.
 2. **Google Cloud project:** Sets both `embedder.gemini_project` and `companion.google_project`. You can provide different project IDs if inference and embedding live in separate projects.
-3. **Google credentials path:** Sets both `companion.google_credentials` and `embedder.gemini_credentials`.
-4. **Derived defaults:** The wizard sets `companion.auth = "google"`, `companion.google_location = "global"`, and `companion.model = "gemini-3.7-flash"`.
+3. **Google credentials:** The wizard looks for your gcloud Application Default Credentials at `$CLOUDSDK_CONFIG/application_default_credentials.json`, or `~/.config/gcloud/application_default_credentials.json`. When it finds one, that path is the default answer and you accept it with Enter. Type a path to a service-account key file instead if you would rather use one. Either answer sets both `companion.google_credentials` and `embedder.gemini_credentials`. When no credentials file is found, the wizard names the gcloud commands and then asks for a key file path.
+4. **Derived defaults:** The wizard sets `companion.auth = "google"`, `companion.google_location = "global"`, and `companion.model = "google/gemini-3.7-flash"`.
 
 > [!NOTE]
-> Inference runs at `global` because Vertex AI serves Gemini 3.x Flash models from `global` only. Embedding runs at `us-central1` because `gemini-embedding-001` lives in that region.
+> Inference runs at `global` because Vertex AI serves Gemini 3.x Flash models from `global` only. Embedding runs at `us-central1` because `gemini-embedding-001` lives in that region. The two locations differ on purpose. Making them agree breaks one or the other.
+
+> [!NOTE]
+> The companion model carries a publisher prefix, `google/gemini-3.7-flash`. Vertex AI's OpenAI-compatible endpoint addresses models by publisher and rejects the bare name. The Python MCP servers use the bare `gemini-3.7-flash`, because `google-genai` and ADK reject the prefixed form. Same model, two addressing schemes.
 
 ### 3. Local Posture Configuration
 
