@@ -1130,10 +1130,18 @@ against a clean v0.1.0 install:
    `companion.auth = google`, `companion.google_location = global`,
    `companion.model = gemini-3.7-flash`. `init` sets these and says it set them. They are not
    questions, and a question with one right answer is a worse experience than a statement.
-5. **The MCP servers, offered not required.** `install.sh` leaves a venv at
-   `${XDG_DATA_HOME:-~/.local/share}/mooshik/venv`. If `init` finds it, it can offer to wire
+5. **The MCP servers, offered not required, and WRITTEN not printed.** `install.sh` leaves a venv
+   at `${XDG_DATA_HOME:-~/.local/share}/mooshik/venv`. If `init` finds it, it offers to wire
    `news`, `artifacts` and `coder`, asking for the coding agent only if the user wants `coder`.
-   Declining must be one keystroke and must not block anything.
+   Declining is one keystroke.
+
+   This replaces something the installer used to do and should never have: it printed a forty-line
+   `[mcp_servers.*]` block for the user to hand-copy, at the moment they only wanted to know the
+   install worked. It now ends in five lines and points at `mooshik init`. Generating that
+   configuration is `init`'s job, and `init` writes the file rather than describing it. The caveats
+   that were crammed into the printed block belong where each one matters: that `expose` is an
+   allowlist, that `env` values are vault secret names, and that the coder server shells out to a
+   CLI the user installs and authenticates separately.
 
 **And what it must leave alone.** Permissions already resolve correctly on a fresh install: the
 three memory tools `allow`, `run_scratch_script` `prompt`, everything else denied. So the pane's own
@@ -1237,6 +1245,48 @@ state it rather than leave it to be discovered as a 404.
 **Delete the stale example while you are here.** The template at `config.toml:36` and the
 `config set --help` text both offer `gemini-2.5-flash`, which is below the floor every component
 moved to on 2026-08-31. It is the first model name a new user reads.
+
+**Implementation notes, so none of this has to be rediscovered.**
+
+*Where it goes.* `cli::memory_cmd::initialize` (`memory_cmd.rs:7`) is the entry point. That file is
+69 lines and the flow is much bigger, so put the questioning in its own module and keep
+`initialize` as the thing that decides between interactive and not.
+
+*Writing config.* `config::write::apply_setting` (`write.rs:269`). It preserves comments and
+layout, writes 0600, atomically, and never through a symlink. **Do not hand-roll TOML.** Every
+answer becomes one `apply_setting` call, which is also why a half-finished run leaves a valid file.
+
+*The settable-keys table lives at `write.rs:152` and is the reason step 3 cannot be built today.*
+`embedder.gemini_credentials` is absent from it. Add the entry there first, or the credentials
+question has nowhere to write.
+
+*Storing secrets.* `Vault::set(name, value)` (`vault.rs:327`).
+
+*Deciding whether to prompt.* `std::io::IsTerminal`. There is precedent to copy:
+`tui::refuse_without_a_terminal` (`tui/mod.rs:211`) already gates on it.
+
+*Reading without echo.* `libc = "0.2"` is already a dependency (`Cargo.toml:26`), so termios is
+reachable. **Do not add `rpassword`, `dialoguer`, `inquire` or `console`.** This repo pins its
+dependencies deliberately and a prompt library is a large surface for one no-echo read.
+
+*Strings.* Every user-facing string goes in `src/text/en.toml` and is read through
+`text::get("dotted.key")`. No literals in Rust source. This is the rule a fresh contributor breaks
+first, and there will be a lot of strings here.
+
+*Testability is a design constraint, not an afterthought.* The flow must take an injectable reader
+and writer rather than touching `stdin` directly, or none of it can be tested without a terminal.
+Reaching for `io::stdin()` inside the question loop is the mistake to avoid. Tests then drive
+scripted answers and assert on the resulting `config.toml`.
+
+*The non-interactive path must stay byte-identical to today.* The ingester Dockerfile calls
+`mooshik init` unattended. A non-TTY run writes the same defaults and prints the same line it prints
+now.
+
+*When verification fails, offer a retry and allow continuing.* A user may configure a database
+before the proxy is up. Record what failed, say what is unverified, and let them proceed rather than
+trapping them in a loop. `init` is re-runnable, so an unverified answer is recoverable.
+
+*Size.* The 1000-line CI cap applies, tests included.
 
 **Depends on:** M1 for the home and the config writer, M6 for the vault, and nothing else.
 **Done when:** a new user runs the install one-liner, runs `mooshik init`, answers its questions,
