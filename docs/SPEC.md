@@ -180,5 +180,4 @@ graph, tray presence and notifications, and a live activity feed.
 
 ## Status
 
-Early. Phase 1 is under construction, and this document describes where it is going rather than
-what you can install today.
+Phase 1 terminal capabilities (memory, companion chat, web research, TUI, reflection, workspace watcher, multimodal artifact extraction, and coding contractor delegation) are implemented.

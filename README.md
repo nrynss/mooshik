@@ -44,6 +44,7 @@ graph TB
     subgraph MCPServers ["External MCP Servers"]
         News["News & Search Grounding"]
         Artifacts["Multimodal Artifact Ingestion"]
+        Coder["Coding Contractor (Claude / OMP / Cursor / Antigravity)"]
         Tools["Filesystem & Dev Tools"]
     end
 
@@ -145,6 +146,9 @@ The artifact extractor scans extracted text for credentials and tokens. It drops
 ### Multimodal Artifact Ingestion
 The artifacts MCP server processes screenshots and audio recordings. It extracts structured decisions, relations, and values without polluting the graph with visual captions.
 
+### Coding Contractor Delegation
+The coder MCP server delegates heavy repository edits to specialized coding agents (Claude Code, Gemini CLI, Cursor Agent, or Antigravity / agy) without blocking the companion. Tasks run under standing constraints (`AGENTS.md`) written from the memory graph, and ambient results are observed by the workspace watcher.
+
 ---
 
 ## Storage and Embedder Postures
@@ -170,8 +174,9 @@ Mooshik supports two deployment postures through `~/.mooshik/config.toml`:
 | `mooshik reflect` | Runs consolidation and writes prose descriptions. |
 | `mooshik config show` | Displays active configuration with redacted secrets. |
 | `mooshik config set <key> <val>` | Updates a configuration setting. |
-| `mooshik secret set <name> <val>` | Stores a secret in the encrypted local vault. |
-| `mooshik permissions list` | Lists all tool permission grants. |
+| `mooshik configure coder --agent <name>` | Configures coding contractor MCP block and vault secrets. |
+| `mooshik secret set <name>` | Stores a secret in the encrypted local vault. |
+| `mooshik permissions` | Lists all tool permission grants. |
 
 ---
 

@@ -60,6 +60,11 @@ fn dispatch(matches: &clap::ArgMatches) -> anyhow::Result<()> {
         Some(("config", sub)) => match sub.subcommand() {
             Some(("show", _)) => configure::show_config(&layout),
             Some(("set", args)) => configure::set_config(&layout, args),
+            Some(("coder", args)) => configure::configure_coder(&layout, args),
+            _ => Ok(()),
+        },
+        Some(("configure", sub)) => match sub.subcommand() {
+            Some(("coder", args)) => configure::configure_coder(&layout, args),
             _ => Ok(()),
         },
         Some(("permissions", _)) => configure::show_permissions(&layout),

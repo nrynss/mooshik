@@ -75,7 +75,14 @@ pub fn command() -> Command {
                 .about(text::get("config.show_help"))
                 .subcommand_required(true)
                 .subcommand(Command::new("show").about(text::get("config.show_help")))
-                .subcommand(config_set_command()),
+                .subcommand(config_set_command())
+                .subcommand(configure_coder_command()),
+        )
+        .subcommand(
+            Command::new("configure")
+                .about(text::get("config.configure_help"))
+                .subcommand_required(true)
+                .subcommand(configure_coder_command()),
         )
         .subcommand(Command::new("permissions").about(text::get("permissions.help")))
         .subcommand(
@@ -134,4 +141,17 @@ fn secret_command(name: &'static str, help: &'static str) -> Command {
     } else {
         command
     }
+}
+
+fn configure_coder_command() -> Command {
+    Command::new("coder")
+        .about(text::get("config.coder_help"))
+        .after_help(text::get("config.coder_after_help"))
+        .arg(
+            Arg::new("agent")
+                .long("agent")
+                .help(text::get("config.agent_help"))
+                .value_parser(["claude", "omp", "cursor", "agy"])
+                .required(true),
+        )
 }

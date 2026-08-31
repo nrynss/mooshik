@@ -63,7 +63,7 @@ pub(crate) fn provider_for(config: &Config) -> anyhow::Result<Arc<dyn KeyProvide
     }
 }
 
-fn read_secret_value() -> anyhow::Result<Zeroizing<String>> {
+pub(crate) fn read_secret_value() -> anyhow::Result<Zeroizing<String>> {
     const MAX_INPUT_BYTES: usize = crate::vault::MAX_SECRET_VALUE_BYTES;
     if let Ok(value) = env::var("MOOSHIK_SECRET_VALUE") {
         return normalize_environment_value(Zeroizing::new(value));

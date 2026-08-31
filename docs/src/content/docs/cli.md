@@ -68,12 +68,23 @@ mooshik config show
 mooshik config set <key> <value> [--confirm-database-change]
 ```
 
+## `mooshik configure coder`
+
+Configures the coding contractor MCP server block and vault secrets.
+
+```sh
+mooshik configure coder --agent <name>
+```
+
+Options:
+- `--agent <name>`: Coding agent to delegate to (`claude`, `omp`, `cursor`, `agy`).
+
 ## `mooshik secret`
 
 Stores and manages encrypted secrets in the local vault.
 
 ```sh
-mooshik secret set <name> <value>
+mooshik secret set <name>
 ```
 
 ## `mooshik permissions`
@@ -81,5 +92,5 @@ mooshik secret set <name> <value>
 Manages tool execution grants.
 
 ```sh
-mooshik permissions list
+mooshik permissions
 ```

@@ -933,3 +933,89 @@ fn reflect_dry_run_through_dispatch_reports_without_writing() {
     });
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn configure_coder_writes_block_and_permissions() {
+    let layout = fixture_home("coder-config");
+    let matches = command()
+        .try_get_matches_from(["mooshik", "configure", "coder", "--agent", "claude"])
+        .expect("`configure coder` must parse");
+    let sub = matches
+        .subcommand_matches("configure")
+        .unwrap()
+        .subcommand_matches("coder")
+        .unwrap()
+        .clone();
+
+    super::configure::configure_coder(&layout, &sub).expect("configure coder must succeed");
+
+    let written = std::fs::read_to_string(&layout.config).unwrap();
+    assert!(written.contains("[mcp_servers.coder]"), "{written}");
+    assert!(
+        written.contains("MOOSHIK_CODER_AGENT = \"claude\""),
+        "{written}"
+    );
+    assert!(
+        written.contains("ANTHROPIC_API_KEY = \"anthropic-api-key\""),
+        "{written}"
+    );
+    assert!(
+        written.contains("\"mcp.coder.*\" = \"prompt\""),
+        "{written}"
+    );
+
+    let root = layout.open_existing_root().unwrap();
+    let loaded = crate::config::Config::load_at(&root).expect("written config must load");
+    assert!(loaded.mcp_servers.contains_key("coder"));
+    let coder_cfg = &loaded.mcp_servers["coder"];
+    assert_eq!(coder_cfg.expose, vec!["delegate", "check"]);
+    assert_eq!(
+        coder_cfg.env.get("MOOSHIK_CODER_AGENT").map(String::as_str),
+        Some("claude")
+    );
+    assert_eq!(
+        coder_cfg.env.get("ANTHROPIC_API_KEY").map(String::as_str),
+        Some("anthropic-api-key")
+    );
+}
+
+#[test]
+fn configure_coder_agy_writes_block_and_permissions() {
+    let layout = fixture_home("coder-agy-config");
+    let matches = command()
+        .try_get_matches_from(["mooshik", "configure", "coder", "--agent", "agy"])
+        .expect("`configure coder --agent agy` must parse");
+    let sub = matches
+        .subcommand_matches("configure")
+        .unwrap()
+        .subcommand_matches("coder")
+        .unwrap()
+        .clone();
+
+    super::configure::configure_coder(&layout, &sub).expect("configure coder must succeed");
+
+    let written = std::fs::read_to_string(&layout.config).unwrap();
+    assert!(written.contains("[mcp_servers.coder]"), "{written}");
+    assert!(
+        written.contains("MOOSHIK_CODER_AGENT = \"agy\""),
+        "{written}"
+    );
+    assert!(
+        written.contains("MOOSHIK_GEMINI_API_KEY = \"gemini-api-key\""),
+        "{written}"
+    );
+    assert!(
+        written.contains("\"mcp.coder.*\" = \"prompt\""),
+        "{written}"
+    );
+
+    let root = layout.open_existing_root().unwrap();
+    let loaded = crate::config::Config::load_at(&root).expect("written config must load");
+    assert!(loaded.mcp_servers.contains_key("coder"));
+    let coder_cfg = &loaded.mcp_servers["coder"];
+    assert_eq!(coder_cfg.expose, vec!["delegate", "check"]);
+    assert_eq!(
+        coder_cfg.env.get("MOOSHIK_CODER_AGENT").map(String::as_str),
+        Some("agy")
+    );
+}

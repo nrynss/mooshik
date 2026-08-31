@@ -1,0 +1,33 @@
+[project]
+name = "mooshik-coder-mcp"
+version = "0.1.0"
+description = "Mooshik coding contractor MCP server: delegate code changes to coding agents over stdio."
+requires-python = ">=3.10"
+dependencies = [
+    # Exact pins, mirroring the news and artifacts servers: the CI job installs
+    # these directly, so floating ranges would make builds non-reproducible.
+    # Bump deliberately.
+    #
+    # No google-genai: this server spawns external agents (Claude Code, OMP,
+    # Cursor Agent CLI, Antigravity CLI) rather than calling Gemini itself.
+    # The only SDK dependency is MCP for the stdio wire.
+    "mooshik-common==0.1.0",
+    "mcp==2.1.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==9.1.1"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["coder_mcp*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Let `pytest mcp-servers/coder/tests -q` from the repo root resolve the package
+# without an install: rootdir-relative "." puts mcp-servers/coder/ on sys.path,
+# and running from inside the directory works unchanged.
+pythonpath = ["."]

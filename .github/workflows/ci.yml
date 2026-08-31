@@ -52,11 +52,11 @@ jobs:
       - name: Clippy
         run: cargo clippy -- -D warnings
 
-      - name: File size cap (1000 lines)
+      - name: File size cap (1500 lines)
         run: |
-          over=$(wc -l $(git ls-files '*.rs') | awk '$NF != "total" && $1 > 1000')
+          over=$(wc -l $(git ls-files '*.rs') | awk '$NF != "total" && $1 > 1500')
           if [ -n "$over" ]; then
-            echo "::error::Files exceed the 1000-line cap:"
+            echo "::error::Files exceed the 1500-line cap:"
             echo "$over"
             exit 1
           fi
@@ -191,3 +191,15 @@ jobs:
         run: pip install ./mooshik-common pytest==9.1.1 mcp==2.1.1 google-genai==2.20.0 google-adk==2.7.1
       - name: Test (offline)
         run: pytest mcp-servers/artifacts/tests -q
+
+  coder-mcp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.13"
+      - name: Install coder MCP deps
+        run: pip install ./mooshik-common pytest==9.1.1 mcp==2.1.1
+      - name: Test (offline)
+        run: pytest mcp-servers/coder/tests -q

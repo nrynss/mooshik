@@ -35,5 +35,5 @@ Mooshik protects your environment with explicit permission rules:
 Configure grants in `~/.mooshik/config.toml` or manage them via the CLI:
 
 ```sh
-mooshik permissions list
+mooshik permissions
 ```

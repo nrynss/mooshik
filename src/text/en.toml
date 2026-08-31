@@ -58,6 +58,12 @@ expect_number = "Provide a number."
 expect_secret_name = "Provide the NAME of a secret stored with `mooshik secret set <name>`: 1–64 ASCII letters, digits, dots, underscores, or hyphens, not starting with a hyphen."
 expect_vault_provider = "Use \"keyring\" or \"passphrase\"."
 expect_companion_auth = "Use \"static\" for a bearer API key, or \"google\" for Vertex, whose access token Mooshik mints and refreshes for you."
+configure_help = "Configure Mooshik extensions and contractors"
+coder_help = "Configure the coding contractor MCP server"
+coder_after_help = "Writes the [mcp_servers.coder] block to ~/.mooshik/config.toml, sets the [permissions] grant to \"prompt\", and stores the credential reference in the vault. Supported agents: claude, omp, cursor, agy. Example: `mooshik configure coder --agent claude`."
+agent_help = "The coding contractor agent to use: claude, omp, cursor, or agy"
+coder_done = "Coding contractor '{agent}' configured. Permission set to prompt; tools exposed: delegate, check."
+invalid_coder_agent = "Unsupported coding agent. Use claude, omp, cursor, or agy."
 
 [home]
 init_failed = "Could not initialize the Mooshik home directory. Check its path and permissions."

@@ -1,12 +1,6 @@
-//! `mooshik config show`, `mooshik config set`, and `mooshik permissions`.
-//!
-//! The write path inherits `init`'s obligations exactly — private (0600),
-//! atomic, and never through a symbolic link — because it goes through the
-//! same `secure_path` primitives `init` and the vault already use, rather than
-//! opening `config.toml` by path.
+use std::{env, ffi::OsStr, path::Path};
 
-use std::ffi::OsStr;
-
+use anyhow::anyhow;
 use zeroize::Zeroizing;
 
 use crate::{
@@ -16,7 +10,7 @@ use crate::{
     vault::{Vault, VaultError},
 };
 
-use super::resolve;
+use super::{resolve, secret};
 
 /// The same bound `Config::load` applies, so `config set` cannot be used to
 /// grow a file past what the loader will read back.
@@ -123,4 +117,137 @@ fn read_config_text(root: &std::fs::File) -> anyhow::Result<String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
         Err(_) => Err(anyhow::Error::new(ConfigError::Io)),
     }
+}
+
+/// Configure the coding contractor MCP server (`mooshik configure coder --agent claude|omp|cursor|agy`).
+pub(crate) fn configure_coder(
+    layout: &HomeLayout,
+    matches: &clap::ArgMatches,
+) -> anyhow::Result<()> {
+    let agent = matches
+        .get_one::<String>("agent")
+        .expect("clap marks the agent argument required");
+
+    let (env_var, secret_name) = match agent.as_str() {
+        "claude" => ("ANTHROPIC_API_KEY", "anthropic-api-key"),
+        "omp" | "agy" => ("MOOSHIK_GEMINI_API_KEY", "gemini-api-key"),
+        "cursor" => ("CURSOR_API_KEY", "cursor-api-key"),
+        _ => return Err(anyhow!(text::get("config.invalid_coder_agent"))),
+    };
+
+    let root = layout.init().map_err(anyhow::Error::new)?;
+    let before = read_config_text(&root)?;
+    let current = Config::from_toml_and_env(&before, env::vars()).map_err(anyhow::Error::new)?;
+
+    // Store secret if provided in environment
+    if let Ok(provider) = secret::provider_for(&current) {
+        if let Ok(root_clone) = root.try_clone() {
+            if let Ok(mut vault) = Vault::open_at(&layout.vault, root_clone, provider) {
+                if vault.get(secret_name).is_err() {
+                    if let Ok(val) = env::var("MOOSHIK_SECRET_VALUE") {
+                        if let Ok(val) = secret::normalize_environment_value(Zeroizing::new(val)) {
+                            let _ = vault.set(secret_name, &val);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let script_path = find_coder_script_path();
+    let after = apply_coder_config(&before, agent, &script_path, env_var, secret_name);
+
+    // Verify after parsing
+    let _ = Config::from_toml_and_env(&after, env::vars()).map_err(anyhow::Error::new)?;
+
+    secure_path::write_private_at(&root, OsStr::new("config.toml"), after.as_bytes())
+        .map_err(|_| anyhow::Error::new(ConfigError::WriteFailed))?;
+
+    println!(
+        "{}",
+        text::get("config.coder_done").replace("{agent}", agent)
+    );
+    Ok(())
+}
+
+fn apply_coder_config(
+    before: &str,
+    agent: &str,
+    script_path: &str,
+    env_var: &str,
+    secret_name: &str,
+) -> String {
+    let mut in_coder_section = false;
+    let mut cleaned_lines = Vec::new();
+    for line in before.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[mcp_servers.coder]" || trimmed == "[mcp_servers.coder.env]" {
+            in_coder_section = true;
+            continue;
+        }
+        if in_coder_section && trimmed.starts_with('[') {
+            in_coder_section = false;
+        }
+        if !in_coder_section {
+            cleaned_lines.push(line);
+        }
+    }
+
+    let mut result = cleaned_lines.join("\n");
+    if !result.is_empty() && !result.ends_with('\n') {
+        result.push('\n');
+    }
+
+    // Ensure permissions table contains "mcp.coder.*" = "prompt"
+    if result.contains("[permissions]") {
+        if !result.contains("\"mcp.coder.*\"") && !result.contains("mcp.coder") {
+            if let Some(pos) = result.find("[permissions]") {
+                let insert_at = pos + "[permissions]".len();
+                let (head, tail) = result.split_at(insert_at);
+                result = format!("{head}\n\"mcp.coder.*\" = \"prompt\"{tail}");
+            }
+        }
+    } else {
+        result.push_str("\n[permissions]\n\"mcp.coder.*\" = \"prompt\"\n");
+    }
+
+    // Append the coder mcp server block
+    result.push_str(&format!(
+        "\n[mcp_servers.coder]\ncommand = \"python3\"\nargs = [\"{}\"]\nexpose = [\"delegate\", \"check\"]\n\n[mcp_servers.coder.env]\nMOOSHIK_CODER_AGENT = \"{}\"\n{} = \"{}\"\n",
+        script_path, agent, env_var, secret_name
+    ));
+
+    result
+}
+
+fn find_coder_script_path() -> String {
+    let local = Path::new("mcp-servers/coder/server.py");
+    if local.is_file() {
+        if let Ok(abs) = local.canonicalize() {
+            return abs.to_string_lossy().into_owned();
+        }
+        return local.to_string_lossy().into_owned();
+    }
+
+    if let Ok(exe) = env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let candidate = parent.join("mcp-servers/coder/server.py");
+            if candidate.is_file() {
+                if let Ok(abs) = candidate.canonicalize() {
+                    return abs.to_string_lossy().into_owned();
+                }
+                return candidate.to_string_lossy().into_owned();
+            }
+            let repo_root = parent.join("../..");
+            let candidate2 = repo_root.join("mcp-servers/coder/server.py");
+            if candidate2.is_file() {
+                if let Ok(abs) = candidate2.canonicalize() {
+                    return abs.to_string_lossy().into_owned();
+                }
+                return candidate2.to_string_lossy().into_owned();
+            }
+        }
+    }
+
+    "/usr/local/share/mooshik/mcp-servers/coder/server.py".to_owned()
 }
