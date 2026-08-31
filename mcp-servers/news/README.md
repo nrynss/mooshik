@@ -7,9 +7,9 @@ clean Markdown with the sources cited.
 This is the capability M4 deliberately cut. `search_web` and `fetch_page` were
 dropped as hand-written Rust tools because "they come back through M10 as
 configured servers instead, which is the whole argument for M10"
-(`dev-diary/PLAN.md`). M10 shipped the host; this is the server it was for.
-Nothing in the Rust binary changes to gain it — one `config.toml` block and
-one permission grant.
+(`dev-diary/PLAN.md`). M10 shipped the host, and this is the server it was
+for. Gaining it changes nothing in the Rust binary. It takes one `config.toml`
+block and one permission grant.
 
 ## What it exposes
 
@@ -19,10 +19,10 @@ one permission grant.
 | `fetch_article` | `url` (required, http/https), `focus` (optional) | What that one page says, in Markdown, with the page cited |
 
 Two, not six, on purpose. Mooshik keeps the companion's whole surface to
-roughly eight tools so a small local model routes reliably; a search server
-that contributed a dozen would break the local-companion premise rather than
-extend it. The descriptions are written for that reader — they say *when to
-reach for the tool*, not how it is built.
+roughly eight tools so a small local model routes reliably. A search server
+contributing a dozen would break the local-companion premise rather than extend
+it. The descriptions target that reader. They say *when to reach for the tool*,
+not how we built it.
 
 Provenance is the product. A result flows into the companion's context and can
 be written into the user's long-term memory, so an answer with no link is a
@@ -48,26 +48,26 @@ MOOSHIK_GEMINI_API_KEY = "gemini-api-key"
 
 `expose` is an allowlist and it is fail-closed: a server that exposes nothing
 is never spawned, and a tool absent from the list is refused even if the
-server offers it. Spawning is lazy — the first `specs()` or `execute()` call
-starts the child, so a session that never searches pays nothing.
+server offers it. Mooshik spawns lazily. The first `specs()` or `execute()`
+call starts the child, so a session that never searches pays nothing.
 
 `env` values are **vault secret names**, not values. Mooshik resolves each one
 through the encrypted vault at spawn time and injects the result into the
 child's environment, so a live credential never sits in a readable config
 file. Put the value there with `mooshik secret set gemini-api-key`. There is
 no literal-value escape hatch: a name with no matching secret fails *this*
-server closed — no tools contributed, other servers unaffected.
+server closed. It contributes no tools, and other servers carry on.
 
 **Only secrets need to be listed here.** The child inherits Mooshik's own
-environment, so non-secret settings — `MOOSHIK_GEMINI_PROJECT`,
-`NEWS_LOCATION`, `NEWS_MODEL`, the timeouts — can simply be exported
-wherever Mooshik is started. A Vertex setup on a machine with application
+environment. So you can export the non-secret settings wherever you start
+Mooshik. That covers `MOOSHIK_GEMINI_PROJECT`, `NEWS_LOCATION`, `NEWS_MODEL`,
+and the timeouts. A Vertex setup on a machine with application
 default credentials often needs no `[mcp_servers.news.env]` block at all.
 
 ### The permission grant
 
 Mooshik's default grant set allows only the three memory tools and prompts for
-`run_scratch_script`; **everything else is denied**. Configured MCP tools
+`run_scratch_script`. **It denies everything else.** Configured MCP tools
 arrive as `mcp.<server>.<tool>` and are gated like every other tool, so
 without a grant the companion never sees these two:
 
@@ -76,8 +76,8 @@ without a grant the companion never sees these two:
 "mcp.news.*" = "allow"          # or "prompt" to confirm each lookup
 ```
 
-Grant `"mcp.news.*"`, not `web` — `web` is not a known family and parses as a
-deny. Per-tool entries win over prefix rules, so `"mcp.news.fetch_article" =
+Grant `"mcp.news.*"`, not `web`. Mooshik does not know `web` as a family, so
+it parses as a deny. Per-tool entries win over prefix rules, so `"mcp.news.fetch_article" =
 "prompt"` alongside the wildcard is a valid way to auto-allow searching while
 confirming page fetches.
 
@@ -85,15 +85,15 @@ confirming page fetches.
 
 All configuration is environment-only. Nothing is read from a config file and
 no secret is accepted as a command-line argument, where it would land in `ps`
-output and shell history — passing any argument at all is an error. A missing
+output and shell history. Passing any argument at all is an error. A missing
 variable exits `2` with a message on stderr naming the variable, and never
 prints a value.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `MOOSHIK_GEMINI_API_KEY` | — | Gemini Developer API key. When set, runs in API-key mode and needs no project |
-| `MOOSHIK_GEMINI_PROJECT` | — | Vertex AI project id. **Required** unless an API key is set |
-| `NEWS_LOCATION` | `global` | Vertex region. Its own variable, never `MOOSHIK_GEMINI_LOCATION` — that is the embedder's region, and no Gemini 3.x model is served outside `global` |
+| `MOOSHIK_GEMINI_API_KEY` | (none) | Gemini Developer API key. When set, the server runs in API-key mode and needs no project |
+| `MOOSHIK_GEMINI_PROJECT` | (none) | Vertex AI project id. **Required** unless you set an API key |
+| `NEWS_LOCATION` | `global` | Vertex region. Its own variable, never `MOOSHIK_GEMINI_LOCATION`. That one names the embedder's region, and Vertex serves no Gemini 3.x model outside `global` |
 | `MOOSHIK_GEMINI_CREDENTIALS` | *(ADC)* | Path to a service-account JSON file |
 | `NEWS_MODEL` | `gemini-3.7-flash` | Grounding model |
 | `NEWS_TIMEOUT_SECS` | `45` | Per-call wall clock, deliberately inside Mooshik's own 60 s bound |
@@ -116,13 +116,13 @@ not a dependency.
 and one stray `print()` corrupts framing. All logging goes to stderr, which
 Mooshik inherits for the child, so operator lines land in the terminal. The
 root logger is held at `WARNING` so SDK per-request chatter does not drown
-them. `mcp` 2.x additionally diverts fd 1 to stderr while serving; the
+them. `mcp` 2.x additionally diverts fd 1 to stderr while serving. The
 discipline here does not depend on that.
 
 **Failure is data.** Every tool body runs inside one guard. An upstream error
 comes back as a readable sentence naming the exception type, with the
-traceback left on stderr; a slow call comes back as a timeout the model can
-act on; an empty grounding result comes back as "no result", not as an
+traceback left on stderr. A slow call comes back as a timeout the model can
+act on. An empty grounding result comes back as "no result" rather than an
 exception. Nothing can raise onto the wire. Mooshik applies its own per-call
 bound and contains a panicking tool itself, but a server that dies instead of
 answering costs a respawn and shows the model an opaque internal error.
@@ -130,13 +130,13 @@ answering costs a respawn and shows the model an opaque internal error.
 **Egress is scrubbed.** Known secret values are replaced with `[redacted]` in
 anything this process returns, because an upstream error that quotes a
 credential back would be persisted into memory, not merely displayed. Mooshik
-redacts tool egress too; this is the same guard one hop earlier, where the
-values are actually known.
+redacts tool egress too. This is the same guard one hop earlier, where the
+process actually knows the values.
 
 **Automatic function calling is off.** `google_search` and `url_context` run
 on the model server. Leaving AFC enabled would set up a local call loop this
-server has no functions for — and an enabled loop is a path by which a
-grounded page could ask for a local call.
+server has no functions for. An enabled loop also opens a path for a grounded
+page to ask for a local call.
 
 ## Tests
 
@@ -175,8 +175,8 @@ pip install -e ".[dev]"            # or: pip install mcp==2.1.1 google-genai==2.
 pytest -q
 ```
 
-From the repo root, `pytest mcp-servers/news/tests -q` works unchanged — which
-is what CI's `news-mcp` job runs.
+From the repo root, `pytest mcp-servers/news/tests -q` works unchanged. That is
+what CI's `news-mcp` job runs.
 
 ## Running it by hand
 
@@ -186,6 +186,6 @@ export MOOSHIK_GEMINI_CREDENTIALS=/path/to/service-account.json
 python3 mcp-servers/news/server.py      # speaks MCP on stdin/stdout
 ```
 
-There is nothing to look at — it is waiting for JSON-RPC frames. Drive it with
-any MCP client, or let Mooshik spawn it. `python3 -m news_mcp` from this
+There is nothing to look at. The server is waiting for JSON-RPC frames. Drive
+it with any MCP client, or let Mooshik spawn it. `python3 -m news_mcp` from this
 directory is the same program.

@@ -18,7 +18,7 @@ watcher derive changes ambiently as files are modified on disk.
 
 Two tools, not six, on purpose. Mooshik keeps the companion's whole tool surface
 to roughly eight tools so a small local model routes reliably (`dev-diary/PLAN.md`,
-M10). These descriptions are written for that reader — explaining *when to reach
+M10). These descriptions target that reader, explaining *when to reach
 for the tool*, not how it is implemented internally.
 
 **Non-blocking delegation.** Coding tasks can take minutes, while Mooshik's MCP
@@ -70,7 +70,7 @@ mooshik configure coder --agent claude
 
 `expose` is an allowlist and fail-closed: a server that exposes nothing is never
 spawned, and tools absent from the list are rejected even if offered by the server.
-Spawning is lazy — the first `specs()` or `execute()` call starts the child.
+Mooshik spawns lazily. The first `specs()` or `execute()` call starts the child.
 
 `env` values for API keys are **vault secret names**, not literal tokens. Mooshik
 resolves each one through the encrypted local vault at spawn time and injects the
@@ -96,18 +96,18 @@ delegation:
 
 All configuration is environment-only. No configuration file is read directly by
 the server. **`--agent` is the only argument accepted**, and no *secret* is
-ever accepted as one — a secret in `argv` is visible in `ps` listings and shell
+ever accepted as one. A secret in `argv` shows up in `ps` listings and shell
 history, so credentials come from the environment and only from there. With
 neither `--agent` nor `MOOSHIK_CODER_AGENT`, or with an unknown agent name, the
 server exits `2` with an explanatory message on stderr.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `MOOSHIK_CODER_AGENT` | — | Coding agent to delegate to: `claude`, `omp`, `cursor`, or `agy`. Fallback for a direct invocation; under `[mcp_servers.coder]` use `--agent` in `args` instead, because values in that `env` table are read as vault secret names |
-| `ANTHROPIC_API_KEY` | — | Anthropic API key (used when agent is `claude`) |
-| `MOOSHIK_GEMINI_API_KEY` | — | Gemini Developer API key (used when agent is `omp` or `agy`) |
-| `MOOSHIK_GEMINI_PROJECT` | — | Vertex AI project ID (used when agent is `omp` or `agy`) |
-| `CURSOR_API_KEY` | — | Cursor Agent API key (used when agent is `cursor`) |
+| `MOOSHIK_CODER_AGENT` | (none) | Coding agent to delegate to: `claude`, `omp`, `cursor`, or `agy`. A fallback for a direct invocation. Under `[mcp_servers.coder]` pass `--agent` in `args` instead, because Mooshik reads every value in that `env` table as a vault secret name |
+| `ANTHROPIC_API_KEY` | (none) | Anthropic API key, used when the agent is `claude` |
+| `MOOSHIK_GEMINI_API_KEY` | (none) | Gemini Developer API key, used when the agent is `omp` or `agy` |
+| `MOOSHIK_GEMINI_PROJECT` | (none) | Vertex AI project id, used when the agent is `omp` or `agy` |
+| `CURSOR_API_KEY` | (none) | Cursor Agent API key, used when the agent is `cursor` |
 | `CODER_TIMEOUT_SECS` | `10.0` | Per-call timeout for tool response handling |
 | `CODER_LOG_LEVEL` | `INFO` | Level for stderr logging (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 
