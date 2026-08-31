@@ -1,35 +1,59 @@
 ---
-title: WriteLane & Concurrency
-description: How Mooshik manages single-writer leases and in-process concurrency.
+title: WriteLane Concurrency
+description: How Mooshik manages single-writer leases and in-process mutation concurrency.
 ---
 
-Mooshik enforces clear concurrency boundaries to protect memory integrity and avoid optimistic write conflicts.
+Mooshik enforces strict concurrency boundaries to protect memory integrity and eliminate write conflicts.
 
 ## The Single-Writer Lease
 
 Only one process may hold write access to a given session at any time.
 
-When `mooshik tui` or `mooshik chat` starts, it acquires an exclusive lease on the target database. If another process attempts to open the same session, Mooshik refuses with a clear conflict message and exits with status code 2.
+When `mooshik tui`, `mooshik chat`, or `mooshik serve` starts, it acquires an exclusive lease on the target database:
+- **Collision rejection:** If another process attempts to open the same session directly, Mooshik refuses with an explanatory conflict message and exits with status code 2.
+- **Clean release:** When the session shuts down cleanly, it releases the lease.
+- **Automatic expiration:** If a process crashes without clean shutdown, the lease expires automatically after a short timeout.
 
-The process releases the lease cleanly when the session shuts down. If the process crashes, the lease expires automatically after a short timeout.
+### Proxying via `mooshik serve`
+
+Lambo allows secondary processes to connect to an active session holder. When `mooshik serve` detects an existing lease holder on the same session, it proxies write operations into the active process over a local IPC endpoint.
 
 ## In-Process WriteLane
 
-Within a single process, multiple tasks might attempt to derive concepts concurrently. For example, the workspace watcher and an active conversation turn may write simultaneously.
+Within a single Mooshik process, multiple asynchronous tasks can attempt to write to memory simultaneously:
+- The workspace watcher observing file modifications.
+- The active conversational turn generating new observations.
+- Background reflection runs.
 
-Lambo handles writes optimistically:
-1. It plans under a read lock.
-2. It generates vector embeddings across an asynchronous boundary without holding the lock.
-3. It commits changes only if the graph epoch remains unchanged.
+```mermaid
+flowchart TD
+    subgraph Writers ["In-Process Mutation Sources"]
+        Watcher["Workspace Watcher"]
+        Turn["Companion Turn"]
+        Reflect["mooshik reflect"]
+    end
 
-If the epoch moves during embedding generation, Lambo re-runs the plan. If contention exceeds eight attempts, the derive operation fails.
+    subgraph Lane ["WriteLane Actor"]
+        Queue["Serialized Execution Mutex"]
+    end
 
-To prevent write failures under high activity, Mooshik wraps all in-process derives with a `WriteLane` mutex:
+    subgraph MemoryCore ["Lambo In-Process Memory"]
+        Plan["1. Read & Plan"]
+        Embed["2. Async Vector Embedding"]
+        Commit["3. Epoch Check & Commit"]
+    end
 
-```rust
-// Enter the serialized write lane before deriving concepts
-let _lane = pane.writes().enter().await;
-pane.memory().derive(&concepts, &parent_of).await?;
+    Writers --> Queue
+    Queue --> Plan --> Embed --> Commit
 ```
 
-The `WriteLane` guarantees that internal tasks queue cleanly rather than competing for optimistic commits.
+### Optimistic Commit Protection
+
+Lambo performs graph mutations optimistically:
+1. It plans the update under a read lock.
+2. It generates vector embeddings across an asynchronous boundary without holding locks.
+3. It commits changes only if the graph epoch remains unchanged.
+
+If high in-process concurrency causes the epoch to move during embedding generation, Lambo must retry the plan.
+
+Mooshik wraps all internal derive operations in a serialized `WriteLane` mutex. This guarantees that internal tasks queue cleanly rather than competing for optimistic commits.
