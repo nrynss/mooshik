@@ -8,6 +8,8 @@ description = "An ambient, local-first AI cowork partner and workspace orchestra
 [dependencies]
 anyhow = "1"
 argon2 = "0.5"
+# uuid is the type behind `NodeId`; Mooshik parses it for prose targets.
+uuid = "1.25"
 # The calendar behind `memory::view`. Lambo's public types are already
 # `chrono::DateTime<Utc>`, so this is the same crate arriving by name rather
 # than a second one: what the direct dependency buys is `Local`, which is how a

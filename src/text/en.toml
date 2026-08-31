@@ -128,6 +128,17 @@ stats_cycles = "background cycles: {daemon} daemon, {canonization} canonization 
 degraded_yes = "yes"
 degraded_no = "no"
 
+[reflect]
+help = "Write the session's prose and consolidate paraphrase twins"
+dry_run_help = "Report what the pass would write, without writing it"
+after_help = "Requires an initialized home (`mooshik init`). Runs one reflect pass: it writes prose a day or thread can carry (a day's mood, its four-word gutter summary, its trailing notes, and why a thread sits where it does) and consolidates paraphrase twins — the strongest survives, every loser keeps its original content under a [merged into ...] marker. Prose is first-write-only: a day or thread keeps the prose its first reflect run wrote. With --dry-run, prints the planned writes and merges without touching the graph. Example: `mooshik reflect`."
+header = "Reflect pass:"
+prose_row = "  {field} {target}: {text}"
+merge_row = "  merge {survivor} ← {losers} paraphrases"
+nothing_to_write = "  nothing to write"
+done = "Reflect pass written."
+dry_run_done = "Dry run: nothing written."
+
 [companion]
 chat_help = "Chat with the companion model"
 chat_after_help = "Requires an initialized home (`mooshik init`). Talks to the OpenAI-compatible endpoint in [companion]. Exposes exactly the tools granted by [permissions] when workspace memory is available; without a backend, chat runs with no tools. Empty lines are ignored. EOF exits. Ctrl-C cancels an in-flight reply; a second interrupt or EOF exits."

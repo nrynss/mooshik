@@ -60,6 +60,17 @@ pub fn command() -> Command {
                 .after_help(text::get("memory.stats_after_help")),
         )
         .subcommand(
+            Command::new("reflect")
+                .about(text::get("reflect.help"))
+                .after_help(text::get("reflect.after_help"))
+                .arg(
+                    Arg::new("dry_run")
+                        .long("dry-run")
+                        .action(ArgAction::SetTrue)
+                        .help(text::get("reflect.dry_run_help")),
+                ),
+        )
+        .subcommand(
             Command::new("config")
                 .about(text::get("config.show_help"))
                 .subcommand_required(true)

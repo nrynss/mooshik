@@ -2,6 +2,7 @@
 
 use lambo::{ConceptType, MemoryStats, RecallResult};
 
+use crate::memory::ReflectOutcome;
 use crate::text;
 
 /// Render recall results. Local-operator output only — see
@@ -104,4 +105,38 @@ pub(crate) fn render_stats(health: &MemoryStats) -> String {
         ),
     ]
     .join("\n")
+}
+
+/// Render one reflect pass for the local operator: the prose writes and the
+/// paraphrase merges it made (or, with `--dry-run`, would make). Local-operator
+/// output only, like the rest of this module — nothing here reaches a model.
+pub(crate) fn render_reflect(outcome: &ReflectOutcome, dry_run: bool) -> String {
+    let mut lines = vec![text::get("reflect.header").to_owned()];
+    if outcome.prose_writes.is_empty() && outcome.paraphrase_merges.is_empty() {
+        lines.push(text::get("reflect.nothing_to_write").to_owned());
+    }
+    for prose in &outcome.prose_writes {
+        lines.push(
+            text::get("reflect.prose_row")
+                .replace("{field}", prose.field.as_str())
+                .replace("{target}", &prose.target.as_str())
+                .replace("{text}", &prose.text),
+        );
+    }
+    for cluster in &outcome.paraphrase_merges {
+        lines.push(
+            text::get("reflect.merge_row")
+                .replace("{survivor}", &cluster.survivor.0.to_string())
+                .replace("{losers}", &cluster.losers.len().to_string()),
+        );
+    }
+    lines.push(
+        if dry_run {
+            text::get("reflect.dry_run_done")
+        } else {
+            text::get("reflect.done")
+        }
+        .to_owned(),
+    );
+    lines.join("\n")
 }

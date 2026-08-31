@@ -55,6 +55,7 @@ fn dispatch(matches: &clap::ArgMatches) -> anyhow::Result<()> {
         Some(("tui", args)) => tui_cmd::tui(&layout, args),
         Some(("recall", args)) => memory_cmd::recall(&layout, args),
         Some(("stats", _)) => memory_cmd::stats(&layout),
+        Some(("reflect", args)) => memory_cmd::reflect(&layout, args),
         Some(("config", sub)) => match sub.subcommand() {
             Some(("show", _)) => configure::show_config(&layout),
             Some(("set", args)) => configure::set_config(&layout, args),

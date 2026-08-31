@@ -7,9 +7,10 @@
 //! strictly stronger, because nothing in that module may reach the memory
 //! subsystem, not merely nothing in those two functions.
 
+use lambo::{
+    graph::derive::ParentOf, ConceptType, EmbedderKind, MemoryStats, RecallResult, StoreKind,
+};
 use std::sync::Arc;
-
-use lambo::{ConceptType, MemoryStats, RecallResult};
 use zeroize::Zeroizing;
 
 use crate::{
@@ -808,4 +809,127 @@ fn config_set_help_lists_every_settable_key_from_the_writer_itself() {
     assert!(help.contains("--confirm-database-change"), "{help}");
     // And the two credential keys are NOT advertised as settable.
     assert!(!help.contains("store.dsn "), "{help}");
+}
+
+#[test]
+fn reflect_help_comes_from_text_and_parses_the_dry_run_flag() {
+    let cmd = command();
+    let reflect = cmd.find_subcommand("reflect").unwrap();
+    assert_eq!(
+        reflect.get_about().unwrap().to_string(),
+        text::get("reflect.help")
+    );
+    assert!(
+        reflect
+            .get_arguments()
+            .any(|arg| arg.get_long() == Some("dry-run")),
+        "reflect must expose a --dry-run flag"
+    );
+    let help = command()
+        .find_subcommand_mut("reflect")
+        .unwrap()
+        .render_help()
+        .to_string();
+    assert!(help.contains("--dry-run"), "{help}");
+    assert!(help.contains(text::get("reflect.help")), "{help}");
+    // `--dry-run` parses, and so does the bare flag-less form.
+    let with = command()
+        .try_get_matches_from(["mooshik", "reflect", "--dry-run"])
+        .unwrap();
+    assert!(with
+        .subcommand_matches("reflect")
+        .unwrap()
+        .get_flag("dry_run"));
+    let without = command()
+        .try_get_matches_from(["mooshik", "reflect"])
+        .unwrap();
+    assert!(!without
+        .subcommand_matches("reflect")
+        .unwrap()
+        .get_flag("dry_run"));
+}
+
+/// R1-1 — `mooshik reflect --dry-run` reports through the dispatch path and
+/// writes nothing.
+///
+/// The handler `dispatch` routes `reflect` to is driven exactly as argv would:
+/// through the real clap tree (`run_config_set`'s pattern), against a live
+/// sqlite home. Provisioned with a turn so the pass has something to report,
+/// the dry run must leave the graph without a single prose concept.
+///
+/// The arm itself is pinned the same way [`chat_command_never_opens_memory`]
+/// pins `chat`'s: `dispatch` must route `reflect` to the exact handler this
+/// test drives — deleting the `reflect` arm must fail the test, never leave
+/// `mooshik reflect` silently no-op'ing through `_ => Ok(())`.
+#[test]
+fn reflect_dry_run_through_dispatch_reports_without_writing() {
+    // The arm pin: the module this test drives is the one `dispatch` routes
+    // `reflect` to. Deleting the arm from `mod.rs` must fail this test.
+    let dispatch = include_str!("mod.rs");
+    assert!(
+        dispatch.contains("memory_cmd::reflect(&layout, args)"),
+        "dispatch must route `reflect` to the pinned handler: {dispatch}"
+    );
+
+    let root = crate::secure_path::canonical_temp_dir()
+        .join(format!("mooshik-reflect-cli-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let layout = HomeLayout::new(&root);
+    layout.init().unwrap();
+
+    let db = root.join("graph.db");
+    let mut config = Config::default();
+    config.store.kind = StoreKind::Sqlite;
+    config.store.path = Some(db.to_string_lossy().into_owned());
+    config.embedder.kind = EmbedderKind::Fixture;
+    config.embedder.dim = 1024;
+    std::fs::write(&layout.config, toml::to_string(&config).unwrap()).unwrap();
+
+    // Provision and seed a turn on a dedicated runtime that is dropped before
+    // the reflect call — `memory_cmd::reflect` builds its own runtime (the
+    // `block_on` seam), which must not run inside a live one.
+    {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            crate::memory::provision(&config).await.unwrap();
+            let memory = crate::memory::open(&config).await.unwrap();
+            memory
+                .derive(
+                    &[("reflect cli seed", ConceptType::Entity)],
+                    &ParentOf::none(),
+                )
+                .await
+                .unwrap();
+            memory.close().await.unwrap();
+        });
+    }
+
+    let matches = command()
+        .try_get_matches_from(["mooshik", "reflect", "--dry-run"])
+        .expect("`reflect --dry-run` must parse");
+    let sub = matches.subcommand_matches("reflect").unwrap().clone();
+    super::memory_cmd::reflect(&layout, &sub).expect("the dry run must succeed");
+
+    // Nothing written: a reopen of the same store finds no prose concepts.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let memory = crate::memory::open(&config).await.unwrap();
+        let index = {
+            let g = memory.graph().read();
+            let concepts: Vec<_> = g.concepts().cloned().collect();
+            crate::memory::ProseIndex::from_concepts(&concepts)
+        };
+        assert!(
+            index.is_empty(),
+            "a `--dry-run` reflect pass must not write prose"
+        );
+        memory.close().await.unwrap();
+    });
+    let _ = std::fs::remove_dir_all(&root);
 }

@@ -45,3 +45,25 @@ pub(crate) fn stats(layout: &HomeLayout) -> anyhow::Result<()> {
     println!("{}", render::render_stats(&health));
     Ok(())
 }
+
+/// One reflect pass over workspace memory: write this session's prose (and
+/// consolidate paraphrase twins), or — with `--dry-run` — report what that
+/// pass would write without touching the graph. Opens and closes its own
+/// [`Memory`] handle like `stats`, because the pass is one-shot.
+pub(crate) fn reflect(layout: &HomeLayout, matches: &clap::ArgMatches) -> anyhow::Result<()> {
+    let root = layout.open_existing_root().map_err(anyhow::Error::new)?;
+    let config = resolve::load_with_secrets(layout, &root)?;
+    let dry_run = matches.get_flag("dry_run");
+    let now = chrono::Utc::now();
+    let outcome = block_on(async move {
+        let memory = crate::memory::open(&config).await?;
+        let result =
+            crate::memory::run_reflect(&memory, &crate::memory::FixtureReflector, dry_run, now)
+                .await;
+        let outcome = result.map_err(crate::memory::MemoryError::from)?;
+        memory.close().await?;
+        Ok(outcome)
+    })?;
+    println!("{}", render::render_reflect(&outcome, dry_run));
+    Ok(())
+}

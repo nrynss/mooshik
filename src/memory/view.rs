@@ -77,23 +77,21 @@
 //!
 //! [`Graph::snapshot`] already exists and means persistence — the whole graph,
 //! serialized for the store. This is a *view*: seven days of it, ordered and
-//! formatted for one screen size of one terminal, and thrown away on the next
-//! tick. Two words for two things.
-
-use chrono::{DateTime, Datelike, Days, NaiveDate, TimeZone, Timelike, Utc};
-use lambo::{Concept, Edge, EdgeType, Graph, Interaction, Memory, MemoryStats, NodeId};
-use std::collections::{HashMap, HashSet};
-
+use crate::memory::reflect::{prose_for_day, reason_for_thread, ProseIndex};
 use crate::{
     text,
     tui::{
         model::{
-            Conversation, Day, Entry, Health, Justification, Load, Stamp, Thread, Tone, Trickle,
-            Week, Workspace,
+            Conversation, Day, Entry, Health, Justification, Load, Mood, Stamp, Thread, Tone,
+            Trickle, Week, Workspace,
         },
         widget::marks,
     },
 };
+
+use chrono::{DateTime, Datelike, Days, NaiveDate, TimeZone, Timelike, Utc};
+use lambo::{Concept, Edge, EdgeType, Graph, Interaction, Memory, MemoryStats, NodeId};
+use std::collections::{HashMap, HashSet};
 
 /// Days on screen — the ribbon's seven bars, a thread's seven marks, and the
 /// week screen's seven columns are all this number.
@@ -160,8 +158,7 @@ const JOIN: &str = "; ";
 /// five slots, not about the graph: nothing is merged, nothing is promoted, and
 /// the next tick asks the same question again. Consolidating the nodes
 /// themselves is a write, and M12c's.
-const PARAPHRASE: f32 = 0.02;
-/// The graph's contents, copied out from under its lock: everything
+pub(crate) const PARAPHRASE: f32 = 0.02;
 /// [`of_graph`] reads and nothing it does not.
 ///
 /// The build needs three slices of the session's [`Graph`] — every
@@ -271,7 +268,10 @@ fn of_graph<Tz: TimeZone>(stats: &MemoryStats, graph: &ViewData, now: DateTime<T
     // turns reached which thought.
     let (actions, derives) = edge_verdicts(graph);
     let contents = concept_contents(graph);
-    let days = days(graph, &zone, &dates, &placed, &contents);
+    // The prose reflect wrote, indexed once — `days` and `threads` each look
+    // their fields up from it rather than re-walking the concept list.
+    let prose = ProseIndex::from_concepts(&graph.concepts);
+    let days = days(graph, &zone, &dates, &placed, &contents, &prose);
     // Today is the last of the seven, and it is the same `Day` the ribbon's last
     // column draws — `screen::today::today_index` finds it by matching
     // `day_of_month`, so the two must be one day formatted once.
@@ -289,7 +289,7 @@ fn of_graph<Tz: TimeZone>(stats: &MemoryStats, graph: &ViewData, now: DateTime<T
             // can nominate.
             selected: WEEK - 1,
         },
-        threads: threads(graph, &placed, &actions, &derives),
+        threads: threads(graph, &placed, &actions, &derives, &prose),
         trickle: trickle(graph, &placed, &actions),
         // Not fed from the graph. The conversation is the chat loop's, and until
         // it can be driven from a redraw loop the panel stays as M11 left it.
@@ -349,12 +349,25 @@ fn earliest<Tz: TimeZone>(placed: &HashMap<NodeId, Placed>, zone: &Tz) -> Option
 /// Where one interaction sits: the instant it is about, and which of the week's
 /// days that lands on in the reader's own zone.
 #[derive(Debug, Clone, Copy)]
-struct Placed {
-    at: DateTime<Utc>,
-    day: Option<usize>,
+pub(crate) struct Placed {
+    pub(crate) at: DateTime<Utc>,
+    pub(crate) day: Option<usize>,
 }
-
 /// Every interaction in the graph, placed once.
+impl Placed {
+    /// The calendar day, in UTC. The whole module resolves through
+    /// `about_time`, and the reflect module wants the same answer without
+    /// the week-index leg.
+    pub(crate) fn date_naive(&self) -> NaiveDate {
+        self.at.date_naive()
+    }
+
+    /// Build a `Placed` from a timestamp alone — no week-index. The reflect
+    /// module only ever asks the calendar-day question.
+    pub(crate) fn at_only(at: DateTime<Utc>) -> Self {
+        Self { at, day: None }
+    }
+}
 ///
 /// Once, because four separate readers want the answer — the day logs, a
 /// thread's marks, the trickle's freshness and the far end the status bar names
@@ -389,10 +402,9 @@ fn placements<Tz: TimeZone>(
 /// unreachable through the write path — but a partial load has no such promise,
 /// and inventing a time for an unplaceable fact is how a bootstrap ends up
 /// looking like an afternoon.
-fn about(placed: &HashMap<NodeId, Placed>, concept: &Concept) -> Option<Placed> {
+pub(crate) fn about(placed: &HashMap<NodeId, Placed>, concept: &Concept) -> Option<Placed> {
     placed.get(&concept.origin_interaction).copied()
 }
-
 /// The seven calendar dates on screen, oldest first, ending on the day `now`
 /// falls in.
 ///
@@ -438,14 +450,13 @@ fn day_index<Tz: TimeZone>(
     let local = at.with_timezone(zone).date_naive();
     dates.iter().position(|date| *date == local)
 }
-
-/// The week's seven days, each with its log and its bar.
 fn days<Tz: TimeZone>(
     graph: &ViewData,
     zone: &Tz,
     dates: &[NaiveDate; WEEK],
     placed: &HashMap<NodeId, Placed>,
     contents: &HashSet<&str>,
+    prose: &ProseIndex,
 ) -> Vec<Day> {
     // The placement travels with the turn rather than being looked up again:
     // `placements` exists because three readers want the same answer, and a
@@ -483,13 +494,14 @@ fn days<Tz: TimeZone>(
                     .then_with(|| left_turn.id.0.cmp(&right_turn.id.0))
             });
             log.truncate(LOG);
+            let day_prose = prose_for_day(prose, *date);
             Day {
                 short_label: day_head(*date),
                 long_label: long_date(*date),
                 day_of_month: date.day().to_string(),
                 // No source, on either. See this module's header.
                 weather: None,
-                mood: None,
+                mood: day_prose.mood.as_deref().map(Mood::plain),
                 load: Load::new(bar_level(counts[index], busiest), Tone::Plain),
                 entries: log
                     .into_iter()
@@ -501,8 +513,12 @@ fn days<Tz: TimeZone>(
                     })
                     .collect(),
                 // M12c writes both. See this module's header.
-                highlights: Vec::new(),
-                notes: String::new(),
+                highlights: day_prose
+                    .gutter
+                    .iter()
+                    .map(|line| Entry::line(line))
+                    .collect(),
+                notes: day_prose.notes,
             }
         })
         .collect()
@@ -641,16 +657,15 @@ fn bar_level(count: usize, busiest: usize) -> u8 {
 
 /// What a concept is worth as a thread: which turns reached it, and which of the
 /// week's days those were.
-struct Recurrence<'a> {
-    concept: &'a Concept,
+pub(crate) struct Recurrence<'a> {
+    pub(crate) concept: &'a Concept,
     /// The turns carrying a `Derives` edge into the concept, kept rather than
     /// counted because folding two paraphrases has to union them: a turn that
     /// derived both said one thing, not two.
-    supports: Vec<NodeId>,
-    days: [bool; WEEK],
-    latest: DateTime<Utc>,
+    pub(crate) supports: Vec<NodeId>,
+    pub(crate) days: [bool; WEEK],
+    pub(crate) latest: DateTime<Utc>,
 }
-
 /// "What keeps coming back", strongest first.
 ///
 /// Strength is the count of distinct interactions carrying a `Derives` edge into
@@ -680,6 +695,7 @@ fn threads(
     placed: &HashMap<NodeId, Placed>,
     actions: &HashSet<NodeId>,
     derives: &HashMap<NodeId, Vec<NodeId>>,
+    prose: &ProseIndex,
 ) -> Vec<Thread> {
     let mut found: Vec<Recurrence<'_>> = graph
         .concepts
@@ -712,11 +728,12 @@ fn threads(
     kept.into_iter()
         .map(|found| Thread {
             summary: found.concept.content.clone(),
-            // The one-line label and the reason are both written, not derived —
-            // `None` falls back to the summary and an empty reason draws no row.
             short_summary: None,
             days: found.days,
-            because: Justification::default(),
+            // `None` falls back to the summary and an empty reason draws no row.
+            because: reason_for_thread(prose, found.concept.id)
+                .map(|text| Justification::history(&text))
+                .unwrap_or_default(),
             // Only ever drawn under a standing caution, which the live workspace
             // cannot reach: the model's own word for the rest of the time is
             // "empty".
@@ -757,7 +774,7 @@ fn one_thought(left: &Concept, right: &Concept) -> bool {
 /// The distance between two vectors, or `None` when there is no angle to
 /// measure: mismatched widths (two embedding contracts in one graph) or a zero
 /// vector.
-fn cosine_distance(here: &[f32], there: &[f32]) -> Option<f32> {
+pub(crate) fn cosine_distance(here: &[f32], there: &[f32]) -> Option<f32> {
     if here.len() != there.len() {
         return None;
     }
@@ -804,7 +821,7 @@ impl Recurrence<'_> {
 
 /// One concept's recurrence, or `None` if it is not something the user keeps
 /// coming back to this week.
-fn recurrence<'a>(
+pub(crate) fn recurrence<'a>(
     derives: &HashMap<NodeId, Vec<NodeId>>,
     placed: &HashMap<NodeId, Placed>,
     concept: &'a Concept,
