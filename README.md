@@ -174,6 +174,46 @@ See the [CLI Reference](https://nrynss.github.io/mooshik/cli/) for secondary com
 
 ---
 
+## Reproducible testing
+
+Every test below runs **offline**. No Google account, no database, no network, no credentials. A reviewer can verify the whole project without provisioning anything.
+
+Install Rust 1.97.1 with rustup, then:
+
+```bash
+cargo test
+```
+
+That is 674 tests covering the memory seam, the companion loop and its cancellation, the permission gate, the encrypted vault and egress redaction, the MCP host, the workspace watcher, the terminal UI view model, and the guided first run.
+
+The Python components test separately. Create a virtualenv and install them:
+
+```bash
+python3 -m venv .venv && ./.venv/bin/pip install ./mooshik-common pytest==9.1.1 mcp==2.1.1 google-genai==2.20.0 google-adk==2.7.1 'psycopg[binary]==3.2.13'
+```
+
+```bash
+./.venv/bin/python -m pytest mooshik-common/tests mcp-servers/news/tests mcp-servers/artifacts/tests mcp-servers/coder/tests ingester/tests measurement/tests -q
+```
+
+That is 225 more: 21 for the shared model and credential seam, 53 for the news server, 14 for the artifacts server, 41 for the coder server, 57 for the Cloud Run ingester, and 39 for the measurement harness. **899 tests in total.**
+
+Everything network-facing sits behind a seam the tests fake, so no suite reaches Vertex AI, Cloud SQL, or the open web. The same suites run in CI on every push, in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+
+To check the binary itself without configuring anything:
+
+```bash
+cargo run -- --help
+```
+
+```bash
+cargo run -- tui --demo
+```
+
+`--demo` opens the terminal interface against design artboards and connects to no database.
+
+---
+
 ## Bootstrap Corpus and Synthetic History
 
 A long-term memory assistant faces a cold-start problem: on day one, an empty database cannot demonstrate semantic recall, multi-week timeline rendering in the pane, or structural blast-radius warnings.
@@ -219,7 +259,7 @@ Veo and Lyria were dropped because Mooshik does not generate media assets. Gemma
 
 ### Submission checklist
 
-- **Reproducibility:** Follow the installation and `mooshik init` instructions above.
+- **Reproducibility:** Follow the installation and `mooshik init` instructions above. The [Reproducible testing](#reproducible-testing) section runs 899 offline tests with no credentials and no network.
 - **Architecture diagram:** Included above.
 - **Repository:** [https://github.com/nrynss/mooshik](https://github.com/nrynss/mooshik)
 - **Hosted service:** Mooshik runs as a local binary and does not require a hosted web application.
