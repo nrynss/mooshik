@@ -48,7 +48,7 @@ TIMEOUT_ENV = "CODER_TIMEOUT_SECS"
 #: this is deliberately much shorter so the server answers with a contained
 #: timeout message rather than letting the host's firebreak fire.
 DEFAULT_TIMEOUT_SECS = 10.0
-DEFAULT_LOG_LEVEL = "INFO"
+DEFAULT_LOG_LEVEL = "WARNING"
 
 
 class ConfigError(Exception):

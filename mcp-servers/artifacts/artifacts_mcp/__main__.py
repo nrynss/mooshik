@@ -2,6 +2,8 @@ from __future__ import annotations
 import logging
 import sys
 from .backend import ArtifactsBackend, make_client
+from mooshik_common.logs import quiet_library_logging
+
 from .config import ConfigError, Settings
 from .tools import build_server
 
@@ -43,6 +45,7 @@ LOG_FORMAT = "%(name)s %(levelname)s %(message)s"
 
 def configure_logging(level: str) -> None:
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr, format=LOG_FORMAT)
+    quiet_library_logging()
     try:
         log.setLevel(level)
     except ValueError:

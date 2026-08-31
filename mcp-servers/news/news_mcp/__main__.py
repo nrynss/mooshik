@@ -14,6 +14,8 @@ import logging
 import sys
 
 from .backend import GroundedBackend, make_client
+from mooshik_common.logs import quiet_library_logging
+
 from .config import ConfigError, Settings
 from .tools import build_server
 
@@ -70,6 +72,7 @@ def configure_logging(level: str) -> None:
     not drown the operator; only this package honours `NEWS_LOG_LEVEL`.
     """
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr, format=LOG_FORMAT)
+    quiet_library_logging()
     try:
         log.setLevel(level)
     except ValueError:

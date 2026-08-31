@@ -18,6 +18,8 @@ import logging
 import sys
 
 from .backend import CoderBackend
+from mooshik_common.logs import quiet_library_logging
+
 from .config import ConfigError, Settings
 from .tools import build_server
 
@@ -92,6 +94,7 @@ def configure_logging(level: str) -> None:
     drown the operator; only this package honours ``CODER_LOG_LEVEL``.
     """
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr, format=LOG_FORMAT)
+    quiet_library_logging()
     try:
         log.setLevel(level)
     except ValueError:

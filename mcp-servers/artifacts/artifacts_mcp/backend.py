@@ -46,11 +46,9 @@ class ArtifactsBackend:
         mtime = path.stat().st_mtime
         event_time = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
         
-        try:
-            uploaded_file = self.client.files.upload(file=str(path), config={"mime_type": mime_type})
-        except Exception as e:
-            raise ArtifactsToolError(f"Failed to upload file to Gemini: {e}")
-            
+        file_bytes = path.read_bytes()
+        part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
+        
         try:
             agent = build_agent(self.client, self.model)
             runner = InMemoryRunner(agent=agent)
@@ -60,7 +58,7 @@ class ArtifactsBackend:
                 role="user",
                 parts=[
                     types.Part.from_text(text="Analyze the following artifact."),
-                    types.Part.from_uri(file_uri=uploaded_file.uri, mime_type=mime_type),
+                    part,
                 ]
             )
             
@@ -80,12 +78,8 @@ class ArtifactsBackend:
             concepts = parse_concepts(raw_response)
             out = [{"content": c.content, "concept_type": c.concept_type} for c in concepts]
             return json.dumps({"event_time": event_time, "concepts": out})
-            
-        finally:
-            try:
-                self.client.files.delete(name=uploaded_file.name)
-            except Exception:
-                pass
+        except Exception as e:
+            raise ArtifactsToolError(f"Failed to analyze artifact: {e}")
 
 def make_client(settings: Any) -> Any:
     from mooshik_common.vertex import make_client as build

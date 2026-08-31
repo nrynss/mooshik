@@ -63,7 +63,7 @@ DEFAULT_TIMEOUT_SECS = 45.0
 #: Results land in the companion's context window and may be written into the
 #: user's memory. A runaway answer would evict the conversation, so clamp.
 DEFAULT_MAX_CHARS = 6_000
-DEFAULT_LOG_LEVEL = "INFO"
+DEFAULT_LOG_LEVEL = "WARNING"
 
 
 class ConfigError(Exception):
