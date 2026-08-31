@@ -2,7 +2,7 @@
 
 Mooshik is an ambient, local-first AI cowork partner and workspace orchestrator. It runs continuously alongside you as a peer. It holds lifelong memory of your workspace, researches the web, and connects to your tools over MCP. When you need heavy code edits, Mooshik delegates them to specialized coding agents.
 
-- **Documentation:** [https://mooshik.github.io](https://mooshik.github.io)
+- **Documentation:** [https://nrynss.github.io/mooshik/](https://nrynss.github.io/mooshik/)
 - **Authority Specification:** [docs/SPEC.md](docs/SPEC.md)
 - **Build Plan:** [dev-diary/PLAN.md](dev-diary/PLAN.md)
 - **License:** AGPLv3 (Application and Orchestration), Apache 2.0 (Lambo Memory Core)

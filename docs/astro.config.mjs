@@ -4,7 +4,8 @@ import starlight from '@astrojs/starlight';
 
 // https://astro.build/config
 export default defineConfig({
-  site: 'https://mooshik.github.io',
+  site: 'https://nrynss.github.io',
+  base: '/mooshik',
   integrations: [
     starlight({
       title: 'Mooshik Documentation',
