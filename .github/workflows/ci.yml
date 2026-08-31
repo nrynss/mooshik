@@ -9,6 +9,7 @@ on:
       - 'dev-diary/**'
       - 'install.sh'
       - '.gitignore'
+      - '.github/workflows/deploy-docs.yml'
   pull_request:
     paths-ignore:
       - 'docs/**'
@@ -16,6 +17,7 @@ on:
       - 'dev-diary/**'
       - 'install.sh'
       - '.gitignore'
+      - '.github/workflows/deploy-docs.yml'
 
 env:
   CARGO_TERM_COLOR: always

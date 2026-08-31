@@ -82,3 +82,4 @@ case ":$PATH:" in
 esac
 
 echo "Run 'mooshik init' to initialize your workspace."
+echo "Documentation: https://mooshik.github.io"

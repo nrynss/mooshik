@@ -11,7 +11,7 @@
 
 [app]
 about = "An ambient, local-first AI cowork partner and workspace orchestrator"
-after_help = "Mooshik runs alongside you as a peer: it holds your workspace's memory, researches the web, and delegates code changes to coding agents.\nDocs: docs/SPEC.md · Build plan: dev-diary/PLAN.md\nExit codes: 0 success · 2 the request was refused (bad usage, configuration, or a name that does not exist) · 1 unexpected internal failure."
+after_help = "Mooshik runs alongside you as a peer: it holds your workspace's memory, researches the web, and delegates code changes to coding agents.\nDocs: https://mooshik.github.io · Spec: docs/SPEC.md\nExit codes: 0 success · 2 the request was refused (bad usage, configuration, or a name that does not exist) · 1 unexpected internal failure."
 
 [config]
 init_help = "Create the Mooshik home directory, its private files, and the memory store schema. Schema provision needs MOOSHIK_POSTGRES_DSN (or LAMBO_POSTGRES_DSN / DATABASE_URL)."
