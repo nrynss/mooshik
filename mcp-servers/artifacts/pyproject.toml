@@ -1,0 +1,25 @@
+[project]
+name = "mooshik-artifacts-mcp"
+version = "0.1.0"
+description = "Mooshik artifacts MCP server: non-text workspace artifact extraction."
+requires-python = ">=3.10"
+dependencies = [
+    "mooshik-common==0.1.0",
+    "mcp==2.1.1",
+    "google-genai==2.20.0",
+    "google-adk==2.7.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==9.1.1"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["artifacts_mcp*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
