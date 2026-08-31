@@ -66,7 +66,7 @@ the surface landed, so the data behind it became worth building.
 | **M12b** | Built 2026-08-31. The tick: the redraw loop rebuilds the view model every 250 ms, so a write from the ingester, an MCP client or the reflect pass appears in the open pane without a keystroke. R1-3's deferred guard-duration item landed: the graph is copied out from under one short guard and the build runs against the copy, pinned by a structural (`syn`) guard-duration pin and measured (release embedded ~29 ms at the 4k shape vs the 250 ms budget). Review rounds 1–8: **APPROVE**, zero residue within the documented limits (`m12b-round8.md`). |
 | **M12c** | Built 2026-08-31. `mooshik reflect [--dry-run]`: a one-shot consolidation pass that writes the prose M12a left empty — a day's mood, its four-words-a-line gutter summary, the trailing notes, and a thread's reason — as `mooshik-prose:` concepts the pane shows on the next tick, and merges the paraphrase twins into their strongest (loser content preserved, edges rerouted, audit row per cluster; re-runs are a true no-op). First-write-only by design. Review rounds 1–3: **APPROVE**, zero residue (`m12c-round3.md`). |
 | **M12d** | Not started. The seam it builds on landed in `ac4cfdc` (pane runtime, shared `Memory`, `WriteLane`). See the M12 section. |
-| **M12e** | Not started. The composer takes typing and `Enter` answers nothing; the pane cannot converse. Its three structural blockers are gone — the seam landed in `ac4cfdc`. See the M12 section. |
+| **M12e** | Built 2026-08-31, `49a504d` → `d5c5909`. `Enter` runs `Session::turn` on the pane runtime; tokens drain into the conversation; in-flight `Esc` cancels without quitting; a failed turn renders as a turn. Prompt-class tools denied on the pane path (stdin would hang). Execute-time diagnostics go through a sink, not `eprintln!`. Review rounds 1–2: **APPROVE**, zero residue (`m12e-round2.md`). See the M12 section. |
 | **M12f** | Built 2026-08-31. `mcp-servers/artifacts/`: an MCP server that extracts typed concepts from screenshots and audio recordings using ADK `LlmAgent` + Gemini 3.7 Flash at `global`, returning them over stdio for Mooshik to derive in-process. Whole-document secret scanning (pattern + vault values) runs before concepts cross the wire. Uses `mooshik-common` for model defaults, Vertex client, and concept vocabulary. 14 offline tests. Review rounds 1–3: **APPROVE**, zero residue (`m12f-round3.md`). |
 
 Lambo pin: `nrynss/lambo` git `rev = 71334f0` (`lambo-for-mooshik`). E1/E2 (path dep, then rev pin) were done as the rev pin directly; bump the SHA after a Lambo fix.
@@ -860,6 +860,12 @@ session and its cancellation.
 **Done when:** a question typed into the pane streams its answer back into the pane, `Esc` stops it,
 and the memory it touches appears in the panels on the next tick. **Not required:** anything the
 `1e`/`1f`/`1g` artboards cover — those stay out of scope for the same reason M11 gave.
+
+**Status: built 2026-08-31.** Implement `49a504d`, remediate `d5c5909`, review rounds
+1–2 **APPROVE** zero residue (`m12e-round2.md`). Prompt-class tools are denied on this
+path rather than becoming a `1d` caution — PLAN allowed either. The write lane is held
+inside `run_derive`, not around the whole turn (that would deadlock the single-permit
+mutex).
 
 ### M12f — what is read, and what is refused
 
