@@ -793,9 +793,11 @@ other ambient writes, a backend failure after a remote commit can therefore have
 semantics for that batch.
 Discovery treats an empty repository with no `HEAD` as healthy and continues watching unrelated files;
 Git command output is capped at 2 MiB, a poll admits at most 256 commits, and the pending queue holds
-at most 2,048 events. Hitting a cap retains the old state and retries with explicit backpressure rather
-than silently dropping history. Recursive file reads use descriptor-relative `openat` traversal with
-`O_NOFOLLOW` on Unix; other platforms retain the canonicalization and identity-check fallback.
+at most 2,048 events. Hitting a cap retains only the affected repository's old head and retries with
+explicit backpressure; unrelated file state advances, and history is never silently dropped. Recursive
+file reads use descriptor-relative `openat` traversal with
+`O_NOFOLLOW` on Unix; the live watcher is disabled on platforms without an equivalent race-safe
+descriptor/reparse-point primitive.
 
 ### M12e — what to move, and what not to break
 

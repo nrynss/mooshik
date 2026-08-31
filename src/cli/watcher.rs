@@ -17,14 +17,15 @@
 //! an adaptive 100--250 ms poll interval, trading a bounded amount of latency
 //! for keeping recursive walks and git subprocesses off the TUI runtime.
 //! Git output is capped at 2 MiB and each poll admits at most 256 commits;
-//! pending events are capped at 2,048. A cap retains the old snapshot and
-//! retries, so pressure is explicit backpressure rather than silent loss.
+//! pending events are capped at 2,048. A cap retains only the affected
+//! repository's old head and retries it, so pressure is explicit backpressure
+//! rather than silent loss; unrelated file state still advances.
 
 use std::{
     collections::BTreeMap,
     fs,
     future::Future,
-    io::{self, Read},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
@@ -80,6 +81,13 @@ impl Watcher {
     ) -> Result<Self, WatchError> {
         let root = fs::canonicalize(root).map_err(|_| WatchError::WorkspaceUnavailable)?;
         if !root.is_dir() {
+            return Err(WatchError::WorkspaceUnavailable);
+        }
+        #[cfg(not(unix))]
+        {
+            // There is no portable descriptor-relative, no-follow traversal
+            // primitive in std on these targets. Refuse the live watcher
+            // instead of turning a path race into a workspace escape.
             return Err(WatchError::WorkspaceUnavailable);
         }
         let (cancel, cancelled) = oneshot::channel();
@@ -159,11 +167,24 @@ enum GitHead {
     Unborn,
 }
 
-#[derive(Default, Eq, PartialEq)]
+#[derive(Clone, Default, Eq, PartialEq)]
 struct Snapshot {
     files: BTreeMap<PathBuf, FileState>,
     heads: BTreeMap<PathBuf, GitHead>,
     git_failures: Vec<PathBuf>,
+}
+
+struct DiscoveryResult {
+    snapshot: Snapshot,
+    pending: BTreeMap<String, Pending>,
+    changed: bool,
+    retry: bool,
+}
+
+struct ChangeResult {
+    snapshot: Snapshot,
+    changed: bool,
+    retry: bool,
 }
 
 impl Snapshot {
@@ -245,6 +266,37 @@ impl Snapshot {
     }
 }
 
+fn discover_and_collect(
+    root: &Path,
+    previous: Option<&Snapshot>,
+    mut pending: BTreeMap<String, Pending>,
+    cancelled: &AtomicBool,
+) -> DiscoveryResult {
+    let snapshot = Snapshot::discover_with_cancel(root, cancelled);
+    let Some(previous) = previous else {
+        return DiscoveryResult {
+            retry: !snapshot.git_failures.is_empty(),
+            snapshot,
+            pending,
+            changed: false,
+        };
+    };
+    let mut changed_at = None;
+    let result = collect_changes_with_cancel(
+        previous,
+        &snapshot,
+        &mut pending,
+        &mut changed_at,
+        cancelled,
+    );
+    DiscoveryResult {
+        snapshot: result.snapshot,
+        pending,
+        changed: result.changed,
+        retry: result.retry,
+    }
+}
+
 async fn run(
     memory: Arc<Memory>,
     writes: WriteLane,
@@ -271,12 +323,14 @@ async fn run(
         // first is still running. The handle is retained through cancellation
         // and joined below; the atomic flag lets directory traversal and git
         // subprocesses stop before that join completes.
+        let prior = previous.clone();
+        let pending_for_discovery = std::mem::take(&mut pending);
         let mut discovery = tokio::task::spawn_blocking({
             let root = root.clone();
             let cancelled = Arc::clone(&discovery_cancelled);
-            move || Snapshot::discover_with_cancel(&root, &cancelled)
+            move || discover_and_collect(&root, prior.as_ref(), pending_for_discovery, &cancelled)
         });
-        let current = tokio::select! {
+        let discovered = tokio::select! {
             _ = &mut cancelled => {
                 discovery_cancelled.store(true, Ordering::Release);
                 let _ = (&mut discovery).await;
@@ -284,34 +338,27 @@ async fn run(
             },
             result = &mut discovery => result.map_err(|_| WatchError::TaskFailed)?,
         };
+        pending = discovered.pending;
+        if discovered.changed {
+            changed_at = Some(Instant::now());
+        }
 
         if previous.is_none() {
-            if current.git_failures.is_empty() {
-                previous = Some(current);
-                poll_interval = QUIET_POLL_INTERVAL;
+            previous = Some(discovered.snapshot);
+            poll_interval = if discovered.retry {
+                POLL_INTERVAL
             } else {
-                // Do not baseline a repository whose head could not be read.
-                // The next discovery must succeed before any state advances.
-                poll_interval = POLL_INTERVAL;
-            }
+                QUIET_POLL_INTERVAL
+            };
             continue;
         }
 
-        let old = previous.as_ref().expect("initialized above");
-        let valid = collect_changes(old, &current, &mut pending, &mut changed_at);
-        if valid {
-            let changed = old != &current;
-            previous = Some(current);
-            poll_interval = if changed {
-                POLL_INTERVAL
-            } else {
-                (poll_interval * 2).min(QUIET_POLL_INTERVAL)
-            };
+        previous = Some(discovered.snapshot);
+        poll_interval = if discovered.retry || discovered.changed {
+            POLL_INTERVAL
         } else {
-            // A failed git head/log read must be retried against the old
-            // snapshot, otherwise a commit can disappear between polls.
-            poll_interval = POLL_INTERVAL;
-        }
+            (poll_interval * 2).min(QUIET_POLL_INTERVAL)
+        };
 
         if changed_at.is_some_and(|at| at.elapsed() >= DEBOUNCE) && !pending.is_empty() {
             match flush_pending(
@@ -341,16 +388,54 @@ async fn run(
     }
 }
 
+#[cfg(test)]
 fn collect_changes(
     previous: &Snapshot,
     current: &Snapshot,
     pending: &mut BTreeMap<String, Pending>,
     changed_at: &mut Option<Instant>,
 ) -> bool {
-    if !current.git_failures.is_empty() {
-        return false;
+    static NEVER_CANCELLED: AtomicBool = AtomicBool::new(false);
+    !collect_changes_with_cancel(previous, current, pending, changed_at, &NEVER_CANCELLED).retry
+}
+
+fn collect_changes_with_cancel(
+    previous: &Snapshot,
+    current: &Snapshot,
+    pending: &mut BTreeMap<String, Pending>,
+    changed_at: &mut Option<Instant>,
+    cancelled: &AtomicBool,
+) -> ChangeResult {
+    let mut next = current.clone();
+    let mut retry = false;
+    let mut changed = false;
+
+    // Git failures are per repository. Keep the old head only for the
+    // affected repository while allowing unrelated file state to advance.
+    for repo in &current.git_failures {
+        retry = true;
+        if let Some(old_head) = previous.heads.get(repo) {
+            next.heads.insert(repo.clone(), old_head.clone());
+        } else {
+            next.heads.remove(repo);
+        }
+    }
+
+    if cancelled.load(Ordering::Acquire) {
+        return ChangeResult {
+            snapshot: previous.clone(),
+            changed: false,
+            retry: true,
+        };
     }
     for (path, state) in &current.files {
+        if cancelled.load(Ordering::Acquire) {
+            return ChangeResult {
+                snapshot: previous.clone(),
+                changed: false,
+                retry: true,
+            };
+        }
         if previous.files.get(path) != Some(state) {
             let Some(event_time) = system_time_to_utc(state.modified) else {
                 continue;
@@ -364,12 +449,21 @@ fn collect_changes(
                     event_time,
                 },
             ) {
-                return false;
+                next.files.remove(path);
+                if let Some(old_state) = previous.files.get(path) {
+                    next.files.insert(path.clone(), old_state.clone());
+                }
+                retry = true;
+                continue;
             }
+            changed = true;
             *changed_at = Some(Instant::now());
         }
     }
     for (repo, head) in &current.heads {
+        if current.git_failures.contains(repo) {
+            continue;
+        }
         let Some(previous_head) = previous.heads.get(repo) else {
             continue;
         };
@@ -381,20 +475,29 @@ fn collect_changes(
             (GitHead::Unborn, GitHead::Commit(new)) => (None, new),
             (GitHead::Commit(_), GitHead::Unborn) | (GitHead::Unborn, GitHead::Unborn) => continue,
         };
-        let Ok(commits) = git_commits_between(repo, old, new) else {
-            return false;
+        let Ok(commits) = git_commits_between_with_cancel(repo, old, new, cancelled) else {
+            retry = true;
+            next.heads.insert(repo.clone(), previous_head.clone());
+            continue;
         };
         for commit in commits {
             let key = format!("git:{}#{}", repo.display(), commit.sha);
             if !enqueue_pending(pending, key, Pending::Commit(commit)) {
-                return false;
+                retry = true;
+                next.heads.insert(repo.clone(), previous_head.clone());
+                break;
             }
+            changed = true;
             *changed_at = Some(Instant::now());
         }
     }
     // A newly-created repository is baselined by `Snapshot::discover`, so its
     // existing history is never replayed into the open pane.
-    true
+    ChangeResult {
+        snapshot: next,
+        changed,
+        retry,
+    }
 }
 
 fn enqueue_pending(pending: &mut BTreeMap<String, Pending>, key: String, event: Pending) -> bool {
@@ -563,6 +666,7 @@ fn is_git_marker(path: &Path) -> bool {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GitFailure {
     Command,
+    MalformedOutput,
     OutputTooLarge,
     TooManyCommits,
 }
@@ -588,15 +692,6 @@ fn git_head_with_cancel(repo: &Path, cancelled: &AtomicBool) -> Result<GitHead, 
     }
 }
 
-fn git_commits_between(
-    repo: &Path,
-    old: Option<&str>,
-    new: &str,
-) -> Result<Vec<Commit>, GitFailure> {
-    static NEVER_CANCELLED: AtomicBool = AtomicBool::new(false);
-    git_commits_between_with_cancel(repo, old, new, &NEVER_CANCELLED)
-}
-
 fn git_commits_between_with_cancel(
     repo: &Path,
     old: Option<&str>,
@@ -606,35 +701,109 @@ fn git_commits_between_with_cancel(
     let range = old.map_or_else(|| new.to_owned(), |old| format!("{old}..{new}"));
     let output = git_with_cancel(
         repo,
-        &["log", "--no-patch", "--format=%H%x00%aI%x00%B%x1e", &range],
+        &["log", "--no-patch", "--pretty=format:%H%x00%aI%x00", &range],
         cancelled,
     )?;
-    parse_commits(repo, &output)
+    let metadata = parse_commit_headers(&output)?;
+    if metadata.is_empty() {
+        return Ok(Vec::new());
+    }
+    let request: String = metadata.iter().map(|(sha, _)| format!("{sha}\n")).collect();
+    let objects = git_bytes_with_cancel_input(
+        repo,
+        &["cat-file", "--batch"],
+        request.as_bytes(),
+        cancelled,
+    )?;
+    parse_commit_messages(repo, &metadata, &objects)
 }
 
-fn parse_commits(repo: &Path, output: &str) -> Result<Vec<Commit>, GitFailure> {
-    let mut commits = Vec::new();
-    for record in output.split('\x1e') {
-        if let Some(commit) = (|| {
-            let mut fields = record.trim().splitn(3, '\0');
-            let sha = fields.next()?.trim();
-            let date = fields.next()?.trim();
-            let message = fields.next()?.trim();
-            let author_time = DateTime::parse_from_rfc3339(date).ok()?.with_timezone(&Utc);
-            Some(Commit {
-                repo: repo.to_path_buf(),
-                sha: sha.to_owned(),
-                author_time,
-                message: message.to_owned(),
-            })
-        })() {
-            if commits.len() == MAX_GIT_COMMITS_PER_POLL {
-                return Err(GitFailure::TooManyCommits);
-            }
-            commits.push(commit);
+fn parse_commit_headers(output: &str) -> Result<Vec<(String, DateTime<Utc>)>, GitFailure> {
+    let mut fields = output.split('\0').collect::<Vec<_>>();
+    if fields.last() == Some(&"") {
+        fields.pop();
+    }
+    if fields.len() % 2 != 0 {
+        return Err(GitFailure::MalformedOutput);
+    }
+    let mut metadata = Vec::with_capacity(fields.len() / 2);
+    for pair in fields.chunks_exact(2) {
+        let sha = pair[0];
+        let date = pair[1];
+        if !is_object_id(sha) || date.is_empty() {
+            return Err(GitFailure::MalformedOutput);
         }
+        let author_time = DateTime::parse_from_rfc3339(date)
+            .map_err(|_| GitFailure::MalformedOutput)?
+            .with_timezone(&Utc);
+        if metadata.len() == MAX_GIT_COMMITS_PER_POLL {
+            return Err(GitFailure::TooManyCommits);
+        }
+        metadata.push((sha.to_owned(), author_time));
+    }
+    Ok(metadata)
+}
+
+fn parse_commit_messages(
+    repo: &Path,
+    metadata: &[(String, DateTime<Utc>)],
+    output: &[u8],
+) -> Result<Vec<Commit>, GitFailure> {
+    let mut cursor = 0;
+    let mut commits = Vec::with_capacity(metadata.len());
+    for (expected_sha, author_time) in metadata {
+        let header_end = output[cursor..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .ok_or(GitFailure::MalformedOutput)?
+            + cursor;
+        let header = std::str::from_utf8(&output[cursor..header_end])
+            .map_err(|_| GitFailure::MalformedOutput)?;
+        let mut fields = header.split(' ');
+        let sha = fields.next().ok_or(GitFailure::MalformedOutput)?;
+        let kind = fields.next().ok_or(GitFailure::MalformedOutput)?;
+        let size = fields
+            .next()
+            .ok_or(GitFailure::MalformedOutput)?
+            .parse::<usize>()
+            .map_err(|_| GitFailure::MalformedOutput)?;
+        if fields.next().is_some()
+            || sha != expected_sha
+            || kind != "commit"
+            || size > MAX_GIT_OUTPUT_BYTES
+        {
+            return Err(GitFailure::MalformedOutput);
+        }
+        cursor = header_end + 1;
+        let content_end = cursor
+            .checked_add(size)
+            .ok_or(GitFailure::MalformedOutput)?;
+        if content_end >= output.len() || output[content_end] != b'\n' {
+            return Err(GitFailure::MalformedOutput);
+        }
+        let content = &output[cursor..content_end];
+        let separator = content
+            .windows(2)
+            .position(|window| window == b"\n\n")
+            .ok_or(GitFailure::MalformedOutput)?;
+        let message = String::from_utf8(content[separator + 2..].to_vec())
+            .map_err(|_| GitFailure::MalformedOutput)?;
+        commits.push(Commit {
+            repo: repo.to_path_buf(),
+            sha: expected_sha.clone(),
+            author_time: *author_time,
+            message,
+        });
+        cursor = content_end + 1;
+    }
+    if cursor != output.len() {
+        return Err(GitFailure::MalformedOutput);
     }
     Ok(commits)
+}
+
+fn is_object_id(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn git_with_cancel(
@@ -642,18 +811,37 @@ fn git_with_cancel(
     args: &[&str],
     cancelled: &AtomicBool,
 ) -> Result<String, GitFailure> {
+    let bytes = git_bytes_with_cancel_input(repo, args, &[], cancelled)?;
+    String::from_utf8(bytes).map_err(|_| GitFailure::MalformedOutput)
+}
+
+fn git_bytes_with_cancel_input(
+    repo: &Path,
+    args: &[&str],
+    input: &[u8],
+    cancelled: &AtomicBool,
+) -> Result<Vec<u8>, GitFailure> {
     if cancelled.load(Ordering::Acquire) {
         return Err(GitFailure::Command);
     }
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .arg("-C")
         .arg(repo)
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| GitFailure::Command)?;
-    let mut stdout = child.stdout.take().ok_or(GitFailure::Command)?;
+        .stderr(Stdio::null());
+    if input.is_empty() {
+        command.stdin(Stdio::null());
+    } else {
+        command.stdin(Stdio::piped());
+    }
+    let mut child = command.spawn().map_err(|_| GitFailure::Command)?;
+    let Some(mut stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(GitFailure::Command);
+    };
     let output_too_large = Arc::new(AtomicBool::new(false));
     let output_too_large_reader = Arc::clone(&output_too_large);
     let reader = thread::spawn(move || {
@@ -667,18 +855,43 @@ fn git_with_cancel(
         }
         (result, bytes)
     });
+    if !input.is_empty() {
+        let Some(mut stdin) = child.stdin.take() else {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = reader.join();
+            return Err(GitFailure::Command);
+        };
+        if stdin.write_all(input).is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = reader.join();
+            return Err(GitFailure::Command);
+        }
+    }
+    let mut process_failed = false;
     let status = loop {
         if cancelled.load(Ordering::Acquire) || output_too_large.load(Ordering::Acquire) {
             let _ = child.kill();
             break child.wait().ok();
         }
-        match child.try_wait().map_err(|_| GitFailure::Command)? {
-            Some(result) => {
+        match child.try_wait() {
+            Ok(Some(result)) => {
                 break Some(result);
             }
-            None => thread::sleep(Duration::from_millis(5)),
+            Ok(None) => thread::sleep(Duration::from_millis(5)),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                process_failed = true;
+                break None;
+            }
         }
     };
+    if process_failed {
+        let _ = reader.join();
+        return Err(GitFailure::Command);
+    }
     let (read_result, bytes) = reader.join().map_err(|_| GitFailure::Command)?;
     read_result.map_err(|_| GitFailure::Command)?;
     if cancelled.load(Ordering::Acquire) {
@@ -690,14 +903,20 @@ fn git_with_cancel(
     if !status.is_some_and(|status| status.success()) {
         return Err(GitFailure::Command);
     }
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    Ok(bytes)
 }
 
 fn read_nofollow(path: &Path, root: &Path) -> io::Result<Vec<u8>> {
     #[cfg(unix)]
     return read_nofollow_unix(path, root);
     #[cfg(not(unix))]
-    return read_nofollow_non_unix(path, root);
+    {
+        let _ = (path, root);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "live watching requires race-safe descriptor traversal",
+        ))
+    }
 }
 
 #[cfg(unix)]
@@ -766,52 +985,7 @@ fn read_nofollow_unix(path: &Path, root: &Path) -> io::Result<Vec<u8>> {
         ));
     }
     let mut bytes = Vec::with_capacity((MAX_FILE_BYTES as usize).min(64 * 1024));
-    file.by_ref()
-        .take(MAX_FILE_BYTES + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_FILE_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "watch file exceeds size limit",
-        ));
-    }
-    Ok(bytes)
-}
-
-#[cfg(not(unix))]
-fn read_nofollow_non_unix(path: &Path, root: &Path) -> io::Result<Vec<u8>> {
-    // Windows and other non-Unix targets have no portable openat equivalent
-    // in the standard library. Canonicalization plus post-open identity
-    // checks is fail-closed for ordinary symlink escapes, while Unix uses
-    // descriptor-relative traversal above for race-safe protection.
-    let canonical = fs::canonicalize(path)?;
-    if !canonical.starts_with(root) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "watch path escapes workspace",
-        ));
-    }
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "symbolic links and non-files are not watchable",
-        ));
-    }
-    let mut file = fs::File::open(path)?;
-    let opened = file.metadata()?;
-    let current = fs::symlink_metadata(path)?;
-    if !current.is_file()
-        || current.len() != opened.len()
-        || current.modified().ok() != opened.modified().ok()
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "watch path changed while opening",
-        ));
-    }
-    let mut bytes = Vec::with_capacity((MAX_FILE_BYTES as usize).min(64 * 1024));
-    file.by_ref()
+    Read::by_ref(&mut file)
         .take(MAX_FILE_BYTES + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_FILE_BYTES {
@@ -1102,6 +1276,58 @@ mod tests {
     }
 
     #[test]
+    fn failed_git_transition_does_not_repeat_successful_file_events() {
+        let root = test_root("git-retry-file");
+        let repo = root.join("missing-repo");
+        let path = root.join("outside.md");
+        let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+        let previous = Snapshot {
+            files: [(path.clone(), FileState { modified, len: 1 })]
+                .into_iter()
+                .collect(),
+            heads: [(repo.clone(), GitHead::Commit("old-head".to_owned()))]
+                .into_iter()
+                .collect(),
+            ..Snapshot::default()
+        };
+        let current = Snapshot {
+            files: [(path.clone(), FileState { modified, len: 2 })]
+                .into_iter()
+                .collect(),
+            heads: [(repo.clone(), GitHead::Commit("new-head".to_owned()))]
+                .into_iter()
+                .collect(),
+            ..Snapshot::default()
+        };
+        let never_cancelled = AtomicBool::new(false);
+        let mut pending = BTreeMap::new();
+        let mut changed = None;
+        let first = collect_changes_with_cancel(
+            &previous,
+            &current,
+            &mut pending,
+            &mut changed,
+            &never_cancelled,
+        );
+        assert!(first.retry);
+        assert!(first.snapshot.files.contains_key(&path));
+        assert_eq!(pending.len(), 1);
+
+        let mut changed_again = None;
+        let second = collect_changes_with_cancel(
+            &first.snapshot,
+            &current,
+            &mut pending,
+            &mut changed_again,
+            &never_cancelled,
+        );
+        assert!(second.retry);
+        assert!(!second.changed);
+        assert_eq!(pending.len(), 1);
+        remove_test_root(&root);
+    }
+
+    #[test]
     fn unborn_nested_repository_does_not_block_files_or_its_first_commit() {
         let root = test_root("unborn-repo");
         let repo = root.join("nested");
@@ -1212,10 +1438,16 @@ mod tests {
     #[test]
     fn commit_metadata_parser_keeps_author_time_and_no_diff() {
         let repo = PathBuf::from("/workspace/project");
-        let commits =
-            parse_commits(&repo, "abc\x002024-01-02T03:04:05+00:00\0fix parser\x1e").unwrap();
+        let sha = "a".repeat(40);
+        let metadata =
+            parse_commit_headers(&format!("{sha}\02024-01-02T03:04:05+00:00\0")).unwrap();
+        let content = b"tree abc\nauthor Test <test@example.invalid> 0 +0000\ncommitter Test <test@example.invalid> 0 +0000\n\nfix parser";
+        let mut object = format!("{sha} commit {}\n", content.len()).into_bytes();
+        object.extend_from_slice(content);
+        object.push(b'\n');
+        let commits = parse_commit_messages(&repo, &metadata, &object).unwrap();
         assert_eq!(commits.len(), 1);
-        assert_eq!(commits[0].sha, "abc");
+        assert_eq!(commits[0].sha, sha);
         assert_eq!(
             commits[0].author_time.to_rfc3339(),
             "2024-01-02T03:04:05+00:00"
@@ -1226,12 +1458,39 @@ mod tests {
     #[test]
     fn git_commit_parser_caps_one_poll() {
         let output: String = (0..=MAX_GIT_COMMITS_PER_POLL)
-            .map(|index| format!("sha-{index}\x002024-01-02T03:04:05+00:00\0message\x1e"))
+            .map(|index| format!("{index:0>40}\02024-01-02T03:04:05+00:00\0"))
             .collect();
         assert!(matches!(
-            parse_commits(Path::new("/workspace/project"), &output),
+            parse_commit_headers(&output),
             Err(GitFailure::TooManyCommits)
         ));
+    }
+
+    #[test]
+    fn malformed_git_metadata_is_retried_instead_of_skipped() {
+        let sha = "b".repeat(40);
+        assert!(matches!(
+            parse_commit_headers(&format!("{sha}\0not-a-date\0")),
+            Err(GitFailure::MalformedOutput)
+        ));
+    }
+
+    #[test]
+    fn commit_message_framing_preserves_the_record_separator_byte() {
+        let repo = PathBuf::from("/workspace/project");
+        let sha = "c".repeat(40);
+        let metadata = vec![(
+            sha.clone(),
+            DateTime::parse_from_rfc3339("2024-01-02T03:04:05+00:00")
+                .unwrap()
+                .with_timezone(&Utc),
+        )];
+        let content = b"tree abc\n\na message\x1e still one message";
+        let mut object = format!("{sha} commit {}\n", content.len()).into_bytes();
+        object.extend_from_slice(content);
+        object.push(b'\n');
+        let commits = parse_commit_messages(&repo, &metadata, &object).unwrap();
+        assert_eq!(commits[0].message, "a message\x1e still one message");
     }
 
     #[test]
