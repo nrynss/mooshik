@@ -160,6 +160,26 @@ See the [CLI Reference](https://nrynss.github.io/mooshik/cli/) for secondary com
 
 ---
 
+## Bootstrap Corpus and Synthetic History
+
+A long-term memory assistant faces a cold-start problem: on day one, an empty database cannot demonstrate semantic recall, multi-week timeline rendering in the pane, or structural blast-radius warnings.
+
+To demonstrate Mooshik's capabilities immediately, the repository includes a synthetic workspace corpus in [`ingest-fixtures/`](ingest-fixtures/). It contains realistic project history:
+- Architecture RFCs and technical specifications.
+- Daily standup notes and incident postmortems.
+- Git commit milestones with historical author timestamps.
+
+You can seed your memory graph using the bootstrap ingester:
+
+```bash
+cd ingester
+python3 -m ingester --root ../ingest-fixtures
+```
+
+This populates the graph with historical context so you can immediately search past decisions (`mooshik recall "tidemark lease"`) and explore an active weekly timeline in `mooshik tui`.
+
+---
+
 ## Security and privacy
 
 - **Two separate stores.** Secrets live in an encrypted local vault at `~/.mooshik/vault`. Memory lives in the graph. The graph never stores secret values.
