@@ -1,35 +1,84 @@
 ---
-title: Mooshik Documentation
-description: Ambient, local-first AI cowork partner and workspace orchestrator.
-template: splash
+title: "Ambient AI cowork partner"
+description: "Ambient, local-first AI cowork partner and workspace orchestrator."
+template: doc
 hero:
-  tagline: Ambient, local-first AI cowork partner and workspace orchestrator.
+  title: "Mooshik"
+  tagline: "Ambient, local-first AI cowork partner and workspace orchestrator. Runs continuously alongside you as a peer."
   actions:
-    - text: Get Started
-      link: /getting-started/overview/
-      icon: right-arrow
+    - text: "Get Started"
+      link: "/mooshik/quickstart/"
       variant: primary
-    - text: View on GitHub
-      link: https://github.com/nrynss/mooshik
-      icon: external
-      variant: minimal
+    - text: "View on GitHub"
+      link: "https://github.com/nrynss/mooshik"
+      variant: secondary
+      attrs:
+        target: _blank
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components'
+import Mermaid from '../../components/Mermaid.astro';
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
 
-## Explore Mooshik
+<div class="badges" style="text-align: center; margin-top: 1.5rem;">
+  <img src="https://img.shields.io/github/actions/workflow/status/nrynss/mooshik/ci.yml?branch=main&label=ci&logo=github" alt="CI status" height="20" />
+  <img src="https://img.shields.io/github/license/nrynss/mooshik?color=%2316A34A&label=license" alt="License" height="20" />
+</div>
 
-<CardGrid stagger>
-  <Card title="Lifelong Memory" icon="document">
-    Mooshik preserves knowledge across sessions using the Lambo graph memory substrate.
-  </Card>
-  <Card title="Ambient Coworking" icon="laptop">
-    Mooshik observes your workspace quietly in the background without interrupting your flow.
-  </Card>
-  <Card title="MCP Tool Hub" icon="puzzle">
-    Connect seamlessly to search engines, browsers, local tools, and custom servers.
-  </Card>
-  <Card title="Local-First Privacy" icon="setting">
-    Keep your code and secrets on your local machine using SQLite and local models.
-  </Card>
+Mooshik is an ambient AI cowork partner and workspace orchestrator. It runs continuously alongside you as a peer.
+
+Mooshik holds lifelong memory of your workspace. It coordinates web research and connects to tools over Model Context Protocol. When you need heavy code edits, Mooshik delegates tasks to coding agents.
+
+<Mermaid
+  code={`flowchart TB
+    subgraph Clients["Clients"]
+        TUI["Terminal UI (mooshik tui)"]
+        CLI["CLI Commands"]
+    end
+    subgraph Core["Mooshik Core Runtime"]
+        Router["Event & Intent Router"]
+        Companion["Companion Adapter (/v1)"]
+        Scratch["Scratch Script Runner"]
+        MCPHost["MCP Client Host"]
+        Watcher["Workspace & Git Watcher"]
+    end
+    subgraph Memory["Lambo Graph Memory"]
+        Graph["In-Memory Concept Graph"]
+        WriteLane["WriteLane (Single Writer)"]
+        Seam["GraphStore Seam"]
+    end
+    subgraph Vault["Secret Vault"]
+        V[("Local Encrypted Vault")]
+    end
+    subgraph MCPServers["External MCP Servers"]
+        News["News & Search"]
+        Artifacts["Multimodal Artifacts"]
+    end
+    Clients <--> Core
+    Core --> Router
+    Router --> Vault
+    Core --> WriteLane --> Graph --> Seam
+    Core --> Watcher
+    MCPHost <--> MCPServers
+    Core -.->|Delegate Tasks| Coding["Coding Contractor Agent"]`}
+/>
+
+## The Triad Model
+
+Mooshik separates memory, orchestration, and coding execution into three clear roles.
+
+| Role | Responsibility |
+| :--- | :--- |
+| **Mooshik** | Ambient awareness, local chat, research, MCP aggregation, and terminal UI. |
+| **Lambo** | Living graph memory substrate, in-memory graph, write-behind, and vector recall. |
+| **Coding Contractor** | Surgical code edits in repositories under constraints provided by Lambo memory. |
+
+## Explore Documentation
+
+The sidebar gives complete access to all guides and references.
+
+<CardGrid cols={2}>
+  <LinkCard title="Quickstart" href="/mooshik/quickstart/" description="Install the binary and initialize your workspace in under one minute." />
+  <LinkCard title="Product Overview" href="/mooshik/overview/" description="Understand Mooshik's design philosophy and the triad model." />
+  <LinkCard title="Architecture" href="/mooshik/system-overview/" description="Inspect the core runtime, memory substrate, and security model." />
+  <LinkCard title="Terminal UI" href="/mooshik/tui-overview/" description="Explore the multi-pane terminal interface and workspace timeline." />
 </CardGrid>
