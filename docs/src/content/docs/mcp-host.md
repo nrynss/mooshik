@@ -1,39 +1,58 @@
 ---
-title: MCP Host Architecture
-description: Learn how Mooshik aggregates and gates Model Context Protocol tools.
+title: MCP Client Host
+description: Learn how Mooshik aggregates, isolates, and gates Model Context Protocol tools over stdio.
 ---
 
-Mooshik acts as a native Model Context Protocol (MCP) host. It aggregates external tool servers into a single interface for the companion model.
+Mooshik acts as a native Model Context Protocol (MCP) host. It connects external tool servers over standard input and output streams (`stdio`), surfacing tools to the companion model under strict security gates.
 
-## Child Process Stdio Transport
+## Stdio Child Process Architecture
 
-Mooshik connects to MCP servers over standard input and output channels:
-- It launches each server as a child process.
-- It exchanges JSON-RPC messages across stdio.
-- It captures stderr logs for operator debugging without corrupting JSON-RPC framing.
+Mooshik communicates with MCP servers through child processes:
 
-## Tool Discovery and Namespacing
+- **Lazy spawning:** Mooshik spawns server processes only when a session requests tool specifications or execution. Sessions that do not use a server incur zero process overhead.
+- **Framing safety:** Stdio transport uses stdout strictly for JSON-RPC message frames. Server logging is directed to stderr, which Mooshik displays in the terminal without corrupting wire protocols.
+- **Process isolation:** Subprocesses run in isolated environments with allowlisted environment variables. Vault secrets are resolved at launch time and injected directly into the child process.
 
-During initialization, Mooshik queries connected servers using `tools/list`.
+## Tool Namespacing
 
-It namespaces tools using the server name:
+Tools discovered from connected servers are namespaced using the server identifier:
 
-```
+```text
 mcp.<server_name>.<tool_name>
 ```
 
-For example, the search tool in the `news` server becomes `mcp.news.search_news`.
+For example, the `search_news` tool provided by the `news` server becomes `mcp.news.search_news`.
 
-## Permission Gating
+## Configuring MCP Servers
 
-Mooshik protects your environment with explicit permission rules:
+Define servers in `~/.mooshik/config.toml`:
 
-- **Allow**: Tools execute immediately without prompts.
-- **Prompt**: Mooshik requests confirmation before running the tool.
-- **Deny**: Tool calls fail immediately.
+```toml
+[mcp_servers.news]
+command = "/home/you/.local/share/mooshik/venv/bin/mooshik-news-mcp"
+expose = ["search_news", "fetch_article"]
 
-Configure grants in `~/.mooshik/config.toml` or manage them via the CLI:
-
-```sh
-mooshik permissions
+[mcp_servers.news.env]
+MOOSHIK_GEMINI_API_KEY = "gemini-api-key"
 ```
+
+### Configuration Rules
+
+1. **`expose` is an allowlist:** Only tools explicitly listed in `expose` are visible to the companion. If `expose` is empty or omitted, Mooshik never spawns the server.
+2. **`env` values are vault secret names:** In the `[mcp_servers.<name>.env]` table, the key is the environment variable name the server expects, and the value is the secret name in the local encrypted vault. Mooshik resolves the secret value at spawn time.
+
+## Permission Gating and Timeouts
+
+All MCP tools are subject to permission policies configured under `[permissions]`:
+
+```toml
+[permissions]
+"mcp.news.*" = "allow"
+"mcp.coder.*" = "prompt"
+```
+
+- `"allow"`: The tool runs automatically when invoked by the companion.
+- `"prompt"`: Mooshik prompts the operator in the terminal before running the tool.
+- `"deny"`: Invocations fail immediately.
+
+Mooshik enforces a hard 60-second per-call execution timeout (`MCP_CALL_WAIT`). Tools that hang or fail to respond within 60 seconds are terminated to protect companion loop responsiveness.

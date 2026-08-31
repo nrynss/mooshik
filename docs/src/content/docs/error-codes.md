@@ -1,28 +1,59 @@
 ---
-title: Exit Codes & Failures
-description: Understand Mooshik exit codes, errors, and failure handling.
+title: Error Codes & Troubleshooting
+description: Diagnostic exit codes and durable remediation steps for common error messages.
 ---
 
-Mooshik follows standardized process exit codes to communicate command outcomes clearly.
+This page explains Mooshik's exit codes and diagnostic error messages.
 
-## Process Exit Codes
+## CLI Exit Codes
 
-| Code | Meaning | Example Scenarios |
+| Exit Code | Classification | Cause |
 | :--- | :--- | :--- |
-| `0` | Success | Normal command completion, clean exit from TUI. |
-| `1` | Internal Failure | Backend error, network failure, unhandled crash. |
-| `2` | User / Usage Error | Configuration syntax error, single-writer lease conflict. |
+| `0` | Success | Command completed successfully. |
+| `1` | Runtime Failure | Model timeout, network error, or tool execution failure. |
+| `2` | Configuration Error | Missing settings, invalid arguments, or database session conflict. |
 
-## Single-Writer Lease Conflicts
+## Common Error Messages and Remediations
 
-If you run a command against an open session already held by another process:
-- Mooshik detects the active lease.
-- It prints a clear conflict message identifying the holder.
-- It exits immediately with status code `2`.
-- It never overwrites or corrupts active database state.
+### "No Postgres DSN is configured"
 
-## Safe Error Reporting
+- **Exit code:** 2
+- **Cause:** `store.kind` is set to `postgres`, but no database connection string was provided.
+- **Durable fix:** Store the DSN in the vault and link it in configuration:
 
-Mooshik prints only the top-level error summary to standard error.
+```bash
+mooshik secret set store-dsn
+mooshik config set store.dsn_secret store-dsn
+```
 
-It hides nested cause chains and connection details to prevent leaking passwords, tokens, or private endpoints into terminal logs.
+### "Workspace memory is held by another writer"
+
+- **Exit code:** 2
+- **Cause:** Another process currently holds the exclusive single-writer lease on this session.
+- **Remediation:** Leave the conflicting session (`Esc` in `mooshik tui` or `Ctrl-C` in `mooshik serve`). If the process terminated unexpectedly, the lease expires automatically after a short timeout.
+
+### "Changing store.kind requires confirmation"
+
+- **Exit code:** 2
+- **Cause:** Changing `store.kind` moves the active storage authority between SQLite and PostgreSQL.
+- **Remediation:** Rerun the command with the confirmation flag:
+
+```bash
+mooshik config set store.kind postgres --confirm-database-change
+```
+
+### "Publisher model was not found or your project does not have access (404)"
+
+- **Exit code:** 1
+- **Cause:** Gemini 3.x Flash models are served exclusively from the `global` location on Vertex AI.
+- **Remediation:** Ensure `companion.google_location` is set to `global`:
+
+```bash
+mooshik config set companion.google_location global
+```
+
+### "Setting would store a secret in config.toml"
+
+- **Exit code:** 2
+- **Cause:** Attempted to write a credential directly to a configuration key that expects a secret reference.
+- **Remediation:** Store the secret in the vault with `mooshik secret set <name>`, then set the reference key.

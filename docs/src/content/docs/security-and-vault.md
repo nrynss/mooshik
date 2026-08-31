@@ -1,36 +1,78 @@
 ---
-title: Security & Secret Vault
-description: Encrypted vault storage, egress redaction, and pre-wire secret scanning.
+title: The Vault & Security
+description: Encrypted local secret storage, two-store separation, and egress redaction.
 ---
 
-Mooshik protects developer credentials and tokens through encryption, runtime redaction, and strict boundary scanning.
+Mooshik enforces clear security boundaries to ensure sensitive credentials never leak into language models, prompts, or synchronized memory graphs.
 
-## Encrypted Local Vault
+## Two-Store Separation
 
-Mooshik stores credentials in a local encrypted vault file at `~/.mooshik/vault.bin`.
+Mooshik separates memory from secrets at the architectural level:
 
-Key vault properties:
-- Uses the OS keyring on Linux and macOS by default.
-- Falls back to a passphrase-derived key when the keyring is unavailable.
-- Uses ChaCha20-Poly1305 authenticated encryption.
-- Enforces strict file permissions with mode 0600 on Unix systems.
+- **The Memory Graph:** Embedded, queryable, synced across machines, and readable by language models. It never stores credential values.
+- **The Vault:** Encrypted, local only, never synchronized to external databases, and never embedded.
+
+The memory graph may record that a secret handle exists (such as `secret://github/token`), which is safe autobiographical knowledge. The actual value resides strictly in the local vault and resolves only at tool execution time.
+
+## Vault Providers
+
+Configure the vault provider under `[vault]` in `~/.mooshik/config.toml`:
+
+```toml
+[vault]
+provider = "keyring"   # "keyring" or "passphrase"
+```
+
+### 1. Keyring Provider (`provider = "keyring"`)
+
+The default provider on desktop systems. It uses the operating system credential manager:
+- **Linux:** Secret Service via D-Bus (`libdbus-1-dev`).
+- **macOS:** Apple Keychain Services.
+
+Secrets decrypt automatically for local user sessions without requiring master password prompts.
+
+### 2. Passphrase Provider (`provider = "passphrase"`)
+
+Suitable for headless servers, Docker containers, and CI environments where a system keyring is unavailable.
+
+Set the master encryption passphrase via an environment variable:
+
+```bash
+export MOOSHIK_VAULT_PASSPHRASE="your-master-passphrase"
+```
+
+The vault file at `~/.mooshik/vault` is protected with strict `0600` file permissions.
+
+## Managing Vault Secrets
+
+Use the CLI to create and inspect secret handles:
+
+### Store a Secret
+
+```bash
+mooshik secret set github-token
+```
+
+Prompts for the secret value with terminal echo disabled.
+
+### Retrieve a Secret
+
+```bash
+mooshik secret get github-token
+```
+
+Prints the decrypted secret value directly to your terminal.
+
+### List Stored Secrets
+
+```bash
+mooshik secret list
+```
+
+Prints the names of all registered secrets without exposing their values.
 
 ## Egress Redaction
 
-Mooshik tracks all secret values loaded from the vault.
+Tool execution is the primary path where secrets could escape (such as a script echoing an environment variable).
 
-Before any tool output or context passes to the language model or external loggers, Mooshik replaces matched secret values with `***REDACTED***`.
-
-## Pre-Wire Secret Scanning
-
-Non-text artifacts like screenshots and audio notes can accidentally capture sensitive tokens or private keys.
-
-Mooshik runs secret pattern detection on all extracted concepts before they cross the tool boundary:
-- PEM certificates and private key blocks
-- AWS access keys (`AKIA...`)
-- GitHub personal access tokens (`ghp_...`, `github_pat_...`)
-- Slack API tokens (`xox...`)
-- Generic high-entropy assignment patterns
-- Injected vault secrets
-
-If the scanner detects any secret, it drops the entire artifact immediately. No partial content or corrupted fragments enter the graph.
+Mooshik scans all tool output against known vault values before passing data to language models or writing observations to the graph. Any matching substring is replaced with `[redacted]`.

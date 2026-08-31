@@ -1,20 +1,43 @@
 ---
 title: Scratch Script Runner
-description: Sandboxed execution of quick diagnostic scripts and calculations.
+description: Execute sandboxed Python and Bash helper scripts with timeouts and egress redaction.
 ---
 
-The scratch runner executes ad-hoc scripts in a sandboxed temporary directory to inspect workspace state.
+Mooshik includes a built-in sandbox runner (`run_scratch_script`) that allows the companion to execute throwaway Python or Bash helper scripts.
 
-## Sandboxing & Isolation
+## Sandboxed Execution
 
-Mooshik isolates scratch script execution:
-- Runs inside a private directory with mode 0700 permissions.
-- Enforces strict execution timeouts.
-- Intercepts and redacts environment variables containing vault secrets.
-- Prevents scripts from modifying primary repository files unexpectedly.
+The scratch runner executes scripts under strict runtime limits:
 
-## Permission Gating
+- **Isolated working directory:** Scripts run in a temporary directory with `0700` permissions.
+- **15-second execution timeout:** Long-running or hung commands terminate automatically.
+- **Process isolation:** Scripts run as isolated child processes without interactive input streams.
 
-By default, Mooshik prompts the user before executing any scratch script.
+## Permissions Policy
 
-You can adjust permissions in `config.toml` to permit automated execution when needed.
+By default, scratch script execution requires interactive operator confirmation:
+
+```toml
+[permissions]
+scratch = "prompt"
+```
+
+When set to `"prompt"`, Mooshik displays the generated script code and target interpreter in the terminal and waits for confirmation before execution.
+
+## Injecting Vault Secrets
+
+You can pass sensitive credentials to scratch scripts as environment variables without writing tokens to disk:
+
+```toml
+[tools.scratch.env]
+GITHUB_TOKEN = "github-token"
+DATABASE_PASSWORD = "db-password"
+```
+
+The key is the environment variable name exposed to the script. The value is the secret name stored in the local encrypted vault. Mooshik resolves the secret value at execution time.
+
+## Egress Redaction
+
+Tool output is where credentials can escape. Before stdout or stderr text is returned to the companion model, Mooshik scans the output against all active vault values.
+
+Any matching token is replaced with `[redacted]` before reaching the language model or being recorded into memory.

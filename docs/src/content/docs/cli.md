@@ -1,96 +1,138 @@
 ---
-title: CLI Command Reference
-description: Complete reference for all Mooshik command-line interface commands.
+title: CLI Reference
+description: Complete command-line interface reference for all Mooshik commands and flags.
 ---
 
-This page provides the syntax and options for all Mooshik CLI commands.
+Mooshik provides a comprehensive command-line interface for terminal interaction, memory management, configuration, and secret management.
 
-## `mooshik init`
+## Commands Overview
 
-Initializes the local Mooshik directory layout and configuration.
+### `mooshik init`
 
-```sh
-mooshik init
+Launches the interactive first-run setup wizard.
+
+```bash
+mooshik init [--non-interactive]
 ```
 
-## `mooshik tui`
+- `--non-interactive`: Skips terminal prompts and writes default configuration directly.
 
-Launches the interactive terminal user interface.
+### `mooshik tui`
 
-```sh
+Launches the interactive terminal pane.
+
+```bash
 mooshik tui [--demo [scene]]
 ```
 
-Flags:
-- `--demo`: Opens design artboards without connecting to a database.
+- `--demo`: Opens standalone interface artboards without opening a database. Supported values: `today`, `recall`, `caution`.
 
-## `mooshik chat`
+### `mooshik chat`
 
-Starts an interactive terminal chat session with the companion model.
+Starts an interactive conversational session directly in the terminal without opening the TUI.
 
-```sh
+```bash
 mooshik chat
 ```
 
-## `mooshik recall`
+### `mooshik recall`
 
-Searches the memory graph for relevant concepts.
+Searches the memory graph for concepts and architectural decisions matching a text query.
 
-```sh
-mooshik recall <query>
+```bash
+mooshik recall "<query>"
 ```
 
-## `mooshik stats`
+### `mooshik stats`
 
-Prints concept counts and health statistics for the active session.
+Displays graph node counts, edge counts, canonical fact metrics, and write-behind flush status.
 
-```sh
+```bash
 mooshik stats
 ```
 
-## `mooshik reflect`
+### `mooshik reflect`
 
-Runs graph consolidation and generates prose summaries.
+Runs a memory consolidation pass, merging paraphrase twins and synthesizing daily prose summaries.
 
-```sh
+```bash
 mooshik reflect [--dry-run]
 ```
 
-Flags:
-- `--dry-run`: Reports planned merges without applying database changes.
+- `--dry-run`: Reports planned merges and generated prose without modifying the database.
 
-## `mooshik config`
+### `mooshik serve`
 
-Manages configuration keys.
+Serves Lambo's MCP memory surface on stdio and publishes a local session endpoint so other processes can proxy into memory.
 
-```sh
+```bash
+mooshik serve
+```
+
+### `mooshik config show`
+
+Displays the active configuration with sensitive values redacted.
+
+```bash
 mooshik config show
+```
+
+### `mooshik config set`
+
+Updates a configuration setting safely.
+
+```bash
 mooshik config set <key> <value> [--confirm-database-change]
 ```
 
-## `mooshik configure coder`
+- `--confirm-database-change`: Required when changing `store.kind` to confirm migrating the active database.
 
-Configures the coding contractor MCP server block and vault secrets.
+### `mooshik configure coder`
 
-```sh
-mooshik configure coder --agent <name>
+Configures the coding contractor MCP server block in `config.toml`.
+
+```bash
+mooshik configure coder --agent <claude|omp|cursor|agy>
 ```
 
-Options:
-- `--agent <name>`: Coding agent to delegate to (`claude`, `omp`, `cursor`, `agy`).
+- `--agent <name>`: Target coding agent CLI (`claude`, `omp`, `cursor`, or `agy`).
 
-## `mooshik secret`
+### `mooshik permissions`
 
-Stores and manages encrypted secrets in the local vault.
+Lists all active tool permission decisions and grants.
 
-```sh
+```bash
+mooshik permissions
+```
+
+### `mooshik secret set`
+
+Stores a secret in the encrypted local vault with terminal echo disabled.
+
+```bash
 mooshik secret set <name>
 ```
 
-## `mooshik permissions`
+### `mooshik secret get`
 
-Manages tool execution grants.
+Retrieves and prints a decrypted secret value.
 
-```sh
-mooshik permissions
+```bash
+mooshik secret get <name>
 ```
+
+### `mooshik secret list`
+
+Lists the names of all registered secrets in the local vault.
+
+```bash
+mooshik secret list
+```
+
+## Exit Codes
+
+| Exit Code | Meaning | Example Scenario |
+| :--- | :--- | :--- |
+| `0` | Success | Normal command completion. |
+| `1` | Runtime Failure | Network timeout or tool execution error. |
+| `2` | Configuration or Conflict | Missing database DSN, invalid arguments, or database session lease collision. |

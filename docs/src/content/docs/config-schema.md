@@ -1,47 +1,104 @@
 ---
 title: Configuration Schema
-description: Detailed schema of all keys and tables in config.toml.
+description: Full reference of all settable keys, TOML tables, and validation types.
 ---
 
-Mooshik organizes settings into top-level TOML tables in `~/.mooshik/config.toml`.
+This page documents the complete configuration schema for `~/.mooshik/config.toml` and every key supported by `mooshik config set`.
 
-## `[session]` Table
+## Settable Keys Reference
 
-Defines workspace identity.
+The following 19 keys can be updated using `mooshik config set <key> <value>`:
 
-| Key | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `id` | String | `default` | Unique name of the memory session. |
-| `agent` | String | `mooshik` | Agent identity tag. |
+| Key | Expected Type | Description |
+| :--- | :--- | :--- |
+| `store.kind` | `sqlite` \| `postgres` | Graph storage backend. |
+| `store.dsn_secret` | Secret Name | Vault secret name holding PostgreSQL connection DSN. |
+| `store.path` | File Path | SQLite database file path. |
+| `embedder.kind` | `fixture` \| `bge_m3` \| `gemini` | Embedding provider. |
+| `embedder.dim` | Positive Integer | Vector embedding dimension (e.g. `1024` or `1536`). |
+| `embedder.gemini_project` | String | Google Cloud project ID for embeddings. |
+| `embedder.gemini_location` | String | Google Cloud region for embeddings (`us-central1`). |
+| `embedder.gemini_model` | String | Embedding model name (`gemini-embedding-001`). |
+| `embedder.gemini_credentials` | File Path | Path to service account JSON for embeddings. |
+| `daemon.flush_interval_ms` | Positive Integer | Background flush interval in milliseconds. |
+| `companion.base_url` | URL | Endpoint URL for OpenAI-compatible `/v1` companion. |
+| `companion.model` | String | Language model identifier (e.g. `gemini-3.7-flash`). |
+| `companion.api_key_secret` | Secret Name | Vault secret name holding companion API bearer key. |
+| `companion.auth` | `none` \| `bearer` \| `google` | Authentication method for the companion endpoint. |
+| `companion.google_project` | String | Google Cloud project ID for Vertex AI companion. |
+| `companion.google_location` | String | Google Cloud location for Vertex AI (`global`). |
+| `companion.google_credentials` | File Path | Path to service account JSON for Vertex AI companion. |
+| `companion.context_window` | Positive Integer | Maximum context window tokens. |
+| `companion.temperature` | Number | Sampling temperature for model completions. |
 
-## `[store]` Table
+## TOML Tables Structure
 
-Configures graph storage.
+### `[vault]`
 
-| Key | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `kind` | String | `sqlite` | Storage backend (`sqlite`, `postgres`, `memory`). |
-| `path` | String | `~/.mooshik/graph.db` | File path for SQLite. |
-| `dsn` | String | None | Connection string for Postgres. |
-| `dsn_secret` | String | None | Vault secret key containing Postgres DSN. |
+Configures the local secret vault encryption provider.
 
-## `[embedder]` Table
+```toml
+[vault]
+provider = "keyring"   # "keyring" or "passphrase"
+```
 
-Configures vector embeddings.
+### `[store]`
 
-| Key | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `kind` | String | `bge_m3` | Embedder type (`bge_m3`, `gemini`, `fixture`). |
-| `endpoint` | String | None | HTTP endpoint for local models. |
-| `dim` | Integer | `1024` | Vector dimension size. |
+Defines graph storage persistence.
 
-## `[companion]` Table
+```toml
+[store]
+kind = "postgres"
+dsn_secret = "store-dsn"
+```
 
-Configures the companion chat model.
+### `[embedder]`
 
-| Key | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `base_url` | String | `http://127.0.0.1:8080/v1` | OpenAI-compatible endpoint. |
-| `model` | String | `local-model` | Model name. |
-| `max_tokens` | Integer | `4096` | Maximum token limit. |
-| `temperature` | Float | `0.2` | Sampling temperature. |
+Defines vector generation parameters.
+
+```toml
+[embedder]
+kind = "gemini"
+dim = 1536
+gemini_location = "us-central1"
+gemini_model = "gemini-embedding-001"
+```
+
+### `[companion]`
+
+Configures the language model for conversational turns and tool execution.
+
+```toml
+[companion]
+auth = "google"
+google_project = "my-project"
+google_location = "global"
+model = "gemini-3.7-flash"
+context_window = 32768
+temperature = 0.2
+```
+
+### `[permissions]`
+
+Controls tool execution policies.
+
+```toml
+[permissions]
+memory = ["recall", "derive"]
+scratch = "prompt"
+"mcp.news.*" = "allow"
+"mcp.coder.*" = "prompt"
+```
+
+### `[mcp_servers.<name>]`
+
+Configures external stdio Model Context Protocol servers.
+
+```toml
+[mcp_servers.news]
+command = "/home/you/.local/share/mooshik/venv/bin/mooshik-news-mcp"
+expose = ["search_news", "fetch_article"]
+
+[mcp_servers.news.env]
+MOOSHIK_GEMINI_PROJECT = "gemini-project"
+```

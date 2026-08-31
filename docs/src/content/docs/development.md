@@ -1,43 +1,76 @@
 ---
 title: Development & Testing
-description: Codebase conventions, line budget limits, and quality gates.
+description: Build instructions, offline test suites, and repository architecture guidelines.
 ---
 
-We enforce strict quality gates to maintain reliability and performance.
+This guide covers building Mooshik from source and running test suites.
 
-## Prerequisites
+## Development Environment Setup
 
-- Rust 1.97.1 pinned in `rust-toolchain.toml`.
-- Python 3.10+ with `pytest`.
-- Node.js 20+ for documentation.
+### Prerequisites
 
-## Running Tests
+- **Rust:** Version 1.97.1 (managed via `rust-toolchain.toml`).
+- **Python:** Python 3.10 or newer.
+- **Linux Packages:** `libdbus-1-dev` and `pkg-config` for OS keyring integration.
 
-Run the complete Rust test suite:
+```bash
+sudo apt update
+```
 
-```sh
+```bash
+sudo apt install -y libdbus-1-dev pkg-config
+```
+
+## Running the Rust Test Suite
+
+The Rust test suite covers configuration parsing, vault encryption, CLI subcommands, and `WriteLane` concurrency:
+
+```bash
 cargo test
 ```
 
-Run Python offline MCP server tests:
+Build the release binary:
 
-```sh
-pytest mcp-servers/artifacts/tests -q
+```bash
+cargo build --release
+```
+
+## Running Python Component Tests
+
+All Python MCP servers and support packages include offline test suites with faked network seams:
+
+### News MCP Server
+
+```bash
 pytest mcp-servers/news/tests -q
-pytest mooshik-common/tests -q
 ```
 
-## Quality Gates
+### Artifacts MCP Server
 
-Before submitting changes, ensure all checks pass:
-
-```sh
-cargo fmt --check
-cargo clippy --all-targets --all-features
+```bash
+pytest mcp-servers/artifacts/tests -q
 ```
 
-## Conventions
+### Coder MCP Server
 
-1. **TOML String Storage**: All user-facing strings live in `src/text/en.toml` rather than Rust source code.
-2. **File Size Budget**: Files must target roughly 600 lines. CI fails if any Rust file exceeds 1000 lines.
-3. **SHA Pinned Actions**: CI workflows pin all GitHub Actions by commit hash rather than tags.
+```bash
+pytest mcp-servers/coder/tests -q
+```
+
+### Bootstrap Ingester
+
+```bash
+pytest ingester/tests -q
+```
+
+### Measurement Harness
+
+```bash
+pytest measurement/tests -q
+```
+
+## Engineering Conventions
+
+- **Prose in TOML:** User-facing strings live in `src/text/en.toml` rather than Rust code. Missing or empty string keys fail unit tests.
+- **File size discipline:** Source files maintain a soft target of roughly 600 lines including unit tests.
+- **Hermetic tests:** Unit test suites do not require live network credentials or cloud connections.
