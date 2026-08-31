@@ -66,6 +66,8 @@ the surface landed, so the data behind it became worth building.
 | **M12b** | Built 2026-08-31. The tick: the redraw loop rebuilds the view model every 250 ms, so a write from the ingester, an MCP client or the reflect pass appears in the open pane without a keystroke. R1-3's deferred guard-duration item landed: the graph is copied out from under one short guard and the build runs against the copy, pinned by a structural (`syn`) guard-duration pin and measured (release embedded ~29 ms at the 4k shape vs the 250 ms budget). Review rounds 1–8: **APPROVE**, zero residue within the documented limits (`m12b-round8.md`). |
 | **M12c** | Built 2026-08-31. `mooshik reflect [--dry-run]`: a one-shot consolidation pass that writes the prose M12a left empty — a day's mood, its four-words-a-line gutter summary, the trailing notes, and a thread's reason — as `mooshik-prose:` concepts the pane shows on the next tick, and merges the paraphrase twins into their strongest (loser content preserved, edges rerouted, audit row per cluster; re-runs are a true no-op). First-write-only by design. Review rounds 1–3: **APPROVE**, zero residue (`m12c-round3.md`). |
 | **M12d** | Not started. See the M12 section. |
+| **M12e** | Not started. The composer takes typing and `Enter` answers nothing; the pane cannot converse. See the M12 section. |
+| **M12f** | Not started. The memory reads `.md/.txt/.rst` and nothing else; every screenshot and recording in the workspace is invisible to it. See the M12 section. |
 
 Lambo pin: `nrynss/lambo` git `rev = 71334f0` (`lambo-for-mooshik`). E1/E2 (path dep, then rev pin) were done as the rev pin directly; bump the SHA after a Lambo fix.
 
@@ -701,11 +703,168 @@ a change to what feeds the model.
   the memory is ambient rather than something the user has to remember to tell. This is the task
   that makes the other three worth having.
 
+* **M12e — the pane converses.** M11 shipped a composer whose `Enter` does nothing and M12a–d
+  filled in everything around it: the pane draws the week, refreshes itself, and writes its own
+  prose. What it still cannot do is answer, and a companion surface that cannot be spoken to is a
+  dashboard. `Enter` already maps to `Action::Send` (`input.rs:93`); the handler body is empty
+  (`app.rs:181`) because sending used to clear the draft, which looked like sending and was silent
+  data loss. The blocker was never the loop's logic. `run_chat` owns a tokio runtime, stdin and
+  stdout, and the pane owns all three — two owners, not missing behaviour. One level down is the
+  reusable unit: `Session::turn()` takes the user's text, a `Cancellation` and an `FnMut(&str)`
+  token callback, and handles its own tool rounds. The pane holds a runtime for its lifetime,
+  spawns a turn onto it, and passes a callback that sends into a channel the redraw loop drains.
+  **Streaming is not an extra here.** `on_token` is a required parameter, so *not* streaming means
+  passing a no-op closure — strictly more work for a worse pane. Cancellation is threaded through
+  `turn()` and `client.complete` already, so `Esc` is the wiring the CLI gives Ctrl-C.
+
+* **M12f — the non-text workspace.** `config.py:15` allows `.md,.markdown,.txt,.rst` and nothing
+  else, so every screenshot, diagram, PDF and voice note in a workspace is invisible to the memory.
+  That is not an incidental gap: **people capture precisely what is too tedious to type**, so the
+  text record is lossy exactly where the images and recordings are. The standup note says windpipe
+  was slow; the dashboard screenshot says p99 hit 4.2s at 14:20 and recovered at 14:47. The ADR
+  written three days later has two branches; the whiteboard photo taken during the argument has
+  four. Mooshik claims to remember your week and currently remembers the half you retyped. M12f
+  closes that with an MCP server rather than a change to the ingester, so the capability is
+  configuration and can be cut on the day without touching anything else.
+
 **The daemon is explicitly out of scope.** A background process that outlives the terminal is a
 different product decision — install, supervision, a second lease holder, and a thing running on a
 machine when nobody asked it to. M12b's refresh happens inside the pane the user opened and stops
 when they close it; M12c is a command they run; M12d watches for as long as something is open. If a
 daemon is ever wanted, it is its own milestone with its own argument.
+
+### What M12e has to move, and what it must not break
+
+Three of these are structural — the rest are what makes the pane wrong rather than absent.
+
+**The single-writer lease is claimed twice.** `tools::executor_for_chat` opens its own `Memory` and
+takes the lease; `cli::tui_cmd` documents itself as an ordinary holder of the same lease and takes
+it for the length of the pane. Both cannot hold it. The tool-stack assembly — `MemoryTools::for_chat`,
+the `McpTools` layer, the grants wrapper — has to be separable from Memory acquisition so the pane
+builds the stack over the handle it already has open.
+
+**The turn path must not own a runtime, and must never block.** `run_chat` builds a multi-thread
+runtime and `block_on`s the whole session. The 250 ms tick is the milestone M12b exists for; a turn
+that blocks the loop takes the product's one live behaviour with it.
+
+**Compose the session, do not reuse `run_chat`.** `run_chat_async` reads stdin with
+`AsyncBufReadExt` and writes stdout directly. `compose_session` is already extracted as a named seam
+for exactly this reason; it has to become reachable from `tui_cmd`.
+
+**Nothing on the turn path may print.** `executor_for_chat` writes two `eprintln!` notices and the
+CLI's token callback writes stdout. Under the alternate screen any write corrupts the frame, so each
+notice becomes a value the view model renders.
+
+**A prompting tool must not reach for stdin.** The default grants allow the lambo memory tools
+outright and *prompt* for scratch. A gate reading stdin while ratatui owns the terminal hangs the
+pane with no way out. Either deny the prompt class deterministically on this path, or make approval
+a turn in the conversation — which is what `1d` already establishes as the pattern, and the better
+answer if it fits.
+
+**A failed turn becomes a turn.** A 404, an expired token, a dropped stream: classified through
+`cli::failure` and rendered in the conversation. Not a panic, and not silence.
+
+**The panic contract survives the spawned task.** `tui_cmd` leaves the lease to lapse on its TTL
+when the pane panics, because a handle dropped without a clean close is the crash-shaped path. A
+turn task holding `Memory` must not outlive the pane, or it keeps writing after the terminal is
+restored.
+
+**The conversation becomes owned state.** `memory::view` sets `conversation: Conversation::default()`
+deliberately — it is the chat path's, not the graph's. `App::refresh` already `mem::take`s it across
+every rebuild, so a partial turn survives the tick with no extra care. That half is done.
+
+**In-flight state has to be visible.** On `Enter` the draft moves into a sent turn and a pending
+marker appears. Without it the key looks inert again, which is the precise failure the empty handler
+was written to avoid.
+
+**Repaint granularity is the tick.** The loop blocks in `event::poll(TICK)`, so a token arriving
+mid-poll does not wake it and the text grows in 250 ms steps. That reads as typing. Shorten the poll
+while a turn is in flight if it should feel closer to a real conversation, and restore it when the
+turn closes.
+
+**Depends on:** M12a for the view model, M12b for the tick, M3 for the session and its cancellation.
+**Done when:** a question typed into the pane streams its answer back into the pane, `Esc` stops it,
+and the memory it touches appears in the panels on the next tick. **Not required:** anything the
+`1e`/`1f`/`1g` artboards cover — those stay out of scope for the same reason M11 gave.
+
+### M12f — what is read, and what is refused
+
+**The output is the same five typed concepts, never a caption.** `extraction.py:33` fixes the
+vocabulary at `entity | logic | constraint | resource | observation`, and an artifact yields those
+exactly as a markdown file does. The moment it emits "a screenshot of a dashboard with a rising blue
+line" the graph has gained something nothing will ever recall.
+
+Three targets, in priority order:
+
+1. **Facts carrying values** — numbers, thresholds, timestamps, versions, error strings. `observation`
+   and `constraint`. Highest value, because this is the part the text loses.
+2. **Structure and relations** — a whiteboard box-and-arrow sketch is literally a graph, and turning
+   it into `entity` nodes with `parent_of` edges feeds the retrieval mode that distinguishes Lambo:
+   what rests on the thing you asked about, not what resembles it.
+3. **Identity anchors** — the service, dashboard and resource names visible in the frame.
+
+The third one decides whether this works at all. **An artifact whose concepts share no entity with
+the existing graph is a dead island**: nothing links to it, nothing recalls it, and it never reaches
+"what keeps coming back". The prompt biases toward naming entities the corpus already names.
+
+**Refused, explicitly:** descriptions of the artifact as an artifact; UI chrome — window titles,
+button labels, browser tabs, menu bars; OCR dumps of everything visible; anything that is not a
+claim about the workspace. M9's finding applies unchanged — precision over coverage, and a sparse
+graph beats a polluted one.
+
+**The secret scanner is bypassed on this path, and that is a hole, not a nicety.** `pipeline.py:91`
+runs `find_secret(doc.text, …)` and drops the *whole document* on a hit. An artifact has no
+`doc.text`, and screenshots are among the highest-risk secret carriers there are: a terminal capture
+with a token in scrollback, a connection dialog holding a DSN. The server runs `find_secret` over the
+**extracted concepts** before deriving and drops the whole artifact on a hit — the same
+whole-document semantics text gets. Without it M12f is the hole in a wall M5 and M6 spent two
+milestones building.
+
+**Provenance is the text path's, unchanged.** `event_time` from the file's mtime and `parent_of`
+pointing at a `document_resource` for the artifact, or every extracted fact collapses onto today and
+breaks the week placement — the pathology `backdate.py` exists to prevent.
+
+**Audio is in, and is the more interesting half.** Verified live 2026-08-31 against
+`gemini-3.7-flash` at `global`: an 11.4s wav returned a valid typed concept at 343 prompt tokens,
+roughly 32 tokens per second of audio. A half-hour recording is one call at ~58k tokens and needs no
+chunker at all, where text goes through the 4000-char chunk budget. And the two media are lossy in
+different directions: **images carry precision, audio carries decisions and their reasons.** The
+"we chose block over drop, because dropping strands the retry queue" is said aloud in every
+engineering argument and written down in almost none — and when it is written down, the *because* is
+the half that goes missing. `Thread::because` is a field M12c currently fills by inference; audio
+would fill it with what was actually said.
+
+**This is where ADK earns its place.** `agent.py`'s header argues a Runner is the wrong fit for the
+batch path, and it is right: that loop is a deterministic map over chunks with checkpointing
+between calls, which a Runner only obscures. Deciding what in an artifact is worth remembering is
+the opposite shape — variable steps, a transcribe-then-extract path, and a real decision about
+whether anything durable happened at all. So M12f is the first place ADK is used because it fits
+rather than because it is on a requirements list.
+
+**Shape — and the server does NOT write.** A new `mcp-servers/artifacts/` copying the
+`mcp-servers/news/` scaffold, which is already a complete tested stdio server. Inside it an ADK
+`LlmAgent` that **extracts and returns** typed concepts; Mooshik derives them through the in-process
+memory tools it already owns. This is the ingester's one pattern that must not be copied: the
+ingester writes through `LamboMcpWriter` because it runs standalone with its own session and its own
+`mooshik serve`. An MCP server called while the pane is open cannot do that — `cli::tui_cmd` holds
+the single-writer lease for the length of the session, and a second writer on the same session is
+refused with exit code 2 and Mooshik's own conflict sentence. `mcp-servers/news` already models the
+right shape: it returns and never writes. The secret scan therefore runs **in the server, before the
+concepts cross the wire**, so artifact bytes never need to reach Mooshik at all. Reached as a
+configured server — `mcp.artifacts.*`, gated by M5 like every other tool, credentials resolved from
+the vault at spawn.
+
+**Out of scope, stated so it is not rediscovered in review:** third-party consent. The text corpus
+is what the operator wrote; a meeting recording contains people who did not agree to be someone's
+memory. `find_secret` matches patterns — PEM blocks, `AKIA…`, `ghp_…`, `xox…` — and will never catch
+a colleague's name and a private fact about them. That is private by content rather than secret by
+pattern, and M12f does not solve it. The milestone accepts artifacts the operator places in their own
+workspace and goes no further.
+
+**Depends on:** M10 for the host, M5 for the gate, M6 for the credentials, M8 for the writer bridge
+and the extraction prompt. **Done when:** a screenshot and a voice note dropped in the workspace
+become typed concepts on the same threads the text corpus already names, and a secret in either one
+drops the whole artifact.
 
 **Depends on:** M11 for the surface, M2 for the graph. **Done when:** `mooshik tui` opens on the
 user's own week.
