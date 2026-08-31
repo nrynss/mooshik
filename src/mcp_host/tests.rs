@@ -257,3 +257,55 @@ fn execute_time_diagnostics_do_not_print() {
         "execute-time diagnostics must go through the sink"
     );
 }
+
+#[test]
+fn child_stderr_reaches_the_sink_without_corrupting_tool_output() {
+    use std::sync::{Arc, Mutex};
+
+    let vault = fixture_vault(&[("marker", "fixture-noise-77")]);
+    let mut config = config_with_server(&["echo"], "srv");
+    config.mcp_servers.get_mut("srv").unwrap().env =
+        BTreeMap::from([("MOOSHIK_STDERR_MARKER".into(), "marker".into())]);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&seen);
+    let diagnostics = crate::tools::Diagnostics::sink(move |message: &str| {
+        captured.lock().unwrap().push(message.to_owned());
+    });
+    let executor =
+        Arc::new(McpTools::from_config(&config, Some(vault)).with_diagnostics(diagnostics));
+    let output = executor.execute("mcp.srv.echo", &json!({"ok": 1}));
+    assert_eq!(output, "{\"ok\": 1}");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|m| m.contains("fixture-noise-77"))
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "child stderr never reached the sink: {seen:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_child_that_floods_stderr_past_the_pipe_buffer_still_handshakes() {
+    // The deadlock guard: a piped stderr nobody drains fills the 64 KiB pipe
+    // buffer and blocks the child before it answers initialize. Four MiB of
+    // startup noise must not stall the handshake or the first tool call.
+    let vault = fixture_vault(&[("noise", "4194304")]);
+    let mut config = config_with_server(&["echo"], "srv");
+    config.mcp_servers.get_mut("srv").unwrap().env =
+        BTreeMap::from([("MOOSHIK_STDERR_BYTES".into(), "noise".into())]);
+    let executor = Arc::new(McpTools::from_config(&config, Some(vault)));
+    let names: Vec<String> = executor.specs().iter().map(|s| s.name.clone()).collect();
+    assert!(names.iter().any(|n| n == "mcp.srv.echo"), "got {names:?}");
+    let output = executor.execute("mcp.srv.echo", &json!({"n": 1}));
+    assert_eq!(output, "{\"n\": 1}");
+}

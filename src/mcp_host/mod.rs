@@ -379,6 +379,27 @@ async fn spawn_all(
     }
 }
 
+/// Drain one child's stderr into the diagnostics sink for the life of the
+/// process. A piped stderr that nobody reads fills the pipe buffer and blocks
+/// the child mid-write, which would turn a noisy server into a hung one. Each
+/// complete line becomes one diagnostic; the task ends when the pipe closes,
+fn drain_child_stderr(stderr: tokio::process::ChildStderr, diagnostics: Diagnostics, name: &str) {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let name = name.to_owned();
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        loop {
+            let line = match lines.next_line().await {
+                Ok(Some(line)) => line,
+                Ok(None) => break, // EOF: the child exited
+                Err(_) => break,
+            };
+            diagnostics.emit(&format!("mcp_host: '{name}' stderr: {}", line.trim_end()));
+        }
+    });
+}
+
 /// Spawn one MCP server: child process, rmcp handshake, tool discovery.
 async fn spawn_one(
     cfg: &ServerConfig,
@@ -402,10 +423,18 @@ async fn spawn_one(
     }
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit());
+        .stderr(std::process::Stdio::piped());
 
-    let transport = match rmcp::transport::child_process::TokioChildProcess::new(cmd) {
-        Ok(t) => t,
+    // rmcp's builder re-applies its own stdio defaults, so stderr must be
+    // piped here rather than on the Command. A piped stderr that nobody drains
+    // fills the pipe buffer and blocks the child mid-write, which would turn a
+    // noisy server into a hung one; the drain below runs for the life of the
+    // process and ends when the pipe closes (the child exited).
+    let (transport, stderr) = match rmcp::transport::child_process::TokioChildProcess::builder(cmd)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(pair) => pair,
         Err(e) => {
             diagnostics.emit(&format!(
                 "mcp_host: failed to spawn '{}' ({}): {e}",
@@ -414,6 +443,9 @@ async fn spawn_one(
             return None;
         }
     };
+    if let Some(stderr) = stderr {
+        drain_child_stderr(stderr, diagnostics.clone(), &cfg.name);
+    }
 
     // Handshake and get client session.
     let session = match rmcp::service::serve_client((), transport).await {

@@ -762,6 +762,14 @@ fn the_over_an_open_handle_factory_never_prints_and_never_opens() {
         factory.contains("with_diagnostics(diagnostics.clone())"),
         "execute-time diagnostics must be installed on the pane's tools: {factory}"
     );
+    let after_mcp = factory
+        .split("McpTools::from_config(config, vault.clone())")
+        .nth(1)
+        .expect("the pane path must build the MCP host");
+    assert!(
+        after_mcp.trim_start().starts_with(".with_diagnostics"),
+        "the MCP host must receive the pane's diagnostics sink: {after_mcp}"
+    );
     assert!(
         factory.contains("with_scratch(MemoryTools::chat_scratch"),
         "the pane path must hold the inner scratch confirm shut: {factory}"

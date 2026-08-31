@@ -96,6 +96,24 @@ def main():
     if delay:
         time.sleep(float(delay) / 1000.0)
 
+    marker = os.environ.get("MOOSHIK_STDERR_MARKER")
+    if marker:
+        sys.stderr.write(marker + "\n")
+        sys.stderr.flush()
+
+    noise = int(os.environ.get("MOOSHIK_STDERR_BYTES") or 0)
+    if noise:
+        # Written before initialize is answered, so a host that never drains
+        # stderr deadlocks the handshake once the pipe buffer fills.
+        chunk = b"x" * 8192
+        written = 0
+        while written < noise:
+            take = min(len(chunk), noise - written)
+            sys.stderr.buffer.write(chunk[:take])
+            sys.stderr.flush()
+            written += take
+        sys.stderr.write("\n")
+        sys.stderr.flush()
     while True:
         msg = read_line()
         if msg is None:
