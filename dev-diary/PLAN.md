@@ -707,7 +707,7 @@ a change to what feeds the model.
   filled in everything around it: the pane draws the week, refreshes itself, and writes its own
   prose. What it still cannot do is answer, and a companion surface that cannot be spoken to is a
   dashboard. `Enter` already maps to `Action::Send` (`input.rs:93`); the handler body is empty
-  (`app.rs:181`) because sending used to clear the draft, which looked like sending and was silent
+  (`app.rs:182`) because sending used to clear the draft, which looked like sending and was silent
   data loss. The blocker was never the loop's logic. `run_chat` owns a tokio runtime, stdin and
   stdout, and the pane owns all three — two owners, not missing behaviour. One level down is the
   reusable unit: `Session::turn()` takes the user's text, a `Cancellation` and an `FnMut(&str)`
@@ -751,9 +751,20 @@ that blocks the loop takes the product's one live behaviour with it.
 `AsyncBufReadExt` and writes stdout directly. `compose_session` is already extracted as a named seam
 for exactly this reason; it has to become reachable from `tui_cmd`.
 
-**Nothing on the turn path may print.** `executor_for_chat` writes two `eprintln!` notices and the
-CLI's token callback writes stdout. Under the alternate screen any write corrupts the frame, so each
-notice becomes a value the view model renders.
+**Nothing on the turn path may print — and there are far more than two.** The first draft of this
+section named the two `eprintln!` notices in `executor_for_chat`; building the seam found about
+fifteen, and they split into two shapes that need different fixes. *Assembly-time* notices are
+returned values — `executor_over_memory` hands back a `ChatStack { tools, notices }` and prints
+nothing. *Execute-time* prints happen during a tool call and cannot be returned to anyone:
+`tools/permissions.rs:102`, `tools/mod.rs:492/500/519`, and eight in `mcp_host/mod.rs` (284, 291,
+295, 313, 369, 387, 399, 411). Those need a channel to the redraw loop, not a return value, and
+every one of them corrupts the frame under the alternate screen. M12e owns that; the seam did not.
+
+**There is a second stdin prompt, below the gate.** The spec named M5's gate only.
+`tools/scratch.rs`'s `interactive_confirm` reads a line from stdin directly, and a pane built over
+`MemoryTools::over` alone would hang on it even with a non-stdin gate. It is held shut by
+`ScratchConfig::always_confirmed()`, which is why the seam made `chat_scratch` a shared constructor
+rather than letting the pane path fall through to `ScratchConfig::default()`.
 
 **A prompting tool must not reach for stdin.** The default grants allow the lambo memory tools
 outright and *prompt* for scratch. A gate reading stdin while ratatui owns the terminal hangs the
@@ -776,6 +787,18 @@ every rebuild, so a partial turn survives the tick with no extra care. That half
 **In-flight state has to be visible.** On `Enter` the draft moves into a sent turn and a pending
 marker appears. Without it the key looks inert again, which is the precise failure the empty handler
 was written to avoid.
+
+**Concurrent writes are safe but not serial, and they can fail.** Established while building the
+seam, against lambo `94cbf52`: writers take the **read** side of the writers gate
+(`memory.rs:1292`, `begin_write` at 2873), because the write side belongs to `Memory::close` —
+excluding a close is that lock's whole job, so N writers hold it at once. Commit is optimistic:
+plan under a brief read lock, gather (embedding call included) with **no lock across the await**,
+then commit only if the epoch has not moved. A lost race re-runs the whole gather including a fresh
+embedder round trip, and past `MAX_HYBRID_REPLANS = 8` (`graph/hybrid.rs:196`) the call *fails* —
+`"hybrid derive could not commit after 8 concurrent graph changes"`. Every `derive` opens an
+interaction and bumps the epoch before it plans, so two writers genuinely invalidate each other.
+This is why the seam carries a `WriteLane`: M12d's watcher and M12e's tool calls would otherwise
+race each other into replans and, at eight, into a user-visible failure.
 
 **Repaint granularity is the tick.** The loop blocks in `event::poll(TICK)`, so a token arriving
 mid-poll does not wake it and the text grows in 250 ms steps. That reads as typing. Shorten the poll
