@@ -621,7 +621,7 @@ def test_every_workspace_document_is_dated_in_its_filename():
     assert not undated, f"undated corpus documents: {undated}"
 
     days = {p.name[:10] for p in _corpus_files()}
-    assert len(days) == 7, f"expected a 7-day spread, got {sorted(days)}"
+    assert len(days) == 11, f"expected an 11-day spread, got {sorted(days)}"
 
 
 def test_workspace_corpus_carries_no_secret_that_would_drop_a_document():
