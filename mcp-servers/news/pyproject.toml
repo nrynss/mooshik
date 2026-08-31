@@ -1,13 +1,13 @@
 [project]
 name = "mooshik-news-mcp"
-version = "0.2.0"
+version = "0.2.1"
 description = "Mooshik news/web-lookup MCP server: Google Search grounding over stdio."
 requires-python = ">=3.10"
 dependencies = [
     # Exact pins, mirroring ingester/pyproject.toml: the CI job installs these
     # directly, so floating ranges would make builds non-reproducible. Bump
     # deliberately.
-    "mooshik-common==0.2.0",
+    "mooshik-common==0.2.1",
     "mcp==2.1.1",
     "google-genai==2.20.0",
 ]

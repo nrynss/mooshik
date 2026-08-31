@@ -1,6 +1,6 @@
 [project]
 name = "mooshik-measurement"
-version = "0.2.0"
+version = "0.2.1"
 description = "Mooshik M9 measurement harness: sample/grade/report precision of extraction and canonization over the Cloud SQL graph."
 requires-python = ">=3.10"
 dependencies = [

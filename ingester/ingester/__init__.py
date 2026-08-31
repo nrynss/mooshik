@@ -5,4 +5,4 @@ and writes them into Mooshik's Cloud SQL graph through `lambo serve` over
 MCP. See README.md for usage and decisions.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
