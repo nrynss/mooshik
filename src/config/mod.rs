@@ -51,7 +51,23 @@ const DEFAULT_SESSION: &str = "mooshik";
 const DEFAULT_AGENT: &str = "mooshik";
 const DEFAULT_EMBED_DIM: usize = 1536;
 const DEFAULT_GEMINI_LOCATION: &str = "us-central1";
-const DEFAULT_GEMINI_MODEL: &str = "gemini-embedding-001";
+
+/// The default embedding model for Google Gemini on Vertex.
+pub const DEFAULT_GEMINI_MODEL: &str = "gemini-embedding-001";
+
+/// The model the shared posture derives; the floor every component moved to
+/// on 2026-08-31.
+///
+/// The `google/` prefix is not decoration. Vertex's OpenAI-compatible
+/// endpoint addresses models by publisher, and the bare name is rejected, so
+/// a config written without it fails its own inference probe and every turn
+/// after it.
+///
+/// The Python components use `google-genai` and ADK, which require the bare
+/// name `gemini-3.7-flash` and reject the prefixed form.
+/// See `DEFAULT_MODEL` in `mooshik-common/mooshik_common/models.py`.
+pub const SHARED_MODEL: &str = "google/gemini-3.7-flash";
+
 const DEFAULT_FLUSH_INTERVAL_MS: u64 = 1000;
 
 const DEFAULT_TOML: &str = r#"[vault]
@@ -68,7 +84,7 @@ kind = "postgres"
 kind = "gemini"
 dim = 1536
 gemini_location = "us-central1"
-gemini_model = "gemini-embedding-001"
+gemini_model = "{embed_model}"
 
 [daemon]
 flush_interval_ms = 1000
@@ -89,7 +105,7 @@ temperature = 0.2
 #   mooshik config set companion.auth google
 #   mooshik config set companion.google_project my-project
 #   mooshik config set companion.google_location global
-#   mooshik config set companion.model google/gemini-3.7-flash
+#   mooshik config set companion.model {model}
 
 [permissions]
 # Autonomy is granted, not configured (docs/SPEC.md). Families: memory, scratch.
@@ -518,8 +534,10 @@ impl Config {
         Self::from_toml_and_env(&source, env::vars())
     }
 
-    pub fn default_toml() -> &'static str {
+    pub fn default_toml() -> String {
         DEFAULT_TOML
+            .replace("{model}", SHARED_MODEL)
+            .replace("{embed_model}", DEFAULT_GEMINI_MODEL)
     }
 
     pub fn to_lambo_file(&self) -> LamboFile {
@@ -635,12 +653,13 @@ mod tests {
 
     #[test]
     fn default_toml_round_trips_to_product_defaults() {
-        let parsed = Config::from_toml_and_env(Config::default_toml(), []).unwrap();
+        let toml = Config::default_toml();
+        let parsed = Config::from_toml_and_env(&toml, []).unwrap();
         assert_eq!(parsed, Config::default());
-        assert!(Config::default_toml().contains("kind = \"postgres\""));
-        assert!(!Config::default_toml().contains("dsn"));
-        assert!(Config::default_toml().contains("[companion]"));
-        assert!(!Config::default_toml().contains("api_key"));
+        assert!(toml.contains("kind = \"postgres\""));
+        assert!(!toml.contains("dsn"));
+        assert!(toml.contains("[companion]"));
+        assert!(!toml.contains("api_key"));
         assert_eq!(parsed.companion.base_url, "http://127.0.0.1:8080/v1");
         assert_eq!(parsed.companion.model, "local-model");
         assert_eq!(parsed.companion.context_window, 32768);

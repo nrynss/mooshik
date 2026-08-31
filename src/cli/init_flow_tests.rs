@@ -58,8 +58,9 @@ fn drive(
     answers: &str,
     verifier: &dyn Verifier,
     venv: Option<PathBuf>,
+    adc: Option<PathBuf>,
 ) -> (String, String) {
-    drive_env(layout, answers, verifier, venv, Vec::new())
+    drive_env(layout, answers, verifier, venv, adc, Vec::new())
 }
 
 /// [`drive`] with a non-empty environment, for the env-overlay tests.
@@ -68,6 +69,7 @@ fn drive_env(
     answers: &str,
     verifier: &dyn Verifier,
     venv: Option<PathBuf>,
+    adc: Option<PathBuf>,
     environment: Vec<(String, String)>,
 ) -> (String, String) {
     let mut input = Cursor::new(answers.as_bytes().to_vec());
@@ -77,6 +79,7 @@ fn drive_env(
         &mut input,
         &mut output,
         venv,
+        adc,
         environment,
         false,
         verifier,
@@ -110,6 +113,33 @@ fn fake_venv(layout: &HomeLayout, scripts: &[&str]) -> PathBuf {
     }
     layout.root.join("venv")
 }
+
+/// An ADC credentials file in the fixture home directory with a quota project.
+fn fake_adc(layout: &HomeLayout) -> PathBuf {
+    let gcloud = layout.root.join("gcloud");
+    std::fs::create_dir_all(&gcloud).unwrap();
+    let adc = gcloud.join("application_default_credentials.json");
+    std::fs::write(&adc, "{\"quota_project_id\": \"test-quota-project\"}\n").unwrap();
+    adc
+}
+
+/// An ADC credentials file with valid JSON but no quota project.
+fn fake_adc_no_quota(layout: &HomeLayout) -> PathBuf {
+    let gcloud = layout.root.join("gcloud");
+    std::fs::create_dir_all(&gcloud).unwrap();
+    let adc = gcloud.join("application_default_credentials.json");
+    std::fs::write(&adc, "{\"client_id\": \"test-client\"}\n").unwrap();
+    adc
+}
+
+/// An ADC credentials file that is not valid JSON.
+fn fake_adc_malformed(layout: &HomeLayout) -> PathBuf {
+    let gcloud = layout.root.join("gcloud");
+    std::fs::create_dir_all(&gcloud).unwrap();
+    let adc = gcloud.join("application_default_credentials.json");
+    std::fs::write(&adc, "{ not-valid-json\n").unwrap();
+    adc
+}
 #[test]
 fn shared_posture_writes_a_working_config() {
     let layout = fixture_home("shared");
@@ -123,6 +153,7 @@ fn shared_posture_writes_a_working_config() {
             fail_embedder: false,
             fail_inference: false,
         },
+        None,
         None,
     );
     let config = Config::from_toml_and_env(&written, []).unwrap();
@@ -179,6 +210,7 @@ fn local_posture_writes_sqlite_and_a_local_companion() {
             fail_inference: false,
         },
         None,
+        None,
     );
 
     let config = Config::from_toml_and_env(&written, []).unwrap();
@@ -206,6 +238,7 @@ fn cloud_postgres_choice_says_the_proxy_caveat() {
             fail_inference: false,
         },
         None,
+        None,
     );
     assert!(output.contains("Auth Proxy"), "{output}");
     assert!(written.contains("dsn_secret = \"store-dsn\""), "{written}");
@@ -222,7 +255,7 @@ fn verification_failure_offers_retry_then_continues() {
         fail_embedder: false,
         fail_inference: false,
     };
-    let (output, written) = drive(&layout, answers, &verifier, None);
+    let (output, written) = drive(&layout, answers, &verifier, None, None);
     assert_eq!(
         read_vault(&layout, "store-dsn").as_deref(),
         Some("second-dsn")
@@ -259,6 +292,7 @@ fn mcp_servers_are_wired_when_the_venv_is_there() {
                 "mooshik-coder-mcp",
             ],
         )),
+        None,
     );
     assert!(written.contains("[mcp_servers.news]"), "{written}");
     assert!(written.contains("search_news"), "{written}");
@@ -299,6 +333,7 @@ fn rerun_asks_only_for_what_is_still_missing() {
             fail_inference: false,
         },
         None,
+        None,
     );
     let before = std::fs::read_to_string(&layout.config).unwrap();
 
@@ -309,6 +344,7 @@ fn rerun_asks_only_for_what_is_still_missing() {
         &layout,
         &mut input,
         &mut output,
+        None,
         None,
         Vec::new(),
         false,
@@ -329,8 +365,18 @@ fn rerun_asks_only_for_what_is_still_missing() {
 #[test]
 fn secrets_never_appear_in_the_written_file_or_output() {
     let layout = fixture_home("secrets");
+    let adc = fake_adc(&layout);
+    let adc_secret = "secret-refresh-token-xyz-987";
+    std::fs::write(
+        &adc,
+        format!(
+            "{{\"quota_project_id\": \"test-quota-project\", \"refresh_token\": \"{adc_secret}\"}}\n"
+        ),
+    )
+    .unwrap();
+
     let secret = "s3cret-dsn-value-with-password";
-    let answers = format!("\n\n{secret}\nproj\n\n/key.json\n");
+    let answers = format!("\n\n{secret}\nproj\n\n\n");
     let (output, written) = drive(
         &layout,
         &answers,
@@ -340,10 +386,15 @@ fn secrets_never_appear_in_the_written_file_or_output() {
             fail_inference: false,
         },
         None,
+        Some(adc.clone()),
     );
     assert!(!written.contains(secret), "{written}");
     assert!(!output.contains(secret), "{output}");
     assert_eq!(read_vault(&layout, "store-dsn").as_deref(), Some(secret));
+    // ADC path is printed in the prompt, but no internal ADC fields ever appear.
+    assert!(output.contains(&adc.display().to_string()), "{output}");
+    assert!(!output.contains(adc_secret), "{output}");
+    assert!(!written.contains(adc_secret), "{written}");
 }
 
 #[test]
@@ -367,6 +418,7 @@ companion = { base_url = "https://my-llm.example/v1", model = "local-model", goo
             fail_embedder: false,
             fail_inference: false,
         },
+        None,
         None,
     );
     let config = Config::from_toml_and_env(&written, []).unwrap();
@@ -394,6 +446,7 @@ fn differ_offer_writes_a_separate_companion_project() {
             fail_embedder: false,
             fail_inference: false,
         },
+        None,
         None,
     );
     let config = Config::from_toml_and_env(&written, []).unwrap();
@@ -435,6 +488,7 @@ companion = { auth = "google", model = "google/gemini-3.7-flash", google_locatio
             &layout,
             &["mooshik-news-mcp", "mooshik-artifacts-mcp"],
         )),
+        None,
     );
     assert!(written.contains("[mcp_servers.news]"), "{written}");
     assert!(written.contains("[mcp_servers.artifacts]"), "{written}");
@@ -474,6 +528,7 @@ google_project = "proj"
             fail_embedder: false,
             fail_inference: false,
         },
+        None,
         None,
     );
     let config = Config::from_toml_and_env(&written, []).unwrap();
@@ -530,6 +585,7 @@ model = "my-model"
             fail_inference: false,
         },
         None,
+        None,
     );
     let config = Config::from_toml_and_env(&written, []).unwrap();
     assert_eq!(config.embedder.kind, EmbedderKind::Gemini);
@@ -566,6 +622,7 @@ fn env_forced_sqlite_still_defaults_a_fresh_embedder_kind_to_bge_m3() {
             fail_embedder: false,
             fail_inference: false,
         },
+        None,
         None,
         environment,
     );
@@ -796,6 +853,7 @@ fn google_inference_retry_re_asks_the_credentials() {
             fail_inference: true,
         },
         None,
+        None,
     );
     let config = Config::from_toml_and_env(&written, []).unwrap();
     assert_eq!(
@@ -822,5 +880,385 @@ fn google_inference_retry_re_asks_the_credentials() {
     assert!(
         output.contains("inference (one cheap completion)"),
         "{output}"
+    );
+}
+
+#[test]
+fn adc_present_enter_accepts_the_detected_path() {
+    let layout = fixture_home("adc-enter");
+    let adc = fake_adc(&layout);
+    // posture default, store default, DSN, project, differ default, Enter for ADC.
+    let answers = "\n\npostgres://user@db.example/mooshik\nproj\n\n\n";
+    let (output, written) = drive(
+        &layout,
+        answers,
+        &StubVerifier {
+            fail_store: false,
+            fail_embedder: false,
+            fail_inference: false,
+        },
+        None,
+        Some(adc.clone()),
+    );
+    let config = Config::from_toml_and_env(&written, []).unwrap();
+    assert_eq!(
+        config.embedder.gemini_credentials.as_deref(),
+        Some(adc.as_path())
+    );
+    assert_eq!(
+        config.companion.google_credentials.as_deref(),
+        Some(adc.as_path())
+    );
+    assert_eq!(
+        read_vault(&layout, "gemini-credentials").as_deref(),
+        Some(adc.to_str().unwrap())
+    );
+    // Output prints the detected path in the prompt.
+    assert!(output.contains(&adc.display().to_string()), "{output}");
+    assert!(output.contains("Mooshik is set up."), "{output}");
+}
+
+#[test]
+fn adc_present_typed_path_overrides_the_default() {
+    let layout = fixture_home("adc-override");
+    let adc = fake_adc(&layout);
+    // posture default, store default, DSN, project, differ default, typed path.
+    let answers = "\n\npostgres://user@db.example/mooshik\nproj\n\n/custom-key.json\n";
+    let (output, written) = drive(
+        &layout,
+        answers,
+        &StubVerifier {
+            fail_store: false,
+            fail_embedder: false,
+            fail_inference: false,
+        },
+        None,
+        Some(adc.clone()),
+    );
+    let config = Config::from_toml_and_env(&written, []).unwrap();
+    assert_eq!(
+        config
+            .embedder
+            .gemini_credentials
+            .as_deref()
+            .map(Path::as_os_str),
+        Some(std::ffi::OsStr::new("/custom-key.json"))
+    );
+    assert_eq!(
+        config
+            .companion
+            .google_credentials
+            .as_deref()
+            .map(Path::as_os_str),
+        Some(std::ffi::OsStr::new("/custom-key.json"))
+    );
+    assert_eq!(
+        read_vault(&layout, "gemini-credentials").as_deref(),
+        Some("/custom-key.json")
+    );
+    assert!(output.contains(&adc.display().to_string()), "{output}");
+    assert!(output.contains("Mooshik is set up."), "{output}");
+}
+
+#[test]
+fn adc_absent_credentials_question_is_unchanged() {
+    let layout = fixture_home("adc-absent");
+    // posture default, store default, DSN, project, differ default, key.
+    let answers = "\n\npostgres://user@db.example/mooshik\nproj\n\n/key.json\n";
+    let (output, written) = drive(
+        &layout,
+        answers,
+        &StubVerifier {
+            fail_store: false,
+            fail_embedder: false,
+            fail_inference: false,
+        },
+        None,
+        None,
+    );
+    let prompt = text::get("init.embedder_gemini_credentials");
+    assert!(output.contains(prompt), "{output}");
+    let adc_prompt_prefix = text::get("init.embedder_gemini_credentials_adc")
+        .split('{')
+        .next()
+        .unwrap()
+        .to_owned();
+    assert!(!output.contains(&adc_prompt_prefix), "{output}");
+    let config = Config::from_toml_and_env(&written, []).unwrap();
+    assert_eq!(
+        config
+            .embedder
+            .gemini_credentials
+            .as_deref()
+            .map(Path::as_os_str),
+        Some(std::ffi::OsStr::new("/key.json"))
+    );
+}
+
+#[test]
+fn embedder_retry_with_adc_offers_the_same_default() {
+    let layout = fixture_home("adc-retry");
+    let adc = fake_adc(&layout);
+    // Embedder verification fails: retry=yes -> Enter (accept ADC), retry=no -> continue.
+    let answers = "\n\npostgres://user@db.example/mooshik\nproj\n\n/bad-key.json\ny\n\nn\n";
+    let (output, written) = drive(
+        &layout,
+        answers,
+        &StubVerifier {
+            fail_store: false,
+            fail_embedder: true,
+            fail_inference: false,
+        },
+        None,
+        Some(adc.clone()),
+    );
+    let config = Config::from_toml_and_env(&written, []).unwrap();
+    assert_eq!(
+        config.embedder.gemini_credentials.as_deref(),
+        Some(adc.as_path())
+    );
+    assert_eq!(
+        config.companion.google_credentials.as_deref(),
+        Some(adc.as_path())
+    );
+    assert_eq!(
+        read_vault(&layout, "gemini-credentials").as_deref(),
+        Some(adc.to_str().unwrap())
+    );
+    assert!(output.contains(&adc.display().to_string()), "{output}");
+}
+
+#[test]
+fn adc_path_is_printed_but_file_contents_never_appear() {
+    let layout = fixture_home("adc-contents");
+    let adc = fake_adc(&layout);
+    let sentinel = "super-secret-adc-token-content-12345";
+    std::fs::write(
+        &adc,
+        format!(
+            "{{\"quota_project_id\": \"test-quota-project\", \"token\": \"{sentinel}\", \"client_secret\": \"super-secret-key-67890\"}}\n"
+        ),
+    )
+    .unwrap();
+
+    let answers = "\n\npostgres://user@db.example/mooshik\nproj\n\n\n";
+    let (output, written) = drive(
+        &layout,
+        answers,
+        &StubVerifier {
+            fail_store: false,
+            fail_embedder: false,
+            fail_inference: false,
+        },
+        None,
+        Some(adc.clone()),
+    );
+    assert!(output.contains(&adc.display().to_string()), "{output}");
+    assert!(!output.contains(sentinel), "{output}");
+    assert!(!output.contains("super-secret-key-67890"), "{output}");
+    assert!(!written.contains(sentinel), "{written}");
+    assert!(!written.contains("super-secret-key-67890"), "{written}");
+}
+
+#[test]
+fn adc_with_quota_project_runs_silently_without_guidance() {
+    let layout = fixture_home("adc-with-quota");
+    let adc = fake_adc(&layout);
+    // posture default, store default, DSN, project, differ default, Enter for ADC.
+    let answers = "\n\npostgres://user@db.example/mooshik\nproj\n\n\n";
+    let (output, written) = drive(
+        &layout,
+        answers,
+        &StubVerifier {
+            fail_store: false,
+            fail_embedder: false,
+            fail_inference: false,
+        },
+        None,
+        Some(adc.clone()),
+    );
+    assert!(output.contains("Mooshik is set up."), "{output}");
+    assert!(
+        !output.contains("set-quota-project"),
+        "A correct ADC setup must not be nagged: {output}"
+    );
+    assert!(
+        !output.contains("application-default login"),
+        "A correct ADC setup must not show login guidance: {output}"
+    );
+    let config = Config::from_toml_and_env(&written, []).unwrap();
+    assert_eq!(
+        config.embedder.gemini_credentials.as_deref(),
+        Some(adc.as_path())
+    );
+}
+
+#[test]
+fn adc_without_quota_project_stops_early_and_names_set_quota_project() {
+    let layout = fixture_home("adc-without-quota");
+    let adc = fake_adc_no_quota(&layout);
+    // posture default, store default, DSN. The flow stops before Google questions.
+    let answers = "\n\npostgres://user@db.example/mooshik\n";
+    let (output, written) = drive(
+        &layout,
+        answers,
+        &StubVerifier {
+            fail_store: false,
+            fail_embedder: false,
+            fail_inference: false,
+        },
+        None,
+        Some(adc),
+    );
+    assert!(output.contains("set-quota-project"), "{output}");
+    assert!(output.contains("mooshik init"), "{output}");
+    assert!(
+        !output.contains("Mooshik is set up."),
+        "Flow must stop before completing: {output}"
+    );
+    assert!(
+        !output.contains("Embedder: one probe string embedded."),
+        "Flow must not attempt verification: {output}"
+    );
+    let config = Config::from_toml_and_env(&written, []).unwrap();
+    assert_eq!(config.embedder.gemini_project, None);
+    assert_eq!(config.embedder.gemini_credentials, None);
+}
+
+#[test]
+fn adc_absent_prints_guidance_and_asks_for_key_path() {
+    let layout = fixture_home("adc-absent-guidance");
+    // posture default, store default, DSN, project, differ default, key path.
+    let answers = "\n\npostgres://user@db.example/mooshik\nproj\n\n/key.json\n";
+    let (output, written) = drive(
+        &layout,
+        answers,
+        &StubVerifier {
+            fail_store: false,
+            fail_embedder: false,
+            fail_inference: false,
+        },
+        None,
+        None,
+    );
+    let guidance = text::get("init.adc_not_found_guidance");
+    let guidance_snippet = guidance.lines().next().unwrap();
+    assert!(output.contains(guidance_snippet), "{output}");
+    assert!(output.contains("application-default login"), "{output}");
+    assert!(output.contains("set-quota-project"), "{output}");
+    assert!(
+        output.contains(text::get("init.embedder_gemini_credentials")),
+        "{output}"
+    );
+    assert!(output.contains("Mooshik is set up."), "{output}");
+    let config = Config::from_toml_and_env(&written, []).unwrap();
+    assert_eq!(
+        config
+            .embedder
+            .gemini_credentials
+            .as_deref()
+            .map(Path::as_os_str),
+        Some(std::ffi::OsStr::new("/key.json"))
+    );
+}
+
+#[test]
+fn malformed_or_unreadable_adc_file_is_treated_as_absent() {
+    let layout = fixture_home("adc-malformed");
+    let adc = fake_adc_malformed(&layout);
+    // posture default, store default, DSN, project, differ default, key path.
+    let answers = "\n\npostgres://user@db.example/mooshik\nproj\n\n/key.json\n";
+    let (output, written) = drive(
+        &layout,
+        answers,
+        &StubVerifier {
+            fail_store: false,
+            fail_embedder: false,
+            fail_inference: false,
+        },
+        None,
+        Some(adc),
+    );
+    assert!(output.contains("application-default login"), "{output}");
+    assert!(
+        output.contains(text::get("init.embedder_gemini_credentials")),
+        "{output}"
+    );
+    assert!(output.contains("Mooshik is set up."), "{output}");
+    let config = Config::from_toml_and_env(&written, []).unwrap();
+    assert_eq!(
+        config
+            .embedder
+            .gemini_credentials
+            .as_deref()
+            .map(Path::as_os_str),
+        Some(std::ffi::OsStr::new("/key.json"))
+    );
+}
+
+#[test]
+fn non_tty_unattended_init_prints_no_guidance_and_never_stops() {
+    let layout = fixture_home("non-tty");
+    let db_path = layout.root.join("test.db");
+    seed_config(
+        &layout,
+        &format!(
+            "vault = {{ provider = \"passphrase\" }}\nstore = {{ kind = \"sqlite\", path = \"{}\" }}\n",
+            db_path.display()
+        ),
+    );
+    let matches = clap::Command::new("test")
+        .arg(
+            clap::Arg::new("non_interactive")
+                .long("non-interactive")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .get_matches_from(["test", "--non-interactive"]);
+    let result = crate::cli::memory_cmd::initialize(&layout, &matches);
+    assert!(result.is_ok(), "unattended init must succeed: {result:?}");
+    let root = std::fs::File::open(&layout.root).unwrap();
+    let config = Config::load_at(&root).unwrap();
+    assert_eq!(config.store.kind, StoreKind::Sqlite);
+}
+
+#[test]
+fn en_toml_contains_no_hardcoded_model_ids() {
+    let en = include_str!("../text/en.toml");
+    // Model IDs in user-facing strings and comments must be substituted from
+    // constants, never hardcoded. This guard catches drift after a model bump.
+    for line in en.lines() {
+        assert!(
+            !line.contains("gemini-3."),
+            "en.toml contains a hardcoded inference model: {line}"
+        );
+        assert!(
+            !line.contains("gemini-embedding"),
+            "en.toml contains a hardcoded embedding model: {line}"
+        );
+    }
+}
+
+#[test]
+fn rust_shared_model_is_the_prefixed_python_default() {
+    // The Rust constant carries `google/` because Vertex's OpenAI-compatible
+    // endpoint needs the publisher prefix. The Python DEFAULT_MODEL carries
+    // the bare name because google-genai rejects the prefix. The invariant:
+    // SHARED_MODEL == "google/" + DEFAULT_MODEL. A cargo test is cheaper
+    // than a CI grep and runs on every commit.
+    let python = include_str!("../../mooshik-common/mooshik_common/models.py");
+    let default_model = python
+        .lines()
+        .find_map(|line| {
+            let line = line.trim();
+            line.strip_prefix("DEFAULT_MODEL = \"")
+                .and_then(|rest| rest.strip_suffix('"'))
+        })
+        .expect("models.py must define DEFAULT_MODEL");
+    let expected = format!("google/{default_model}");
+    assert_eq!(
+        crate::config::SHARED_MODEL,
+        expected,
+        "SHARED_MODEL ({}) must equal google/ + Python DEFAULT_MODEL ({default_model})",
+        crate::config::SHARED_MODEL,
     );
 }

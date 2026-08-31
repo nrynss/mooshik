@@ -68,7 +68,7 @@ async fn the_view_surfaces_the_prose_reflect_wrote() {
 
     // Reopened from disk — the prose survives the store.
     let memory = crate::memory::open(&config).await.unwrap();
-    let workspace = crate::memory::view::of_memory(&memory, chrono::Local::now());
+    let workspace = crate::memory::view::of_memory(&memory, Utc::now());
     memory.close().await.unwrap();
     let _ = std::fs::remove_dir_all(&home);
 

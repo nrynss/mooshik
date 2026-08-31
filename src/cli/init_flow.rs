@@ -51,15 +51,6 @@ const COMPANION_API_KEY_SECRET: &str = "companion-api-key";
 /// the "cannot work" state M12h exists to end.
 const PLACEHOLDER_BASE_URL: &str = "http://127.0.0.1:8080/v1";
 
-/// The model the shared posture derives; the floor every component moved to
-/// on 2026-08-31 (the stale `gemini-2.5-flash` example was deleted with M12h).
-///
-/// The `google/` prefix is not decoration. Vertex's OpenAI-compatible
-/// endpoint addresses models by publisher, and the bare name is rejected, so
-/// a config written without it fails its own inference probe and every turn
-/// after it. `.env` and the live workflow both carry the prefixed form.
-const SHARED_MODEL: &str = "google/gemini-3.7-flash";
-
 /// How one answer is verified, injectable so the tests stay hermetic. The
 /// production implementation makes real network calls; the tests script
 /// answers and fake these so no test touches the outside world.
@@ -123,20 +114,23 @@ pub(crate) fn run(layout: &HomeLayout) -> anyhow::Result<()> {
         &mut reader,
         &mut writer,
         mcp_venv_dir(),
+        gcloud_adc_path(),
         std::env::vars().collect(),
         true,
         &LiveVerifier,
     )
 }
 
-/// The flow over injectable reader, writer, environment, venv and verifier.
-/// `no_echo` is whether secret reads turn terminal echo off: true in
-/// production (the dispatcher gated on a real terminal), false in tests.
+/// The flow over injectable reader, writer, environment, venv, adc and
+/// verifier. `no_echo` is whether secret reads turn terminal echo off: true
+/// in production (the dispatcher gated on a real terminal), false in tests.
+#[allow(clippy::too_many_arguments)]
 fn run_with(
     layout: &HomeLayout,
     reader: &mut dyn BufRead,
     writer: &mut dyn Write,
     venv: Option<PathBuf>,
+    adc: Option<PathBuf>,
     environment: Vec<(String, String)>,
     no_echo: bool,
     verifier: &dyn Verifier,
@@ -163,6 +157,7 @@ fn run_with(
         verifier,
         unverified: Vec::new(),
         sqlite_at_start,
+        adc,
     };
     session.run(venv)
 }
@@ -174,6 +169,36 @@ fn mcp_venv_dir() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".local/share")))?;
     let venv = data.join("mooshik/venv");
     venv.is_dir().then_some(venv)
+}
+
+/// The gcloud Application Default Credentials file, when it exists.
+///
+/// `$CLOUDSDK_CONFIG/application_default_credentials.json` when the env is
+/// set, otherwise `$HOME/.config/gcloud/application_default_credentials.json`.
+/// Detection is existence plus being a file. The contents are never read or
+/// parsed here; the embed probe is what says whether the credentials work.
+fn gcloud_adc_path() -> Option<PathBuf> {
+    let dir = std::env::var_os("CLOUDSDK_CONFIG")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".config/gcloud")))?;
+    let adc = dir.join("application_default_credentials.json");
+    adc.is_file().then_some(adc)
+}
+
+/// The three states of the ADC credentials file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdcState {
+    /// An ADC file exists, is valid JSON, and carries a non-empty `quota_project_id`.
+    WithQuota,
+    /// An ADC file exists and is valid JSON, but has no `quota_project_id`.
+    MissingQuota,
+    /// No ADC file is present, or it is unreadable / malformed JSON.
+    NoAdc,
+}
+
+#[derive(serde::Deserialize)]
+struct AdcQuota {
+    quota_project_id: Option<String>,
 }
 
 fn read_config(root: &std::fs::File) -> anyhow::Result<String> {
@@ -197,6 +222,9 @@ struct Session<'a> {
     /// Whether the file already had a sqlite store when the run started: a
     /// local re-run's embedder kind is a choice to keep, not a fresh one.
     sqlite_at_start: bool,
+    /// The gcloud ADC file, when detected. `None` means no ADC was found, and
+    /// the credentials question falls back to the original no-echo prompt.
+    adc: Option<PathBuf>,
 }
 
 impl Session<'_> {
@@ -205,14 +233,39 @@ impl Session<'_> {
         self.say(text::get("init.opening_rerun"))?;
         self.open_vault()?;
         self.store_step()?;
-        self.embedder_step()?;
-        self.inference_step()?;
+        if !self.embedder_step()? {
+            return Ok(());
+        }
+        if !self.inference_step()? {
+            return Ok(());
+        }
         self.mcp_step(venv)?;
         self.closing()?;
         Ok(())
     }
 
     // -- plumbing ---------------------------------------------------------
+
+    /// Probe the ADC file for a `quota_project_id`.
+    ///
+    /// Reads only `quota_project_id` and nothing else. Missing, unreadable, or
+    /// malformed files evaluate to [`AdcState::NoAdc`] so the probe never breaks
+    /// a run.
+    fn adc_state(&self) -> AdcState {
+        let Some(ref path) = self.adc else {
+            return AdcState::NoAdc;
+        };
+        let Ok(bytes) = std::fs::read_to_string(path) else {
+            return AdcState::NoAdc;
+        };
+        let Ok(parsed) = serde_json::from_str::<AdcQuota>(&bytes) else {
+            return AdcState::NoAdc;
+        };
+        match parsed.quota_project_id {
+            Some(ref id) if !id.trim().is_empty() => AdcState::WithQuota,
+            _ => AdcState::MissingQuota,
+        }
+    }
 
     fn say(&mut self, line: &str) -> anyhow::Result<()> {
         self.writer
@@ -268,6 +321,40 @@ impl Session<'_> {
         // next prompt starts on its own line.
         self.writer.write_all(b"\n").map_err(anyhow::Error::new)?;
         Ok(line)
+    }
+
+    /// Ask for the Google credentials path and write it to both config keys
+    /// and the vault. When ADC is detected with a quota project, the prompt
+    /// names the path and Enter accepts it. When it is not, the question is
+    /// the original no-echo read for a service-account key file.
+    ///
+    /// The ADC branch uses `ask()` (echoed) rather than `ask_secret()`. A
+    /// credentials file path is configuration, not a secret: the path itself
+    /// appears in `config show` and in the written `config.toml`. Echoing it
+    /// lets the user see the default they are about to accept on screen, and
+    /// lets a typed override show for the same reason. The file contents are
+    /// never read, never printed, and never stored.
+    fn ask_credentials(&mut self) -> anyhow::Result<()> {
+        let path = match (self.adc_state(), &self.adc) {
+            (AdcState::WithQuota, Some(adc)) => {
+                let display = adc.display().to_string();
+                let prompt =
+                    text::get("init.embedder_gemini_credentials_adc").replace("{path}", &display);
+                let answer = self.ask(&prompt)?;
+                if answer.trim().is_empty() {
+                    display
+                } else {
+                    answer.trim().to_owned()
+                }
+            }
+            _ => self.ask_secret(text::get("init.embedder_gemini_credentials"))?,
+        };
+        self.set("embedder.gemini_credentials", &path)?;
+        self.set("companion.google_credentials", &path)?;
+        self.vault_mut()
+            .set(GEMINI_CREDENTIALS_SECRET, &path)
+            .map_err(anyhow::Error::new)?;
+        Ok(())
     }
 
     /// Apply one setting to the file and reload the resolved config, so a
@@ -456,7 +543,7 @@ impl Session<'_> {
 
     // -- the embedder -----------------------------------------------------
 
-    fn embedder_step(&mut self) -> anyhow::Result<()> {
+    fn embedder_step(&mut self) -> anyhow::Result<bool> {
         // The sticky warning belongs at the moment of choosing, not in a
         // README the user reads later.
         self.say(text::get("init.embedder_sticky"))?;
@@ -465,24 +552,35 @@ impl Session<'_> {
         if shared {
             if self.config.embedder.kind != EmbedderKind::Gemini {
                 // A deliberate non-gemini embedder in the file; nothing to ask.
-                return self.verify_embedder();
+                self.verify_embedder()?;
+                return Ok(true);
             }
-            self.shared_google_questions()?;
-            return self.verify_embedder();
+            if !self.shared_google_questions()? {
+                return Ok(false);
+            }
+            self.verify_embedder()?;
+            return Ok(true);
         }
         if !self.embedder_needs_asking() {
-            return self.verify_embedder();
+            self.verify_embedder()?;
+            return Ok(true);
         }
         // kind is gemini here. A gemini project or credentials key in the
         // file means a deliberate choice; fill the gaps only.
         if file_has(&self.source, "embedder.gemini_project")
             || file_has(&self.source, "embedder.gemini_credentials")
         {
-            self.shared_google_questions()?;
-            return self.verify_embedder();
+            if !self.shared_google_questions()? {
+                return Ok(false);
+            }
+            self.verify_embedder()?;
+            return Ok(true);
         }
-        self.ask_embedder_kind_local()?;
-        self.verify_embedder()
+        if !self.ask_embedder_kind_local()? {
+            return Ok(false);
+        }
+        self.verify_embedder()?;
+        Ok(true)
     }
 
     /// gemini needs project and credentials; bge_m3 needs nothing else.
@@ -510,7 +608,7 @@ impl Session<'_> {
     /// store was already sqlite at flow start: reaching it with `kind =
     /// gemini` in the file means an interrupted choice, and a plain Enter
     /// must keep it. A fresh run has no choice to keep — bge_m3 is default.
-    fn ask_embedder_kind_local(&mut self) -> anyhow::Result<()> {
+    fn ask_embedder_kind_local(&mut self) -> anyhow::Result<bool> {
         let default_is_gemini =
             self.sqlite_at_start && self.config.embedder.kind == EmbedderKind::Gemini;
         loop {
@@ -523,7 +621,8 @@ impl Session<'_> {
             }
             if answer.is_empty() || answer == "2" {
                 self.set("embedder.kind", "bge_m3")?;
-                return self.ask_bge_dim();
+                self.ask_bge_dim()?;
+                return Ok(true);
             }
             self.say(text::get("init.embedder_invalid"))?;
         }
@@ -542,7 +641,11 @@ impl Session<'_> {
     /// The shared posture's two questions, asked once: the project fills
     /// both project keys (with a differ offer) and the credentials path
     /// fills both credential keys. Each is asked only when still unset.
-    fn shared_google_questions(&mut self) -> anyhow::Result<()> {
+    ///
+    /// Returns `Ok(false)` if the ADC precondition check fails (missing quota
+    /// project), signalling that the run must stop early without asking
+    /// questions or attempting verification.
+    fn shared_google_questions(&mut self) -> anyhow::Result<bool> {
         let companion_project_missing = self
             .config
             .companion
@@ -558,6 +661,47 @@ impl Session<'_> {
             .map(str::trim)
             .is_none_or(|value| value.is_empty())
             || companion_project_missing;
+        let credentials_missing = self
+            .config
+            .embedder
+            .gemini_credentials
+            .as_ref()
+            .is_none_or(|path| path.as_os_str().is_empty())
+            || self
+                .config
+                .companion
+                .google_credentials
+                .as_ref()
+                .is_none_or(|path| path.as_os_str().is_empty());
+
+        if !project_missing && !credentials_missing {
+            return Ok(true);
+        }
+
+        let project_placeholder = self
+            .config
+            .embedder
+            .gemini_project
+            .as_deref()
+            .or(self.config.companion.google_project.as_deref())
+            .filter(|p| !p.trim().is_empty())
+            .unwrap_or("<project>");
+
+        match self.adc_state() {
+            AdcState::WithQuota => {}
+            AdcState::MissingQuota => {
+                let msg = text::get("init.adc_missing_quota_project")
+                    .replace("{project}", project_placeholder);
+                self.say(&msg)?;
+                return Ok(false);
+            }
+            AdcState::NoAdc => {
+                let msg = text::get("init.adc_not_found_guidance")
+                    .replace("{project}", project_placeholder);
+                self.say(&msg)?;
+            }
+        }
+
         if project_missing {
             let project = self.ask(text::get("init.embedder_gemini_project"))?;
             self.set("embedder.gemini_project", &project)?;
@@ -589,27 +733,10 @@ impl Session<'_> {
                 self.set("companion.google_project", &companion_project)?;
             }
         }
-        let credentials_missing = self
-            .config
-            .embedder
-            .gemini_credentials
-            .as_ref()
-            .is_none_or(|path| path.as_os_str().is_empty())
-            || self
-                .config
-                .companion
-                .google_credentials
-                .as_ref()
-                .is_none_or(|path| path.as_os_str().is_empty());
         if credentials_missing {
-            let path = self.ask_secret(text::get("init.embedder_gemini_credentials"))?;
-            self.set("embedder.gemini_credentials", &path)?;
-            self.set("companion.google_credentials", &path)?;
-            self.vault_mut()
-                .set(GEMINI_CREDENTIALS_SECRET, &path)
-                .map_err(anyhow::Error::new)?;
+            self.ask_credentials()?;
         }
-        Ok(())
+        Ok(true)
     }
 
     fn verify_embedder(&mut self) -> anyhow::Result<()> {
@@ -622,13 +749,7 @@ impl Session<'_> {
                     if self.ask_yes(text::get("init.retry_prompt"), true)? {
                         if self.config.embedder.kind == EmbedderKind::Gemini {
                             // The likely wrong answer is the credentials path.
-                            let path =
-                                self.ask_secret(text::get("init.embedder_gemini_credentials"))?;
-                            self.set("embedder.gemini_credentials", &path)?;
-                            self.set("companion.google_credentials", &path)?;
-                            self.vault_mut()
-                                .set(GEMINI_CREDENTIALS_SECRET, &path)
-                                .map_err(anyhow::Error::new)?;
+                            self.ask_credentials()?;
                         }
                     } else {
                         return self.record_unverified(text::get("init.unverified_embedder"));
@@ -640,7 +761,7 @@ impl Session<'_> {
 
     // -- inference --------------------------------------------------------
 
-    fn inference_step(&mut self) -> anyhow::Result<()> {
+    fn inference_step(&mut self) -> anyhow::Result<bool> {
         if self.config.store.kind == StoreKind::Postgres
             || self.config.store.kind == StoreKind::Cockroach
         {
@@ -659,16 +780,18 @@ impl Session<'_> {
                     .google_credentials
                     .as_ref()
                     .is_none_or(|path| path.as_os_str().is_empty());
-            if needs_google {
-                self.shared_google_questions()?;
+            if needs_google && !self.shared_google_questions()? {
+                return Ok(false);
             }
             self.derive_shared_inference()?;
-            return self.verify_inference();
+            self.verify_inference()?;
+            return Ok(true);
         }
         if self.companion_needs_asking() {
             self.ask_inference_local()?;
         }
-        self.verify_inference()
+        self.verify_inference()?;
+        Ok(true)
     }
 
     /// The shared posture's inference is derived, not asked: `auth = google`,
@@ -681,10 +804,13 @@ impl Session<'_> {
         let model = file_value(&self.source, "companion.model");
         let placeholder_static = base.as_deref() == Some(PLACEHOLDER_BASE_URL);
         if placeholder_static {
-            self.say(text::get("init.inference_google"))?;
+            let message = text::get("init.inference_google")
+                .replace("{model}", config::SHARED_MODEL)
+                .replace("{embed_model}", config::DEFAULT_GEMINI_MODEL);
+            self.say(&message)?;
             self.set("companion.auth", "google")?;
             if model.as_deref().is_none_or(|value| value == "local-model") {
-                self.set("companion.model", SHARED_MODEL)?;
+                self.set("companion.model", config::SHARED_MODEL)?;
             }
         }
         if !file_has(&self.source, "companion.google_location") {
@@ -778,13 +904,7 @@ impl Session<'_> {
                         } else {
                             // Google inference: re-ask the credentials path,
                             // or the retry is a loop that cannot change.
-                            let path =
-                                self.ask_secret(text::get("init.embedder_gemini_credentials"))?;
-                            self.set("embedder.gemini_credentials", &path)?;
-                            self.set("companion.google_credentials", &path)?;
-                            self.vault_mut()
-                                .set(GEMINI_CREDENTIALS_SECRET, &path)
-                                .map_err(anyhow::Error::new)?;
+                            self.ask_credentials()?;
                         }
                     } else {
                         return self.record_unverified(text::get("init.unverified_inference"));

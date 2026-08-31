@@ -36,15 +36,18 @@ fn never_resolves(_: &str) -> Result<Zeroizing<String>, ConfigError> {
 
 #[test]
 fn a_written_setting_round_trips_and_keeps_the_rest_of_the_file_byte_for_byte() {
-    let edited = apply_setting(SAMPLE, "companion.model", "gemini-2.5-flash", []).unwrap();
+    let edited = apply_setting(SAMPLE, "companion.model", "test-placeholder-model", []).unwrap();
     let config = Config::from_toml_and_env(&edited, []).unwrap();
-    assert_eq!(config.companion.model, "gemini-2.5-flash");
+    assert_eq!(config.companion.model, "test-placeholder-model");
     // Everything the operator wrote is still there, including the comment on
     // an untouched line and the blank line between tables.
     assert!(edited.starts_with("# Mooshik configuration.\n"), "{edited}");
     assert!(edited.contains("kind = \"postgres\"   # the product backend"));
     assert!(edited.contains("\n\n[companion]"), "{edited}");
-    assert!(edited.contains("model = \"gemini-2.5-flash\""), "{edited}");
+    assert!(
+        edited.contains("model = \"test-placeholder-model\""),
+        "{edited}"
+    );
     assert!(!edited.contains("local-model"), "{edited}");
     // And nothing else moved: exactly one line differs.
     let changed: Vec<_> = SAMPLE

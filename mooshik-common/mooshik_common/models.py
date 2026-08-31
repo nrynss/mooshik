@@ -10,6 +10,13 @@ supported floor, and an inference call pointed at the embedder's region.
 from __future__ import annotations
 
 #: The inference model every component defaults to.
+#:
+#: The bare name, without the `google/` publisher prefix. Vertex's
+#: OpenAI-compatible endpoint (which the Rust CLI uses) needs the prefix,
+#: but google-genai and ADK (used by these Python components) reject it.
+#: The Rust constant is `SHARED_MODEL` in `src/config/mod.rs`.
+#: A cargo test in `src/cli/init_flow_tests.rs` asserts
+#: `SHARED_MODEL == "google/" + DEFAULT_MODEL`.
 DEFAULT_MODEL = "gemini-3.7-flash"
 
 #: The only Vertex location that serves Gemini 3.x. Requesting `gemini-3.5`,

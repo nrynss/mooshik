@@ -113,9 +113,10 @@ pub fn command() -> Command {
 /// enforces, so the two can never drift: adding a key to `config::write`
 /// documents it here for free.
 fn config_set_command() -> Command {
+    let help = text::get("config.set_after_help").replace("{model}", crate::config::SHARED_MODEL);
     let after = format!(
         "{}\n\n{} {}.",
-        text::get("config.set_after_help"),
+        help,
         text::get("config.set_keys_header"),
         crate::config::settable_keys().join(", ")
     );
