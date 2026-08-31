@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use lambo::{EmbedderKind, StoreKind};
 use serde::Serialize;
 
-use crate::text;
 use super::Config;
+use crate::text;
 
 /// The shipped local-default endpoint and model — the "local posture nobody
 /// has running" state the missing report has to end. Mirrors
@@ -419,4 +419,3 @@ mod tests {
         assert!(!joined.contains("companion.base_url/model"), "{joined}");
     }
 }
-

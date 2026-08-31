@@ -33,8 +33,7 @@ use crate::{
     companion::{Cancellation, CompanionClient, Message},
     config::{self, Config, ConfigError, VaultProvider},
     home::HomeLayout,
-    secure_path,
-    text,
+    secure_path, text,
     vault::Vault,
 };
 
@@ -280,11 +279,15 @@ impl Session<'_> {
     }
 
     fn vault(&self) -> &Vault {
-        self.vault.as_ref().expect("vault opens before any secret question")
+        self.vault
+            .as_ref()
+            .expect("vault opens before any secret question")
     }
 
     fn vault_mut(&mut self) -> &mut Vault {
-        self.vault.as_mut().expect("vault opens before any secret question")
+        self.vault
+            .as_mut()
+            .expect("vault opens before any secret question")
     }
 
     /// The resolved configuration with every vault reference filled in, for
@@ -418,7 +421,7 @@ impl Session<'_> {
         let dsn = self.ask_secret(text::get("init.store_dsn_prompt"))?;
         self.vault_mut()
             .set(STORE_DSN_SECRET, &dsn)
-            .map_err(|error| anyhow::Error::new(error))?;
+            .map_err(anyhow::Error::new)?;
         self.set("store.kind", "postgres")?;
         self.set("store.dsn_secret", STORE_DSN_SECRET)?;
         self.say(&text::get("init.store_dsn_stored").replace("{name}", STORE_DSN_SECRET))
@@ -555,26 +558,29 @@ impl Session<'_> {
             self.set("embedder.gemini_project", &project)?;
             self.vault_mut()
                 .set(GEMINI_PROJECT_SECRET, &project)
-                .map_err(|error| anyhow::Error::new(error))?;
+                .map_err(anyhow::Error::new)?;
             if companion_project_missing {
                 // The plan's offer to differ: cross-project setups are real
                 // (the deployed ingester runs from `mooshik`). Shared posture
                 // only — local inference is a static endpoint.
-                let shared = matches!(self.config.store.kind, StoreKind::Postgres | StoreKind::Cockroach);
-                let companion_project =
-                    if shared && !self.ask_yes(text::get("init.inference_same_project"), true)? {
-                        let answer = self.ask(
-                            &text::get("init.inference_differ_project")
-                                .replace("{default}", &project),
-                        )?;
-                        if answer.trim().is_empty() {
-                            project.clone()
-                        } else {
-                            answer.trim().to_owned()
-                        }
-                    } else {
+                let shared = matches!(
+                    self.config.store.kind,
+                    StoreKind::Postgres | StoreKind::Cockroach
+                );
+                let companion_project = if shared
+                    && !self.ask_yes(text::get("init.inference_same_project"), true)?
+                {
+                    let answer = self.ask(
+                        &text::get("init.inference_differ_project").replace("{default}", &project),
+                    )?;
+                    if answer.trim().is_empty() {
                         project.clone()
-                    };
+                    } else {
+                        answer.trim().to_owned()
+                    }
+                } else {
+                    project.clone()
+                };
                 self.set("companion.google_project", &companion_project)?;
             }
         }
@@ -596,7 +602,7 @@ impl Session<'_> {
             self.set("companion.google_credentials", &path)?;
             self.vault_mut()
                 .set(GEMINI_CREDENTIALS_SECRET, &path)
-                .map_err(|error| anyhow::Error::new(error))?;
+                .map_err(anyhow::Error::new)?;
         }
         Ok(())
     }
@@ -617,7 +623,7 @@ impl Session<'_> {
                             self.set("companion.google_credentials", &path)?;
                             self.vault_mut()
                                 .set(GEMINI_CREDENTIALS_SECRET, &path)
-                                .map_err(|error| anyhow::Error::new(error))?;
+                                .map_err(anyhow::Error::new)?;
                         }
                     } else {
                         return self.record_unverified(text::get("init.unverified_embedder"));
@@ -686,12 +692,7 @@ impl Session<'_> {
         match self.config.companion.auth {
             config::CompanionAuth::Google => false,
             config::CompanionAuth::Static => {
-                let placeholder = self
-                    .config
-                    .companion
-                    .base_url
-                    .trim()
-                    .trim_end_matches('/')
+                let placeholder = self.config.companion.base_url.trim().trim_end_matches('/')
                     == PLACEHOLDER_BASE_URL;
                 let key_reference_missing = self
                     .config
@@ -705,7 +706,9 @@ impl Session<'_> {
     }
 
     fn ask_inference_local(&mut self) -> anyhow::Result<()> {
-        let base = self.ask(&text::get("init.inference_base_url").replace("{default}", PLACEHOLDER_BASE_URL))?;
+        let base = self.ask(
+            &text::get("init.inference_base_url").replace("{default}", PLACEHOLDER_BASE_URL),
+        )?;
         let base = if base.trim().is_empty() {
             PLACEHOLDER_BASE_URL.to_owned()
         } else {
@@ -713,7 +716,8 @@ impl Session<'_> {
         };
         self.set("companion.base_url", &base)?;
 
-        let model = self.ask(&text::get("init.inference_model").replace("{default}", "local-model"))?;
+        let model =
+            self.ask(&text::get("init.inference_model").replace("{default}", "local-model"))?;
         let model = if model.trim().is_empty() {
             "local-model".to_owned()
         } else {
@@ -724,7 +728,8 @@ impl Session<'_> {
         if self.ask_yes(text::get("init.inference_api_key_question"), false)? {
             let name = loop {
                 let name = self.ask(
-                    &text::get("init.inference_api_key_name").replace("{default}", COMPANION_API_KEY_SECRET),
+                    &text::get("init.inference_api_key_name")
+                        .replace("{default}", COMPANION_API_KEY_SECRET),
                 )?;
                 let name = if name.trim().is_empty() {
                     COMPANION_API_KEY_SECRET.to_owned()
@@ -739,7 +744,7 @@ impl Session<'_> {
             let key = self.ask_secret(text::get("init.inference_api_key_prompt"))?;
             self.vault_mut()
                 .set(&name, &key)
-                .map_err(|error| anyhow::Error::new(error))?;
+                .map_err(anyhow::Error::new)?;
             self.set("companion.api_key_secret", &name)?;
         }
         Ok(())
@@ -774,7 +779,7 @@ impl Session<'_> {
                             self.set("companion.google_credentials", &path)?;
                             self.vault_mut()
                                 .set(GEMINI_CREDENTIALS_SECRET, &path)
-                                .map_err(|error| anyhow::Error::new(error))?;
+                                .map_err(anyhow::Error::new)?;
                         }
                     } else {
                         return self.record_unverified(text::get("init.unverified_inference"));
@@ -793,7 +798,10 @@ impl Session<'_> {
         let news = venv.join("bin/mooshik-news-mcp");
         let artifacts = venv.join("bin/mooshik-artifacts-mcp");
         let coder = venv.join("bin/mooshik-coder-mcp");
-        if ![&news, &artifacts, &coder].iter().any(|path| path.is_file()) {
+        if ![&news, &artifacts, &coder]
+            .iter()
+            .any(|path| path.is_file())
+        {
             return self.say(text::get("init.mcp_none"));
         }
         self.say(&text::get("init.mcp_heading").replace("{venv}", &venv.display().to_string()))?;
@@ -815,14 +823,14 @@ impl Session<'_> {
             if self.vault().get(GEMINI_PROJECT_SECRET).is_err() {
                 self.vault_mut()
                     .set(GEMINI_PROJECT_SECRET, project)
-                    .map_err(|error| anyhow::Error::new(error))?;
+                    .map_err(anyhow::Error::new)?;
             }
         }
         if let Some(credentials) = &credentials {
             if self.vault().get(GEMINI_CREDENTIALS_SECRET).is_err() {
                 self.vault_mut()
                     .set(GEMINI_CREDENTIALS_SECRET, credentials)
-                    .map_err(|error| anyhow::Error::new(error))?;
+                    .map_err(anyhow::Error::new)?;
             }
         }
         let has_google = self.vault().get(GEMINI_PROJECT_SECRET).is_ok()
@@ -867,36 +875,32 @@ impl Session<'_> {
                 self.say(text::get("init.mcp_no_google"))?;
             }
         }
-        if coder.is_file() {
-            if self.ask_yes(text::get("init.mcp_coder"), false)? {
-                let agent = self.ask_coder_agent()?;
-                let (env_var, secret_name) =
-                    super::configure::coder_agent_secret(&agent).expect("agent validated above");
-                // Re-runnable: only ask for the key when the vault does not
-                // already hold it.
-                if self.vault().get(secret_name).is_err() {
-                    let key = self.ask_secret(text::get("init.mcp_coder_key"))?;
-                    self.vault_mut()
-                        .set(secret_name, &key)
-                        .map_err(|error| anyhow::Error::new(error))?;
-                }
-                let (command, args_prefix) = super::configure::find_coder_command();
-                let edited = super::configure::apply_coder_config(
-                    &self.source,
-                    &agent,
-                    &command,
-                    &args_prefix,
-                    env_var,
-                    secret_name,
-                );
-                self.write_source(edited)?;
-                wired.push("coder");
+        if coder.is_file() && self.ask_yes(text::get("init.mcp_coder"), false)? {
+            let agent = self.ask_coder_agent()?;
+            let (env_var, secret_name) =
+                super::configure::coder_agent_secret(&agent).expect("agent validated above");
+            // Re-runnable: only ask for the key when the vault does not
+            // already hold it.
+            if self.vault().get(secret_name).is_err() {
+                let key = self.ask_secret(text::get("init.mcp_coder_key"))?;
+                self.vault_mut()
+                    .set(secret_name, &key)
+                    .map_err(anyhow::Error::new)?;
             }
+            let (command, args_prefix) = super::configure::find_coder_command();
+            let edited = super::configure::apply_coder_config(
+                &self.source,
+                &agent,
+                &command,
+                &args_prefix,
+                env_var,
+                secret_name,
+            );
+            self.write_source(edited)?;
+            wired.push("coder");
         }
         if !wired.is_empty() {
-            self.say(
-                &text::get("init.mcp_wired").replace("{names}", &wired.join(", ")),
-            )?;
+            self.say(&text::get("init.mcp_wired").replace("{names}", &wired.join(", ")))?;
         }
         Ok(())
     }
@@ -939,8 +943,7 @@ impl Session<'_> {
 
     /// Write an already-composed config text and reload source and config.
     fn write_source(&mut self, edited: String) -> anyhow::Result<()> {
-        Config::from_toml_and_env(&edited, self.environment.clone())
-            .map_err(anyhow::Error::new)?;
+        Config::from_toml_and_env(&edited, self.environment.clone()).map_err(anyhow::Error::new)?;
         secure_path::write_private_at(&self.root, OsStr::new("config.toml"), edited.as_bytes())
             .map_err(|_| anyhow::Error::new(ConfigError::WriteFailed))?;
         self.source = edited;
@@ -984,7 +987,10 @@ fn read_no_echo(reader: &mut dyn BufRead) -> io::Result<String> {
         let original = termios;
         termios.c_lflag &= !libc::ECHO;
         // Handlers first and `ECHO_TERMIOS` filled before echo goes off.
-        let mut guard = NoEchoRestore { termios: original, previous: [None; 5] };
+        let mut guard = NoEchoRestore {
+            termios: original,
+            previous: [None; 5],
+        };
         for (slot, signal) in guard.previous.iter_mut().zip(NO_ECHO_SIGNALS) {
             *slot = Some(install_echo_handler(signal)?);
         }
@@ -1000,8 +1006,13 @@ fn read_no_echo(reader: &mut dyn BufRead) -> io::Result<String> {
 }
 /// The signals the no-echo read arms: SIGTSTP resumes, the rest terminate.
 #[cfg(unix)]
-const NO_ECHO_SIGNALS: [libc::c_int; 5] =
-    [libc::SIGINT, libc::SIGTSTP, libc::SIGQUIT, libc::SIGTERM, libc::SIGHUP];
+const NO_ECHO_SIGNALS: [libc::c_int; 5] = [
+    libc::SIGINT,
+    libc::SIGTSTP,
+    libc::SIGQUIT,
+    libc::SIGTERM,
+    libc::SIGHUP,
+];
 
 /// Install the restore-and-raise handler for one signal, returning the
 /// previous disposition for the guard to put back. SA_RESETHAND restores
