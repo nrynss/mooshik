@@ -1,37 +1,43 @@
 ---
-title: Memory Reflection
-description: Consolidate duplicate concepts and generate prose summaries.
+title: Reflection and Synthesis
+description: Consolidate memory, merge duplicate concepts, and synthesize timeline prose.
 ---
 
-The reflection engine cleans the concept graph and writes concise prose summaries for the terminal UI.
+`mooshik reflect` is a one-shot consolidation command. It synthesizes summary prose for the terminal pane and merges duplicate concepts in the memory graph.
 
-## What Reflection Does
+Run reflection on your current session:
 
-Over time, similar ideas enter the graph under slightly different names. Reflection runs periodically to consolidate these variations.
-
-### 1. Paraphrase Merging
-The reflector compares concept embeddings using cosine similarity. When two nodes exceed the similarity threshold, the engine merges them into a single primary concept. It redirects all edges to the survivor node and preserves original details.
-
-### 2. Daily Mood & Notes
-Reflection generates a high-level mood and concise notes for each active day.
-
-### 3. Thread Reasons
-It infers the underlying technical motivation for ongoing threads, answering why a decision occurred.
-
-## Running Reflection
-
-Execute a reflection pass across your active graph:
-
-```sh
+```bash
 mooshik reflect
 ```
 
-### Previewing Changes (Dry Run)
+## Synthesizing Timeline Prose
 
-You can preview proposed concept merges and prose summaries without writing to the database:
+While you work, the workspace watcher and companion record discrete events: file modifications, commits, and short notes. The live pane displays these raw events in real time.
 
-```sh
+`mooshik reflect` reviews the day's events and writes descriptive prose concepts:
+- **Daily mood:** Captures the tone and pace of the day's work.
+- **Gutter summaries:** Four-word concise summaries displayed along timeline margins.
+- **Trailing notes:** Synthesizes context from completed tasks.
+- **Thread rationales:** Explains why a group of related changes occurred together.
+
+These are written to the graph with a `mooshik-prose:` prefix. On the next 250 millisecond tick, the open terminal pane renders the new prose automatically.
+
+## Merging Paraphrase Twins
+
+When multiple tools or sessions record the same observation using slightly different wording, `mooshik reflect` consolidates them:
+
+1. **Semantic clustering:** Identifies concepts with near-identical vector representations.
+2. **Leader selection:** Chooses the most descriptive concept as the canonical representative.
+3. **Edge rerouting:** Reroutes all inbound and outbound edges from duplicate concepts to the leader.
+4. **Content preservation:** Preserves supporting notes and evidence from merged concepts.
+5. **Audit logging:** Records an immutable audit row for every merged cluster.
+
+## Safety and Idempotence
+
+- **First-write-only design:** Reflection processes unanalyzed events and skips already consolidated time periods. Rerunning `mooshik reflect` on unchanged data is a safe no-op.
+- **Dry-run simulation:** Inspect planned merges and prose generation without modifying the database:
+
+```bash
 mooshik reflect --dry-run
 ```
-
-The dry run reports planned cluster merges, survivor selections, and summary text directly to your terminal.
