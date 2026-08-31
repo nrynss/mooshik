@@ -154,8 +154,8 @@ pub(crate) fn configure_coder(
         }
     }
 
-    let script_path = find_coder_script_path();
-    let after = apply_coder_config(&before, agent, &script_path, env_var, secret_name);
+    let (command, args_prefix) = find_coder_command();
+    let after = apply_coder_config(&before, agent, &command, &args_prefix, env_var, secret_name);
 
     // Verify after parsing
     let _ = Config::from_toml_and_env(&after, env::vars()).map_err(anyhow::Error::new)?;
@@ -170,10 +170,11 @@ pub(crate) fn configure_coder(
     Ok(())
 }
 
-fn apply_coder_config(
+pub(super) fn apply_coder_config(
     before: &str,
     agent: &str,
-    script_path: &str,
+    command: &str,
+    args_prefix: &[String],
     env_var: &str,
     secret_name: &str,
 ) -> String {
@@ -219,42 +220,76 @@ fn apply_coder_config(
     // there makes the host look up a secret called `claude`, fail to find it,
     // and refuse to spawn the server. Only the credential — which really is a
     // secret name — belongs in that table.
+    let mut args: Vec<String> = args_prefix.to_vec();
+    args.push("--agent".to_owned());
+    args.push(agent.to_owned());
+    let args_toml = args
+        .iter()
+        .map(|a| format!("\"{a}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
     result.push_str(&format!(
-        "\n[mcp_servers.coder]\ncommand = \"python3\"\nargs = [\"{}\", \"--agent\", \"{}\"]\nexpose = [\"delegate\", \"check\"]\n\n[mcp_servers.coder.env]\n{} = \"{}\"\n",
-        script_path, agent, env_var, secret_name
+        "\n[mcp_servers.coder]\ncommand = \"{}\"\nargs = [{}]\nexpose = [\"delegate\", \"check\"]\n\n[mcp_servers.coder.env]\n{} = \"{}\"\n",
+        command, args_toml, env_var, secret_name
     ));
 
     result
 }
 
-fn find_coder_script_path() -> String {
-    let local = Path::new("mcp-servers/coder/server.py");
-    if local.is_file() {
-        if let Ok(abs) = local.canonicalize() {
-            return abs.to_string_lossy().into_owned();
-        }
-        return local.to_string_lossy().into_owned();
+/// How to spawn the coder MCP server, as `(command, args before --agent)`.
+///
+/// The installed console script comes first. `install.sh` puts the server
+/// packages in a virtualenv under `XDG_DATA_HOME`, and a binary install has no
+/// repository to find `server.py` in. The previous fallback pointed at
+/// `/usr/local/share/mooshik/...`, which no install ever creates, so
+/// `mooshik configure coder` wrote a command that could not run.
+///
+/// A source checkout still resolves to `python3 <abs>/server.py`, which the
+/// server's own README documents and its wire tests use.
+pub(super) fn find_coder_command() -> (String, Vec<String>) {
+    if let Some(script) = installed_console_script() {
+        return (script, Vec::new());
     }
+    for candidate in coder_script_candidates() {
+        if candidate.is_file() {
+            let path = candidate
+                .canonicalize()
+                .unwrap_or(candidate)
+                .to_string_lossy()
+                .into_owned();
+            return ("python3".to_owned(), vec![path]);
+        }
+    }
+    // Nothing found. Name the console script the installer creates, so the
+    // written block says what the user is missing rather than pointing at a
+    // path that never existed.
+    (
+        default_console_script().to_string_lossy().into_owned(),
+        Vec::new(),
+    )
+}
 
+/// `$XDG_DATA_HOME/mooshik/venv/bin/mooshik-coder-mcp`, if it is there.
+fn installed_console_script() -> Option<String> {
+    let path = default_console_script();
+    path.is_file().then(|| path.to_string_lossy().into_owned())
+}
+
+fn default_console_script() -> std::path::PathBuf {
+    let data = env::var_os("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|h| Path::new(&h).join(".local/share")))
+        .unwrap_or_else(|| std::path::PathBuf::from(".local/share"));
+    data.join("mooshik/venv/bin/mooshik-coder-mcp")
+}
+
+fn coder_script_candidates() -> Vec<std::path::PathBuf> {
+    let mut out = vec![std::path::PathBuf::from("mcp-servers/coder/server.py")];
     if let Ok(exe) = env::current_exe() {
         if let Some(parent) = exe.parent() {
-            let candidate = parent.join("mcp-servers/coder/server.py");
-            if candidate.is_file() {
-                if let Ok(abs) = candidate.canonicalize() {
-                    return abs.to_string_lossy().into_owned();
-                }
-                return candidate.to_string_lossy().into_owned();
-            }
-            let repo_root = parent.join("../..");
-            let candidate2 = repo_root.join("mcp-servers/coder/server.py");
-            if candidate2.is_file() {
-                if let Ok(abs) = candidate2.canonicalize() {
-                    return abs.to_string_lossy().into_owned();
-                }
-                return candidate2.to_string_lossy().into_owned();
-            }
+            out.push(parent.join("mcp-servers/coder/server.py"));
+            out.push(parent.join("../..").join("mcp-servers/coder/server.py"));
         }
     }
-
-    "/usr/local/share/mooshik/mcp-servers/coder/server.py".to_owned()
+    out
 }

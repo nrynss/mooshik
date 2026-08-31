@@ -1027,3 +1027,46 @@ fn configure_coder_agy_writes_block_and_permissions() {
         Some("agy")
     );
 }
+
+/// `mooshik configure coder` used to write a command no install ever creates.
+///
+/// `find_coder_command` fell back to `/usr/local/share/mooshik/...`, and a
+/// binary install has no repository to find `server.py` in either. The block it
+/// wrote therefore named a path that did not exist. The installed console
+/// script now wins, which is what `install.sh` actually puts on disk.
+#[test]
+fn the_coder_block_prefers_the_installed_console_script() {
+    let layout = fixture_home("coder-console");
+    let data = layout.root.join("data");
+    let bin = data.join("mooshik/venv/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let script = bin.join("mooshik-coder-mcp");
+    std::fs::write(&script, "#!/bin/sh\n").unwrap();
+
+    let previous = std::env::var_os("XDG_DATA_HOME");
+    std::env::set_var("XDG_DATA_HOME", &data);
+    let written = super::configure::apply_coder_config(
+        "",
+        "claude",
+        &super::configure::find_coder_command().0,
+        &super::configure::find_coder_command().1,
+        "ANTHROPIC_API_KEY",
+        "anthropic-api-key",
+    );
+    match previous {
+        Some(v) => std::env::set_var("XDG_DATA_HOME", v),
+        None => std::env::remove_var("XDG_DATA_HOME"),
+    }
+
+    assert!(
+        written.contains(&format!("command = \"{}\"", script.display())),
+        "{written}"
+    );
+    // The console script takes --agent directly. No interpreter, no script path.
+    assert!(
+        written.contains("args = [\"--agent\", \"claude\"]"),
+        "{written}"
+    );
+    assert!(!written.contains("python3"), "{written}");
+    let _ = std::fs::remove_dir_all(&layout.root);
+}
