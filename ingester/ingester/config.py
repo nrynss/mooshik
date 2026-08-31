@@ -14,7 +14,13 @@ from pathlib import Path
 
 DEFAULT_EXTENSIONS = ".md,.markdown,.txt,.rst"
 DEFAULT_LAMBO_SERVE = "lambo serve"
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.7-flash"
+#: Extraction runs in `global`, not the embedder's region. Every Gemini 3.x
+#: flash model is served from `global` only — asking for one in us-central1
+#: returns 404 NOT_FOUND. Deliberately NOT read from MOOSHIK_GEMINI_LOCATION,
+#: which stays regional because lambo's embedder (gemini-embedding-001) is
+#: pinned there; the two models live in different places.
+DEFAULT_LOCATION = "global"
 DEFAULT_CHUNK_CHARS = 4_000
 DEFAULT_SLEEP_SECS = 0.5
 DEFAULT_MAX_ATTEMPTS = 4
@@ -72,7 +78,7 @@ class Settings:
             state_path=state_path,
             model=os.environ.get("INGEST_MODEL", DEFAULT_MODEL),
             project=os.environ.get("MOOSHIK_GEMINI_PROJECT") or None,
-            location=os.environ.get("MOOSHIK_GEMINI_LOCATION") or None,
+            location=os.environ.get("INGEST_LOCATION") or DEFAULT_LOCATION,
             credentials_path=os.environ.get("MOOSHIK_GEMINI_CREDENTIALS") or None,
             chunk_chars=int(os.environ.get("INGEST_CHUNK_CHARS", DEFAULT_CHUNK_CHARS)),
             sleep_secs=float(os.environ.get("INGEST_SLEEP_SECS", DEFAULT_SLEEP_SECS)),

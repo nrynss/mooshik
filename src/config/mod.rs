@@ -23,7 +23,7 @@ pub use companion::{
     vertex_base_url, ApiKey, CompanionAuth, CompanionConfig, COMPANION_API_KEY_ENV,
     COMPANION_AUTH_ENV, COMPANION_BASE_URL_ENV, COMPANION_CONTEXT_WINDOW_ENV,
     COMPANION_GOOGLE_LOCATION_ENV, COMPANION_GOOGLE_PROJECT_ENV, COMPANION_MODEL_ENV,
-    COMPANION_TEMPERATURE_ENV, DEFAULT_GOOGLE_LOCATION,
+    COMPANION_TEMPERATURE_ENV, DEFAULT_GOOGLE_LOCATION, GLOBAL_LOCATION,
 };
 pub use permissions::{
     GrantDecision, GrantMode, GrantSource, Grants, PermissionsConfig, RawGrant, ScopedGrant,
@@ -88,7 +88,7 @@ temperature = 0.2
 # expires. Reachable without hand-editing this file:
 #   mooshik config set companion.auth google
 #   mooshik config set companion.google_project my-project
-#   mooshik config set companion.google_location us-central1
+#   mooshik config set companion.google_location global
 #   mooshik config set companion.model gemini-2.5-flash
 
 [permissions]

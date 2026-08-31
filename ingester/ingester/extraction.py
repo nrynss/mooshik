@@ -26,6 +26,8 @@ from dataclasses import dataclass
 
 from google import genai
 
+from .config import DEFAULT_MODEL
+
 log = logging.getLogger(__name__)
 
 CONCEPT_TYPES = frozenset(
@@ -109,7 +111,7 @@ class ConceptExtractor:
     def __init__(
         self,
         client: object,
-        model: str = "gemini-2.5-flash",
+        model: str = DEFAULT_MODEL,
         sleep_secs: float = 0.5,
         max_attempts: int = 4,
         clock=time.sleep,

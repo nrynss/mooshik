@@ -18,9 +18,20 @@ const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8080/v1";
 const DEFAULT_MODEL: &str = "local-model";
 const DEFAULT_CONTEXT_WINDOW: u32 = 32768;
 const DEFAULT_TEMPERATURE: f64 = 0.2;
+/// The one Vertex location every Gemini 3.x model is served from, and the one
+/// whose endpoint is *not* host-prefixed. See `vertex_base_url`.
+pub const GLOBAL_LOCATION: &str = "global";
+
 /// Vertex region used when the Google posture names a project but no location.
-/// Same default the embedder already carries, so one identity, one region.
-pub const DEFAULT_GOOGLE_LOCATION: &str = "us-central1";
+///
+/// `global`, not the embedder's region. Every Gemini 3.x flash model is served
+/// from `global` only: asking for `gemini-3.7-flash` (or 3.6, or 3.5) in
+/// `us-central1` returns `404 NOT_FOUND: Publisher model ... was not found or
+/// your project does not have access to it`, verified live 2026-08-31. The
+/// embedder keeps `us-central1` because `gemini-embedding-001` lives there —
+/// the two models are in different places, so this is deliberately not the
+/// same constant as the embedder's.
+pub const DEFAULT_GOOGLE_LOCATION: &str = GLOBAL_LOCATION;
 
 /// How the companion authenticates to its `/v1` endpoint.
 ///
@@ -47,10 +58,18 @@ pub enum CompanionAuth {
 /// It is a pure function of project and location, so an operator supplies
 /// those two facts and never a URL — one fewer thing to get subtly wrong in a
 /// hand-edited file. `chat_completions_url` appends `/chat/completions`.
+/// `global` is spelled differently from every region: the host is the bare
+/// `aiplatform.googleapis.com`, while a region prefixes it. The path carries
+/// `locations/global` either way. `https://global-aiplatform.googleapis.com`
+/// is not an API host at all — it answers 404 with an HTML body, checked live
+/// 2026-08-31 — so the prefix cannot simply be applied uniformly.
 pub fn vertex_base_url(project: &str, location: &str) -> String {
-    format!(
-        "https://{location}-aiplatform.googleapis.com/v1beta1/projects/{project}/locations/{location}/endpoints/openapi"
-    )
+    let host = if location == GLOBAL_LOCATION {
+        "aiplatform.googleapis.com".to_owned()
+    } else {
+        format!("{location}-aiplatform.googleapis.com")
+    };
+    format!("https://{host}/v1beta1/projects/{project}/locations/{location}/endpoints/openapi")
 }
 
 /// Optional companion credential. Debug and Display never print the value.

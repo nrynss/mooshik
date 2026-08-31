@@ -684,7 +684,7 @@ fn the_google_posture_is_reachable_from_the_cli_alone() {
     assert_eq!(config.companion.auth, crate::config::CompanionAuth::Google);
     assert_eq!(
         config.companion.resolved_base_url(),
-        crate::config::vertex_base_url("mooshik", "us-central1")
+        crate::config::vertex_base_url("mooshik", "global")
     );
     // No URL was ever typed, and the local default is still the file's
     // `base_url` — the derivation is what wins.

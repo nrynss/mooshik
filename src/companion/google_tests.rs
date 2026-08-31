@@ -96,10 +96,10 @@ fn the_google_posture_derives_its_endpoint_and_the_local_default_is_untouched() 
         base_url: "http://127.0.0.1:8080/v1".to_owned(),
         ..CompanionConfig::default()
     };
-    assert_eq!(google.resolved_google_location(), "us-central1");
+    assert_eq!(google.resolved_google_location(), "global");
     assert_eq!(
         google.resolved_base_url(),
-        vertex_base_url("mooshik", "us-central1")
+        vertex_base_url("mooshik", "global")
     );
     let with_region = CompanionConfig {
         google_location: Some("europe-west4".to_owned()),
@@ -108,6 +108,24 @@ fn the_google_posture_derives_its_endpoint_and_the_local_default_is_untouched() 
     assert_eq!(
         with_region.resolved_base_url(),
         vertex_base_url("mooshik", "europe-west4")
+    );
+}
+
+/// `global` is not a region and its endpoint is not spelled like one: the host
+/// is bare, while a region prefixes it. Both forms keep `locations/<loc>` in
+/// the path. Pinned because applying the prefix uniformly yields
+/// `https://global-aiplatform.googleapis.com`, which is not an API host — it
+/// answers 404 with an HTML body, and the companion would fail on every
+/// Gemini 3.x model, all of which are served only from `global`.
+#[test]
+fn the_global_endpoint_host_is_bare_and_a_region_is_prefixed() {
+    assert_eq!(
+        vertex_base_url("mooshik", "global"),
+        "https://aiplatform.googleapis.com/v1beta1/projects/mooshik/locations/global/endpoints/openapi"
+    );
+    assert_eq!(
+        vertex_base_url("mooshik", "us-central1"),
+        "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/mooshik/locations/us-central1/endpoints/openapi"
     );
 }
 

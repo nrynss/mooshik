@@ -21,6 +21,7 @@ from typing import Any
 
 from google.adk.agents import LlmAgent
 
+from .config import DEFAULT_MODEL
 from .extraction import PROMPT
 
 #: The one instruction the agent carries: chunk in, concepts out.
@@ -56,7 +57,7 @@ def record_concepts(concepts_json: str) -> str:
     return json.dumps({"derive": result})
 
 
-def build_agent(model: str = "gemini-2.5-flash") -> LlmAgent:
+def build_agent(model: str = DEFAULT_MODEL) -> LlmAgent:
     """The bootstrap ingester as an ADK LlmAgent."""
     return LlmAgent(
         name="bootstrap_ingester",

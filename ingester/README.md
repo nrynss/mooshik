@@ -35,12 +35,31 @@ pytest -q                                                  # offline seam tests
 | `INGEST_LAMBO_SERVE` | `mooshik serve` | writer command; a raw `lambo serve` also works |
 | `INGEST_SESSION` | `ingest-<hostname>` | session id for the MCP writes |
 | `INGEST_AGENT` | `bootstrap` | agent id recorded in the graph |
-| `INGEST_MODEL` | `gemini-2.5-flash` | Vertex extraction model |
+| `INGEST_MODEL` | `gemini-3.7-flash` | Vertex extraction model |
+| `INGEST_LOCATION` | `global` | Vertex region for extraction. **Not** `MOOSHIK_GEMINI_LOCATION` — see below |
 | `INGEST_CHUNK_CHARS` | `4000` | chunk budget (overlap disabled) |
 | `INGEST_SLEEP_SECS` | `0.5` | sleep between Vertex calls |
 | `INGEST_MAX_ATTEMPTS` | `4` | attempts before a 429 gives up (exponential backoff) |
 | `INGEST_STATE` | `.ingest/state.json` | checkpoint file (relative paths resolve against `--root`) |
-| `MOOSHIK_GEMINI_PROJECT` / `_LOCATION` / `_CREDENTIALS` | — | Vertex project, region, service-account json |
+| `MOOSHIK_GEMINI_PROJECT` / `_LOCATION` / `_CREDENTIALS` | — | Vertex project, region, service-account json. `_LOCATION` is the **embedder's** region and is not used for extraction |
+
+### Two models, two regions
+
+Extraction and embedding do not live in the same place, and the ingester keeps
+them apart on purpose.
+
+* **Extraction** runs `gemini-3.7-flash` at `INGEST_LOCATION=global`. Every
+  Gemini 3.x flash model is served from `global` only — requesting one in
+  `us-central1` returns `404 NOT_FOUND: Publisher model ... was not found or
+  your project does not have access to it`, verified live 2026-08-31 for
+  `gemini-3.5-flash`, `gemini-3.6-flash` and `gemini-3.7-flash`.
+* **Embedding** runs `gemini-embedding-001` at `MOOSHIK_GEMINI_LOCATION`
+  (`us-central1`), which the deploy also maps to `LAMBO_GEMINI_LOCATION`.
+
+So `INGEST_LOCATION` is deliberately **not** read from
+`MOOSHIK_GEMINI_LOCATION`. Pointing extraction at the embedder's region breaks
+it; pointing the embedder at `global` is a separate question this ingester does
+not answer.
 
 ## Ingest policy (non-negotiable)
 
@@ -235,6 +254,7 @@ gcloud run jobs create ingester --project mooshik --region us-central1 \
   --set-secrets=MOOSHIK_POSTGRES_DSN=ingest-dsn:latest,LAMBO_POSTGRES_DSN=ingest-dsn:latest \
   --set-env-vars=LAMBO_STORE=postgres,LAMBO_EMBEDDER=gemini,LAMBO_EMBED_DIM=1536,\
 MOOSHIK_GEMINI_PROJECT=nryn-personal,MOOSHIK_GEMINI_LOCATION=us-central1,\
+INGEST_LOCATION=global,INGEST_MODEL=gemini-3.7-flash,\
 LAMBO_GEMINI_PROJECT=nryn-personal,LAMBO_GEMINI_LOCATION=us-central1 \
   --max-retries 0
 
