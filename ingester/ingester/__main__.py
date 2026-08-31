@@ -9,7 +9,9 @@ import sys
 from pathlib import Path
 
 from .config import Settings
-from .extraction import ConceptExtractor, make_client
+from mooshik_common.vertex import make_client
+
+from .extraction import ConceptExtractor
 from .pipeline import ingest, plan
 from .writer import LamboMcpWriter
 
@@ -71,9 +73,9 @@ async def _async_main() -> int:
 
     extractor = ConceptExtractor(
         client=make_client(
-            settings.project,
-            settings.location,
-            settings.credentials_path,
+            project=settings.project,
+            location=settings.location,
+            credentials_path=settings.credentials_path,
         ),
         model=settings.model,
         sleep_secs=settings.sleep_secs,

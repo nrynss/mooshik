@@ -179,25 +179,21 @@ class GroundedBackend:
 
 
 def make_client(settings: Any) -> Any:
-    """Build the real `genai.Client` for these settings.
+    """Adapt these settings onto the shared `google-genai` construction.
 
-    Imported lazily so the offline suite never constructs one: the fake goes
-    straight into `GroundedBackend`, and nothing in the test path touches
-    credentials or auth libraries.
+    The construction itself lives in `mooshik_common.vertex` because the
+    ingester needs the identical thing; what stays here is only the mapping
+    from this server's settings object onto its arguments. That module keeps
+    the `google.genai` import lazy, which is what the offline suite relies on:
+    the fake goes straight into `GroundedBackend` and nothing in the test path
+    touches credentials or auth libraries.
     """
-    from google import genai
+    from mooshik_common.vertex import make_client as build
 
     if not settings.use_vertex:
-        return genai.Client(api_key=settings.api_key)
-
-    kwargs: dict[str, Any] = {"vertexai": True, "project": settings.project}
-    if settings.location:
-        kwargs["location"] = settings.location
-    if settings.credentials_path:
-        from google.oauth2 import service_account
-
-        kwargs["credentials"] = service_account.Credentials.from_service_account_file(
-            settings.credentials_path,
-            scopes=["https://www.googleapis.com/auth/cloud-platform"],
-        )
-    return genai.Client(**kwargs)
+        return build(api_key=settings.api_key)
+    return build(
+        project=settings.project,
+        location=settings.location,
+        credentials_path=settings.credentials_path,
+    )

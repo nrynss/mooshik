@@ -11,7 +11,8 @@ from ingester import walker
 from ingester.chunker import chunk_text
 from ingester.checkpoint import Checkpoint
 from ingester.config import Settings
-from ingester.extraction import ConceptExtractor, parse_concepts
+from mooshik_common.concepts import parse_concepts
+from ingester.extraction import ConceptExtractor
 from ingester.pipeline import (
     DocumentReport,
     Report,

@@ -18,25 +18,14 @@ milestone's ADK shape.
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 import time
-from dataclasses import dataclass
 
-from google import genai
+from mooshik_common.concepts import Concept, parse_concepts
 
 from .config import DEFAULT_MODEL
 
 log = logging.getLogger(__name__)
-
-CONCEPT_TYPES = frozenset(
-    {"entity", "logic", "constraint", "resource", "observation"}
-)
-
-#: Lambo rejects strings over this length; clamp defensively.
-MAX_CONCEPT_CHARS = 16_384
-MAX_CONCEPTS_PER_CHUNK = 64
 
 PROMPT = (
     "You extract durable memory concepts from workspace text.\n"
@@ -48,61 +37,6 @@ PROMPT = (
     "and boilerplate; each content string must stand alone without referring "
     "to 'this document' or 'the chunk'. Return [] when nothing qualifies."
 )
-
-
-@dataclass(frozen=True)
-class Concept:
-    content: str
-    concept_type: str
-
-
-def parse_concepts(raw: str) -> list[Concept]:
-    """Parse model output defensively into valid concepts."""
-    text = raw.strip()
-    fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
-    if fenced:
-        text = fenced.group(1)
-    start, end = text.find("["), text.rfind("]")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError("no JSON array in response")
-    payload = json.loads(text[start : end + 1])
-    if not isinstance(payload, list):
-        raise ValueError("response is not a JSON array")
-    concepts: list[Concept] = []
-    for entry in payload[:MAX_CONCEPTS_PER_CHUNK]:
-        if not isinstance(entry, dict):
-            continue
-        content = entry.get("content")
-        concept_type = entry.get("concept_type")
-        if not isinstance(content, str) or not content.strip():
-            continue
-        if concept_type not in CONCEPT_TYPES:
-            continue
-        concepts.append(Concept(content=content.strip()[:MAX_CONCEPT_CHARS], concept_type=concept_type))
-    return concepts
-
-
-def make_client(
-    project: str | None,
-    location: str | None,
-    credentials_path: str | None,
-) -> genai.Client:
-    """Vertex-mode client using the service account json from the env."""
-    kwargs: dict[str, object] = {}
-    if credentials_path:
-        from google.oauth2 import service_account
-
-        credentials = service_account.Credentials.from_service_account_file(
-            credentials_path,
-            scopes=["https://www.googleapis.com/auth/cloud-platform"],
-        )
-        kwargs["credentials"] = credentials
-    if project:
-        kwargs["project"] = project
-    if location:
-        kwargs["location"] = location
-    kwargs["vertexai"] = True
-    return genai.Client(**kwargs)
 
 
 class ConceptExtractor:

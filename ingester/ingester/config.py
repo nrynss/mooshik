@@ -12,15 +12,17 @@ import socket
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from mooshik_common.models import DEFAULT_LOCATION as COMMON_LOCATION
+from mooshik_common.models import DEFAULT_MODEL as COMMON_MODEL
+
 DEFAULT_EXTENSIONS = ".md,.markdown,.txt,.rst"
 DEFAULT_LAMBO_SERVE = "lambo serve"
-DEFAULT_MODEL = "gemini-3.7-flash"
-#: Extraction runs in `global`, not the embedder's region. Every Gemini 3.x
-#: flash model is served from `global` only — asking for one in us-central1
-#: returns 404 NOT_FOUND. Deliberately NOT read from MOOSHIK_GEMINI_LOCATION,
-#: which stays regional because lambo's embedder (gemini-embedding-001) is
-#: pinned there; the two models live in different places.
-DEFAULT_LOCATION = "global"
+#: Inference model and region both come from `mooshik_common.models`, which
+#: carries the reasoning: 3.x is served only from `global`, and
+#: MOOSHIK_GEMINI_LOCATION is the embedder's variable and must not be read
+#: here. `INGEST_LOCATION` overrides the region for this component alone.
+DEFAULT_MODEL = COMMON_MODEL
+DEFAULT_LOCATION = COMMON_LOCATION
 DEFAULT_CHUNK_CHARS = 4_000
 DEFAULT_SLEEP_SECS = 0.5
 DEFAULT_MAX_ATTEMPTS = 4

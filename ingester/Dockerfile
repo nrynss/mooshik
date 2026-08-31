@@ -56,6 +56,13 @@ COPY --from=mooshik-build /src/target/release/mooshik /usr/local/bin/mooshik
 
 WORKDIR /app
 
+# The shared package first: `ingester` declares mooshik-common as an exact
+# pin, and pip must find it already installed rather than reaching for an
+# index that has never heard of it. Copied and installed as its own layer so
+# a change to the ingester alone does not rebuild it.
+COPY mooshik-common ./mooshik-common
+RUN pip install --no-cache-dir ./mooshik-common
+
 COPY ingester/pyproject.toml ./
 COPY ingester/README.md ./
 COPY ingester/ingester ./ingester

@@ -23,6 +23,9 @@ import os
 from dataclasses import dataclass
 from typing import Mapping
 
+from mooshik_common.models import DEFAULT_LOCATION as COMMON_LOCATION
+from mooshik_common.models import DEFAULT_MODEL as COMMON_MODEL
+
 #: Gemini Developer API key. When set, the client runs in API-key mode and no
 #: project/location is needed. Secret: never logged, never echoed.
 API_KEY_ENV = "MOOSHIK_GEMINI_API_KEY"
@@ -45,8 +48,12 @@ TIMEOUT_ENV = "NEWS_TIMEOUT_SECS"
 MAX_CHARS_ENV = "NEWS_MAX_CHARS"
 LOG_LEVEL_ENV = "NEWS_LOG_LEVEL"
 
-DEFAULT_MODEL = "gemini-3.7-flash"
-DEFAULT_LOCATION = "global"
+#: Both come from `mooshik_common.models`, which carries the reasoning:
+#: Gemini 3.x is served only from `global` — which is also where Search
+#: grounding is served — and MOOSHIK_GEMINI_LOCATION is the embedder's
+#: variable, not an inference one.
+DEFAULT_MODEL = COMMON_MODEL
+DEFAULT_LOCATION = COMMON_LOCATION
 #: Per-call wall clock. Mooshik applies its own 60s bound per MCP call; this
 #: one is deliberately shorter so the server answers with a contained timeout
 #: message rather than letting the host's firebreak fire and show the model a

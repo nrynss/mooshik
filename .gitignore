@@ -21,6 +21,11 @@ mooshik.db*
 # Node sidecar / ADK ingester
 node_modules/
 __pycache__/
+# Python build artefacts. `pip install ./<pkg>` leaves these in the source
+# tree, and with four packages here they turn up wherever anyone installs one.
+*.egg-info/
+build/
+.pytest_cache/
 *.py[cod]
 .venv/
 venv/
