@@ -902,3 +902,110 @@ def test_drain_survives_stats_errors_and_still_times_out():
         assert writer.calls >= 1
 
     asyncio.run(scenario())
+
+
+# ------------------------------------------------------------------- adk ----
+# The milestone's ADK shape. `pipeline.py` drives `google-genai` directly (see
+# agent.py's header for why a Runner is the wrong fit for a deterministic map
+# over chunks), so nothing in the run path constructs the LlmAgent. These are
+# the tests that do — without them the ADK surface is unreachable code that no
+# run and no assertion ever touches, and the claim in agent.py's docstring that
+# it carries "the same instruction, the same model" is unchecked.
+
+
+@pytest.fixture
+def adk_writer():
+    """A FakeWriter installed in the agent's module-global writer slot.
+
+    `record_concepts` is a plain callable because ADK function tools must be,
+    so the writer reaches it through a module global rather than an argument.
+    Restore it or the fake leaks into every later test in the session.
+    """
+    from ingester import agent as agent_mod
+
+    previous = agent_mod._writer
+    writer = FakeWriter()
+    agent_mod.use_writer(writer)
+    try:
+        yield writer
+    finally:
+        agent_mod._writer = previous
+
+
+def test_the_adk_agent_carries_the_same_model_and_instruction_as_the_batch_path():
+    from ingester.agent import INGEST_INSTRUCTION, build_agent
+    from ingester.config import DEFAULT_MODEL
+    from ingester.extraction import PROMPT
+
+    agent = build_agent()
+
+    assert agent.name == "bootstrap_ingester"
+    # One constant, not a second literal that can drift from the batch path.
+    assert agent.model == DEFAULT_MODEL
+    assert agent.instruction == INGEST_INSTRUCTION
+    assert PROMPT in agent.instruction
+
+
+def test_the_adk_agent_takes_a_model_override():
+    from ingester.agent import build_agent
+
+    assert build_agent(model="gemini-3.5-flash").model == "gemini-3.5-flash"
+
+
+def test_adk_accepts_the_writer_bridge_as_a_function_tool():
+    """ADK wraps the plain callable, which is the half that can actually fail:
+    a tool whose signature or annotations it rejects raises at construction."""
+    import asyncio
+
+    from ingester.agent import build_agent
+
+    tools = asyncio.run(build_agent().canonical_tools())
+
+    assert [t.name for t in tools] == ["record_concepts"]
+    assert type(tools[0]).__name__ == "FunctionTool"
+
+
+def test_the_function_tool_writes_through_the_same_seam_as_the_pipeline(adk_writer):
+    from ingester.agent import record_concepts
+
+    source = "file:/tmp/note.md"
+    result = json.loads(
+        record_concepts(
+            json.dumps(
+                [
+                    {"source": source, "content": "alpha concept",
+                     "concept_type": "entity"},
+                    {"source": source, "content": "beta rule",
+                     "concept_type": "constraint"},
+                ]
+            )
+        )
+    )
+
+    assert "error" not in result
+    agent_id, concepts, parent_of = adk_writer.derives[0]
+    assert agent_id == "bootstrap"
+    assert concepts == [
+        {"content": "alpha concept", "concept_type": "entity"},
+        {"content": "beta rule", "concept_type": "constraint"},
+    ]
+    # Same provenance shape the batch path asserts above.
+    assert parent_of == [
+        {"parent": source, "child": "alpha concept"},
+        {"parent": source, "child": "beta rule"},
+    ]
+
+
+def test_the_function_tool_reports_a_missing_writer_instead_of_raising():
+    """ADK surfaces a tool's return value to the model; an exception escaping
+    a function tool aborts the turn instead of telling it what went wrong."""
+    from ingester import agent as agent_mod
+
+    previous = agent_mod._writer
+    agent_mod._writer = None
+    try:
+        result = json.loads(agent_mod.record_concepts("[]"))
+    finally:
+        agent_mod._writer = previous
+
+    assert result == {"error": "no writer configured"}
