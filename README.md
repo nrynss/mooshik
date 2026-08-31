@@ -1,11 +1,54 @@
 # Mooshik
 
-Mooshik is an ambient, local-first AI cowork partner and workspace orchestrator. It runs continuously alongside you as a peer. It holds lifelong memory of your workspace, researches the web, and connects to your tools over MCP. When you need heavy code edits, Mooshik delegates them to specialized coding agents.
+Mooshik is an ambient, local-first cowork partner that sits with you while you work. It runs in a terminal pane beside your editor, holds long-term memory across sessions, and acts on your behalf.
 
-- **Documentation:** [https://nrynss.github.io/mooshik/](https://nrynss.github.io/mooshik/)
-- **Authority Specification:** [docs/SPEC.md](docs/SPEC.md)
-- **Build Plan:** [dev-diary/PLAN.md](dev-diary/PLAN.md)
-- **License:** AGPLv3 (Application and Orchestration), Apache 2.0 (Lambo Memory Core)
+### [Read the documentation at nrynss.github.io/mooshik](https://nrynss.github.io/mooshik/)
+
+[Product Overview](https://nrynss.github.io/mooshik/overview/) ·
+[Quickstart](https://nrynss.github.io/mooshik/quickstart/) ·
+[Installation](https://nrynss.github.io/mooshik/installation/) ·
+[Guided Setup](https://nrynss.github.io/mooshik/guided-setup/) ·
+[Choosing a Posture](https://nrynss.github.io/mooshik/postures/) ·
+[The Pane](https://nrynss.github.io/mooshik/tui-overview/) ·
+[Lambo Memory](https://nrynss.github.io/mooshik/memory-and-lambo/) ·
+[CLI Reference](https://nrynss.github.io/mooshik/cli/)
+
+---
+
+## Why Mooshik exists
+
+Most AI assistants are stateless. You summon them for a prompt, they answer, and they forget the work.
+
+Mooshik stays open in your workspace. It observes your progress, tracks decisions across projects, and removes obstacles without breaking your focus.
+
+The name comes from ancient myth. Lambodaran (Ganesha) is the deity of intellect, memory, and the removal of obstacles. Mooshik is his companion and vahana, the mount that carries him into the world. The Sanskrit root *mus* means to extract and gather. Mooshik gathers context from your workspace and carries Lambo's memory into action.
+
+---
+
+## Mooshik and Lambo
+
+Mooshik separates memory from interaction by embedding [Lambo](https://nrynss.github.io/lambo) in-process.
+
+Lambo is a graph memory system for AI operations. It structures knowledge into entities, observations, and constraints. Concepts earn promotion through structural evidence and recurrence across time, rather than agent assertions. Lambo calculates blast radius to warn you when planned changes affect load-bearing decisions.
+
+Mooshik links Lambo directly in Rust. You choose between two storage backends:
+- **Local:** SQLite with local embeddings. No data leaves your machine.
+- **Shared:** PostgreSQL with pgvector. A desktop and laptop share one continuous memory.
+
+Read the [Lambo documentation](https://nrynss.github.io/lambo) for full scoring arithmetic and canonization details.
+
+---
+
+## What Mooshik does
+
+- **Watches your workspace.** Observes file edits and git commits in your project root. Records that changes occurred without storing raw file text in memory.
+- **Remembers across sessions.** Recalls past architecture choices, project conventions, and operational constraints by meaning.
+- **Converses in the pane.** Streams companion responses directly in a terminal interface.
+- **Researches the web.** Queries live sources through the news MCP server with cited Markdown output.
+- **Extracts multimodal artifacts.** Extracts typed concepts from screenshots and audio recordings through the artifacts MCP server.
+- **Runs sandboxed scripts.** Executes scratch Python or Bash snippets with timeouts and egress redaction.
+- **Connects external tools.** Aggregates standard MCP servers as child processes over stdio.
+- **Delegates code edits.** Hands large refactors to external coding agents under standing constraints from memory.
 
 ---
 
@@ -13,197 +56,141 @@ Mooshik is an ambient, local-first AI cowork partner and workspace orchestrator.
 
 ```mermaid
 graph TB
-    subgraph Clients ["Clients"]
-        TUI["Terminal UI (mooshik tui)"]
-        CLI["CLI Commands"]
+    subgraph UI ["Surfaces"]
+        TUI["Terminal Pane (mooshik tui)"]
+        CLI["CLI Commands (chat, recall, reflect)"]
     end
 
-    subgraph Core ["Mooshik Core Runtime"]
+    subgraph Core ["Mooshik Runtime"]
         Router["Event & Intent Router"]
-        Companion["Companion Adapter (/v1)"]
-        Scratch["Scratch Script Runner"]
-        MCPHost["MCP Client & Tool Aggregator"]
-        Watcher["Workspace & Git Watcher"]
+        Companion["Companion Adapter (Vertex AI / OpenAI /v1)"]
+        Watcher["Workspace Watcher"]
+        MCPHost["MCP Client Host"]
+        Runner["Scratch Sandbox Runner"]
     end
 
-    subgraph Memory ["Lambo Graph Memory Substrate"]
+    subgraph Memory ["Lambo Graph Memory"]
         Graph["In-Memory Concept Graph"]
-        WriteLane["WriteLane (Serialized Commits)"]
-        Seam["GraphStore Seam"]
+        WriteLane["WriteLane Serializer"]
+        StoreSeam["GraphStore Seam"]
     end
 
-    subgraph Vault ["Secret Vault"]
-        V[("Local Encrypted Vault")]
+    subgraph Security ["Security Boundaries"]
+        Vault[("Encrypted Local Vault")]
+        Grants["Permission Boundary"]
     end
 
-    subgraph Stores ["Persistent Stores"]
+    subgraph Storage ["Durable Stores"]
         SQLite[("Local SQLite")]
-        PG[("Shared Postgres")]
+        Postgres[("Cloud SQL Postgres + pgvector")]
     end
 
-    subgraph MCPServers ["External MCP Servers"]
-        News["News & Search Grounding"]
-        Artifacts["Multimodal Artifact Ingestion"]
-        Coder["Coding Contractor (Claude / OMP / Cursor / Antigravity)"]
-        Tools["Filesystem & Dev Tools"]
-    end
-
-    Clients <--> Core
-    Core --> Router
-    Router --> Vault
-    Core --> WriteLane --> Graph --> Seam --> Stores
+    UI <--> Core
+    Core --> Grants
+    Core --> Vault
     Core --> Watcher
-    MCPHost <--> MCPServers
-    Core -.->|Delegate Tasks| Coding["Coding Contractor Agent"]
+    Core --> WriteLane --> Graph --> StoreSeam --> Storage
+    MCPHost <--> Servers["News · Artifacts · Coder · External MCP"]
 ```
-
----
-
-## The Triad
-
-Mooshik separates memory, orchestration, and coding execution into three clear roles.
-
-| Role | Repository / Engine | Responsibility |
-| :--- | :--- | :--- |
-| **Mooshik** | `nrynss/mooshik` | Ambient awareness, fast local chat, research, MCP aggregation, and terminal UI. |
-| **Lambo** | `nrynss/lambo` | Living graph memory substrate, in-memory graph, write-behind, and vector recall. |
-| **Coding Contractor** | Delegated Agent | Surgical code edits in repositories under constraints provided by Lambo memory. |
 
 ---
 
 ## Installation
 
-### One-Line Shell Installer
+Install the prebuilt binary and Python MCP servers on x86_64 Linux or Apple Silicon macOS:
 
-Run this command in your terminal on x86_64 Linux or Apple Silicon macOS:
-
-```sh
+```bash
 curl -fsSL https://raw.githubusercontent.com/nrynss/mooshik/main/install.sh | sh
 ```
 
-The script installs two things, and they fail independently.
+The installer places the `mooshik` binary in `~/.local/bin`. It installs the Python MCP servers into `~/.local/share/mooshik/venv`.
 
-1. **The `mooshik` binary**, into `~/.local/bin`. Required. If this step fails, the whole install fails.
-2. **The three Python MCP servers** (`news`, `artifacts`, `coder`), into a virtualenv of their own at `~/.local/share/mooshik/venv`. Optional.
+On systems without Python 3.10+, the installer sets up the binary and explains how to add servers later.
 
-The virtualenv is not incidental. Mooshik pins its Python dependencies exactly (`mcp`, `google-genai`, `google-adk`), and exact pins in a shared `site-packages` silently break unrelated projects on the same machine. The virtualenv also gives each server a stable executable name. Your `~/.mooshik/config.toml` can then name `command = "~/.local/share/mooshik/venv/bin/mooshik-news-mcp"`, rather than an absolute path into a source checkout that a binary install never had.
+To build from source with Rust 1.97.1:
 
-The installer prints the exact `[mcp_servers.*]` block to paste, paths already filled in. Values under `[mcp_servers.*.env]` name vault **secrets**, they are not literal values. Store each one with `mooshik secret set <name>`.
-
-**Without Python 3.10 or newer**, the script still installs the binary and exits 0. It names the three servers you are missing and says what each one does. Install Python and re-run the same command to add them later. Re-running is safe: the installer upgrades a working virtualenv in place instead of rebuilding it.
-
-The Python step needs network access to PyPI. The release ships only Mooshik's own four packages. Pip resolves their third-party pins on your machine at install time.
-
-**The coder server contains no coding agent.** It shells out to one. You install and authenticate that CLI yourself, whichever one you name in the server's `--agent` argument (Claude Code, OMP, Cursor Agent CLI, or Antigravity).
-
-Overrides, all optional: `INSTALL_DIR`, `MOOSHIK_VENV_DIR`, `MOOSHIK_PYTHON`, `MOOSHIK_VERSION`, `MOOSHIK_SKIP_PYTHON=1`.
-
-### Build from Source
-
-Install Rust 1.97.1 using rustup.
-
-On Linux, install required D-Bus development headers:
-
-```sh
-sudo apt install libdbus-1-dev pkg-config
-```
-
-Build and test the binary:
-
-```sh
+```bash
 cargo build --release
-cargo test
-./target/release/mooshik --help
 ```
 
 ---
 
-## Quickstart
+## First run
 
-Initialize your Mooshik workspace:
+Run the interactive setup:
 
-```sh
+```bash
 mooshik init
 ```
 
-Open the terminal user interface:
+The setup asks for your deployment posture, storage configuration, embedder, and inference credentials. All secrets are read without terminal echo and stored in the encrypted vault.
 
-```sh
+Launch the terminal interface from your project parent directory:
+
+```bash
+cd ~/work
 mooshik tui
 ```
 
-Search your memory graph:
+Mooshik watches the directory where you launch it. Launching from a common parent directory allows the watcher to track multiple repositories efficiently.
 
-```sh
-mooshik recall "deployment checklist"
-```
-
-Consolidate memory and generate prose summaries:
-
-```sh
-mooshik reflect
-```
+See the [CLI Reference](https://nrynss.github.io/mooshik/cli/) for secondary commands like `mooshik recall`, `mooshik chat`, and `mooshik reflect`.
 
 ---
 
-## Core Capabilities
+## Security and privacy
 
-### Ambient Workspace Awareness
-The workspace watcher observes file modifications and git commits. It extracts durable concepts automatically while the terminal UI stays open. Live watching is currently Unix-only. On unsupported non-Unix platforms it fails closed at TUI startup. The watcher stops with the pane.
-
-### Terminal User Interface
-The terminal UI renders weekly logs, active threads, ribbons, and notes. It rebuilds the view model on every 250 millisecond tick.
-
-### Encrypted Local Secret Vault
-Mooshik stores credentials in an encrypted local vault. It redacts secrets before tool calls reach external models or processes.
-
-### Pre-Wire Secret Scanning
-The artifact extractor scans extracted text for credentials and tokens. It drops the entire document when it detects a secret.
-
-### Multimodal Artifact Ingestion
-The artifacts MCP server processes screenshots and audio recordings. It extracts structured decisions, relations, and values without polluting the graph with visual captions.
-
-### Coding Contractor Delegation
-The coder MCP server delegates heavy repository edits to specialized coding agents (Claude Code, OMP, Cursor Agent, or Antigravity / agy) without blocking the companion. Tasks run under standing constraints (`AGENTS.md`) written from the memory graph, and the workspace watcher observes the ambient results.
+- **Two separate stores.** Secrets live in an encrypted local vault at `~/.mooshik/vault`. Memory lives in the graph. The graph never stores secret values.
+- **Egress redaction.** Tool outputs and error strings are scanned against vault values before reaching models.
+- **Tool boundary grants.** Permissions are explicit grants in configuration. Memory read and write are allowed by default. Script execution prompts for confirmation. All other tools are denied by default.
+- **Immutable permissions.** Memory concepts cannot alter or expand tool permissions.
 
 ---
 
-## Storage and Embedder Postures
+## Built for the All Things Agentic Hackathon
 
-Mooshik supports two deployment postures through `~/.mooshik/config.toml`:
+Mooshik is built for the All Things Agentic Hackathon.
 
-| Posture | Store Kind | Embedder Kind | Requirements |
-| :--- | :--- | :--- | :--- |
-| **Local** | `sqlite` | `bge_m3` | Local llama.cpp server. No data leaves your machine. |
-| **Shared** | `postgres` | `gemini` | Postgres connection string and Vertex AI credentials. |
+### Compliance matrix
+
+| Category | Implementation | Verified source |
+| :--- | :--- | :--- |
+| **Gemini 3.5 or newer** | Companion runs `gemini-3.7-flash` on Vertex AI at the `global` location. Python servers use the same model default. | [`mooshik-common/mooshik_common/models.py`](mooshik-common/mooshik_common/models.py) |
+| **Google Agent Framework** | The bootstrap ingester uses Google ADK. The artifacts MCP server uses ADK `LlmAgent` for multimodal extraction. | [`ingester/agent.py`](ingester/agent.py), [`mcp-servers/artifacts/server.py`](mcp-servers/artifacts/server.py) |
+| **Google Cloud Infrastructure** | Cloud SQL PostgreSQL with pgvector acts as the shared cross-machine graph store. Cloud Run Jobs run the bootstrap ingester with Cloud SQL Auth Proxy. | [`ingester/README.md`](ingester/README.md), [`src/memory/ops.rs`](src/memory/ops.rs) |
+
+Veo and Lyria were dropped because Mooshik does not generate media assets. Gemma is not configured in the active runtime.
+
+### Measurement findings
+
+We tested the claim that canonization filters extraction hallucination without semantic ground truth. The measurement harness in [`measurement/`](measurement/) evaluated the live graph built by the bootstrap ingester.
+
+Results from milestone testing:
+- **Embedding coverage:** 59.3%. This triggered the sub-90% warning gate, showing recall relied heavily on keyword matching.
+- **Raw extraction precision:** 10/10, Wilson 95% interval [0.722, 1.000].
+- **Canonical promotions:** 0. The canonical pool was empty. Every true extraction was initially counted as rejected.
+
+The investigation revealed that Lambo's recurrence score requires evidence across distinct sessions over event time. The MCP wire protocol lacked an `event_time` field, causing historical commits spanning a decade to arrive with identical flush timestamps. Each concept appeared as a single session and failed the promotion threshold.
+
+We resolved this by adding an optional `event_time` to Lambo's derive API (commit `71334f0`) and updating the ingester to pass commit dates. `created_at` remains server-stamped to preserve security boundaries.
+
+### Submission checklist
+
+- **Reproducibility:** Follow the installation and `mooshik init` instructions above.
+- **Architecture diagram:** Included above.
+- **Repository:** [https://github.com/nrynss/mooshik](https://github.com/nrynss/mooshik)
+- **Hosted service:** Mooshik runs as a local binary and does not require a hosted web application.
 
 ---
 
-## CLI Reference
+## Status and roadmap
 
-| Command | Description |
-| :--- | :--- |
-| `mooshik init` | Creates home directory layout and configuration files. |
-| `mooshik tui` | Launches the interactive terminal user interface. |
-| `mooshik chat` | Starts a command-line conversation session. |
-| `mooshik recall <query>` | Searches the concept graph and returns relevant context. |
-| `mooshik stats` | Displays graph node counts and session health metrics. |
-| `mooshik reflect` | Runs consolidation and writes prose descriptions. |
-| `mooshik config show` | Displays active configuration with redacted secrets. |
-| `mooshik config set <key> <val>` | Updates a configuration setting. |
-| `mooshik configure coder --agent <name>` | Configures coding contractor MCP block and vault secrets. |
-| `mooshik secret set <name>` | Stores a secret in the encrypted local vault. |
-| `mooshik permissions` | Lists all tool permission grants. |
+- **Phase 1: Terminal (Shipped).** Rust core runtime, embedded Lambo graph memory, interactive TUI, workspace watcher, reflection engine, and MCP server ecosystem.
+- **Phase 2: Desktop (Roadmap).** Native desktop application with global summon hotkey, graph visualizer, and tray presence.
 
 ---
 
-## Documentation Site
+## Licensing
 
-Explore the full documentation in the `docs/` directory:
-
-- [Product Overview](docs/src/content/docs/overview.md)
-- [Installation & Releases](docs/src/content/docs/installation.md)
-- [System Architecture](docs/src/content/docs/system-overview.md)
-- [Memory & WriteLane Concurrency](docs/src/content/docs/writelane-concurrency.md)
-- [MCP Servers & Tools](docs/src/content/docs/mcp-host.md)
-- [CLI Reference](docs/src/content/docs/cli.md)
+- **Mooshik Application:** [AGPL-3.0](LICENSE)
+- **Lambo Memory Core:** [Apache-2.0](https://github.com/nrynss/lambo/blob/main/LICENSE)
