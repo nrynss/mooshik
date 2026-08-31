@@ -38,7 +38,7 @@ JOIN concepts d ON d.session_id = c.session_id
                AND d.id = e.source
 WHERE c.session_id = %s
   AND d.content LIKE 'document:%%'
-ORDER BY c.id
+ORDER BY c.id::text
 """
 
 REJECTED_POOL_SQL = """
@@ -58,7 +58,7 @@ JOIN concepts d ON d.session_id = c.session_id
 WHERE c.session_id = %s
   AND d.content LIKE 'document:%%'
   AND c.canonization_status <> 'Canonical'
-ORDER BY c.id
+ORDER BY c.id::text
 """
 
 CANONICAL_POOL_SQL = """
