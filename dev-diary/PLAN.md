@@ -65,8 +65,8 @@ the surface landed, so the data behind it became worth building.
 | **M12a** | Built 2026-08-30, `cf3dcbb`. `memory::view` reads the open graph into the view model: the week ending today, each day's log, the ribbon, what keeps coming back and what was just remembered, every placement resolved through `Interaction::about_time`. `mooshik tui` now holds the session for the length of the pane and closes it on the way out. Prose is deliberately unwritten — mood, gutter summaries, notes and a thread's reason are M12c's. Review rounds 2–6: **APPROVE**, zero residue (`m12a-round6.md`) — the graph's `-wal`/`-shm` claimed private, the scratch sandbox pinned 0700/0600 under a deterministic pin, signals restored after the session. See M12 below. |
 | **M12b** | Built 2026-08-31. The tick: the redraw loop rebuilds the view model every 250 ms, so a write from the ingester, an MCP client or the reflect pass appears in the open pane without a keystroke. R1-3's deferred guard-duration item landed: the graph is copied out from under one short guard and the build runs against the copy, pinned by a structural (`syn`) guard-duration pin and measured (release embedded ~29 ms at the 4k shape vs the 250 ms budget). Review rounds 1–8: **APPROVE**, zero residue within the documented limits (`m12b-round8.md`). |
 | **M12c** | Built 2026-08-31. `mooshik reflect [--dry-run]`: a one-shot consolidation pass that writes the prose M12a left empty — a day's mood, its four-words-a-line gutter summary, the trailing notes, and a thread's reason — as `mooshik-prose:` concepts the pane shows on the next tick, and merges the paraphrase twins into their strongest (loser content preserved, edges rerouted, audit row per cluster; re-runs are a true no-op). First-write-only by design. Review rounds 1–3: **APPROVE**, zero residue (`m12c-round3.md`). |
-| **M12d** | Not started. See the M12 section. |
-| **M12e** | Not started. The composer takes typing and `Enter` answers nothing; the pane cannot converse. See the M12 section. |
+| **M12d** | Not started. The seam it builds on landed in `ac4cfdc` (pane runtime, shared `Memory`, `WriteLane`). See the M12 section. |
+| **M12e** | Not started. The composer takes typing and `Enter` answers nothing; the pane cannot converse. Its three structural blockers are gone — the seam landed in `ac4cfdc`. See the M12 section. |
 | **M12f** | Not started. The memory reads `.md/.txt/.rst` and nothing else; every screenshot and recording in the workspace is invisible to it. See the M12 section. |
 
 Lambo pin: `nrynss/lambo` git `rev = 71334f0` (`lambo-for-mooshik`). E1/E2 (path dep, then rev pin) were done as the rev pin directly; bump the SHA after a Lambo fix.
@@ -701,7 +701,10 @@ a change to what feeds the model.
   them with a truncated log.
 * **M12d — the watcher.** Filesystem and git changes under the workspace, derived as they happen, so
   the memory is ambient rather than something the user has to remember to tell. This is the task
-  that makes the other three worth having.
+  that makes the other three worth having. It runs on the pane's runtime and stops when the pane
+  closes — see the daemon paragraph below. Its output reaches the screen through the graph and
+  M12b's tick, never through the view model, which is why **M12d touches no file under `src/tui/`
+  at all**: if it finds itself editing `app.rs` or the event loop, its design has gone wrong.
 
 * **M12e — the pane converses.** M11 shipped a composer whose `Enter` does nothing and M12a–d
   filled in everything around it: the pane draws the week, refreshes itself, and writes its own
@@ -733,23 +736,70 @@ machine when nobody asked it to. M12b's refresh happens inside the pane the user
 when they close it; M12c is a command they run; M12d watches for as long as something is open. If a
 daemon is ever wanted, it is its own milestone with its own argument.
 
-### What M12e has to move, and what it must not break
+### M12d — what to watch, and what a burst costs
 
-Three of these are structural — the rest are what makes the pane wrong rather than absent.
+**What it calls.** `pane.spawner().spawn(...)` for the watch loop, and around every write:
 
-**The single-writer lease is claimed twice.** `tools::executor_for_chat` opens its own `Memory` and
-takes the lease; `cli::tui_cmd` documents itself as an ordinary holder of the same lease and takes
-it for the length of the pane. Both cannot hold it. The tool-stack assembly — `MemoryTools::for_chat`,
-the `McpTools` layer, the grants wrapper — has to be separable from Memory acquisition so the pane
-builds the stack over the handle it already has open.
+```
+let _lane = pane.writes().enter().await;
+pane.memory().derive(...)
+```
 
-**The turn path must not own a runtime, and must never block.** `run_chat` builds a multi-thread
-runtime and `block_on`s the whole session. The 250 ms tick is the milestone M12b exists for; a turn
-that blocks the loop takes the product's one live behaviour with it.
+**Entering the lane is not optional.** Lambo does not serialize writers — see the concurrency note
+under M12e. Two writers race, a lost race re-runs the whole gather *including a fresh embedder
+round trip*, and past eight concurrent graph changes the derive fails outright. A watcher is the
+one component that can produce writes in bursts, so it is the one most able to trigger that.
 
-**Compose the session, do not reuse `run_chat`.** `run_chat_async` reads stdin with
-`AsyncBufReadExt` and writes stdout directly. `compose_session` is already extracted as a named seam
-for exactly this reason; it has to become reachable from `tui_cmd`.
+**Which makes debounce a correctness requirement, not a nicety.** A formatter on save, a `cargo
+build` touching a tree, a branch checkout: all of them fire tens of events in a moment. Undebounced,
+each becomes a derive, each derive costs an embedding call, and the pile races itself into the
+replan cap. Coalesce a burst into one derive before it reaches the lane.
+
+**Watch a workspace, not a filesystem.** The ingester walks an extension allowlist —
+`.md,.markdown,.txt,.rst` — for good reason, and a watcher without one derives binary churn.
+`target/`, `.git/`'s internals, `node_modules/` and the scratch sandbox must never be a source of
+memory. Note the asymmetry: `.git/` internals are noise, but a *commit* is one of the strongest
+signals available, carrying a message and a file list the user wrote deliberately.
+
+**Decide what a change derives, because it settles the secret question.** Deriving file *content*
+puts the watcher on the same footing as the ingester and it needs `secretscan.find_secret` with the
+same whole-document drop — a watched file is exactly as able to hold a token as an ingested one, and
+the pane path has no scanner today. Deriving *metadata* — that this file changed, that this commit
+landed, with this message — is a much smaller exposure and probably the better first answer. Either
+is defensible; shipping without choosing is not.
+
+**Event time is the change's, not the clock's.** A file save is genuinely now. A commit is not:
+carry its commit time, or a `git log` replayed on startup collapses history into this afternoon —
+the pathology `backdate.py` exists to prevent, arriving by a different route.
+
+**Depends on:** the seam (`ac4cfdc`), M2 for the graph, M12b for the tick that shows the result.
+**Done when:** work done in an editor and a commit made in a terminal both appear in the open pane
+with nothing typed into it.
+
+### M12e — what to move, and what not to break
+
+**The three structural problems are solved. The seam (`ac4cfdc`) did them, so this milestone
+calls rather than builds.** They are recorded here because the reasoning still governs what M12e
+may do — the lease was claimed twice (`executor_for_chat` opened its own `Memory` while `tui_cmd`
+held the lease); `run_chat` owned a runtime and `block_on`ed the session, which would take the
+250 ms tick with it; and `run_chat_async` owns stdin and stdout, which the pane owns.
+
+What M12e calls, all from `Pane` in `cli::tui_cmd` (private to that module — the milestone is
+driven from `live()`, and a crate-visible `Pane` would be a second way to name the lease):
+
+```
+let ChatStack { tools, notices } = pane.tools(&config, vault, confirm);
+pane.spawner().spawn(/* Session::turn */);
+let _lane = pane.writes().enter().await;   // around anything that derives
+```
+
+`spawner()` hands back a `Handle`, not a `&Runtime`, so nothing spawned can outlive the pane.
+`notices` are the assembly-time messages that used to be `eprintln!`s — render them, do not print
+them.
+
+**One line of plumbing is still M12e's own:** `compose_session` (`companion/chat.rs`) is a private
+`fn` and has to become `pub(crate)`. The seam deliberately left it — adding visibility with no
+consumer is speculative surface.
 
 **Nothing on the turn path may print — and there are far more than two.** The first draft of this
 section named the two `eprintln!` notices in `executor_for_chat`; building the seam found about
@@ -805,7 +855,8 @@ mid-poll does not wake it and the text grows in 250 ms steps. That reads as typi
 while a turn is in flight if it should feel closer to a real conversation, and restore it when the
 turn closes.
 
-**Depends on:** M12a for the view model, M12b for the tick, M3 for the session and its cancellation.
+**Depends on:** the seam (`ac4cfdc`), M12a for the view model, M12b for the tick, M3 for the
+session and its cancellation.
 **Done when:** a question typed into the pane streams its answer back into the pane, `Esc` stops it,
 and the memory it touches appears in the panels on the next tick. **Not required:** anything the
 `1e`/`1f`/`1g` artboards cover — those stay out of scope for the same reason M11 gave.
