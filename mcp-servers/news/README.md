@@ -164,7 +164,14 @@ on stderr, and any command-line argument is refused.
 ```bash
 cd mcp-servers/news
 python3 -m venv .venv && . .venv/bin/activate
-pip install -e ".[dev]"        # or: pip install mcp==2.1.1 google-genai==2.20.0 pytest==9.1.1
+pip install ../../mooshik-common   # shared package: an exact pin that is on
+                                   # no index, so it must go in FIRST. Mooshik
+                                   # spawns servers as a bare `python3 server.py`
+                                   # with no shell and no venv activation, so it
+                                   # must be installed in THAT interpreter or the
+                                   # server dies at startup with
+                                   # ModuleNotFoundError: mooshik_common
+pip install -e ".[dev]"            # or: pip install mcp==2.1.1 google-genai==2.20.0 pytest==9.1.1
 pytest -q
 ```
 

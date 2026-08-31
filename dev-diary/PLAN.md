@@ -841,8 +841,19 @@ the opposite shape — variable steps, a transcribe-then-extract path, and a rea
 whether anything durable happened at all. So M12f is the first place ADK is used because it fits
 rather than because it is on a requirements list.
 
-**Shape — and the server does NOT write.** A new `mcp-servers/artifacts/` copying the
-`mcp-servers/news/` scaffold, which is already a complete tested stdio server. Inside it an ADK
+**Shape — and the server does NOT write.** A new `mcp-servers/artifacts/` taking the *server
+shape* from `mcp-servers/news/` — `server.py`, `tools.py`, the error and redaction handling, the
+stdio wire tests — which is complete and tested. **Do not copy its config module.** The Vertex
+client construction, the model and location defaults, and the concept vocabulary all come from
+`mooshik-common`, which exists because copying those between packages is exactly how the same two
+defects reached both the ingester and the news server on 2026-08-31. Depend on it, declare the exact
+pin, and give this component its own `ARTIFACTS_LOCATION` override — never
+`MOOSHIK_GEMINI_LOCATION`, which belongs to the embedder.
+
+The dependency has a deployment consequence worth knowing before it bites: Mooshik spawns a server
+as a bare `python3 /abs/path/server.py`, with no shell and no virtualenv activation, so
+`mooshik-common` must be installed in *that* interpreter or the server dies at startup with
+`ModuleNotFoundError`. It is an exact pin on no index, so it is installed from the path, first. Inside it an ADK
 `LlmAgent` that **extracts and returns** typed concepts; Mooshik derives them through the in-process
 memory tools it already owns. This is the ingester's one pattern that must not be copied: the
 ingester writes through `LamboMcpWriter` because it runs standalone with its own session and its own

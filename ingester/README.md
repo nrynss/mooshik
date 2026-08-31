@@ -13,6 +13,9 @@ model, no SQLite.
 ```bash
 cd ingester
 python3 -m venv .venv && . .venv/bin/activate
+pip install ../mooshik-common  # shared package: declared as an exact pin,
+                               # not on any index. Install it first or the
+                               # import fails at startup.
 pip install -e ".[dev]"        # or: pip install mcp google-genai google-adk pytest
 
 # credentials (worktree .env): MOOSHIK_GEMINI_PROJECT / _LOCATION /
