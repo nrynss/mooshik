@@ -17,6 +17,8 @@ Mooshik is an ambient, local-first cowork partner that sits with you while you w
 [Lambo Memory](https://nrynss.github.io/mooshik/memory-and-lambo/) ·
 [CLI Reference](https://nrynss.github.io/mooshik/cli/)
 
+**Watch it work:** [video walkthrough](https://www.youtube.com/watch?v=cyvd39NISZk)
+
 ---
 
 ## Why Mooshik exists
