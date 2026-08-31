@@ -248,84 +248,29 @@ fi
 # --------------------------------------------------------------- report ----
 
 echo ""
-echo "Mooshik installed successfully to ${INSTALL_DIR}/mooshik."
+echo ""
+echo "Mooshik ${VERSION} installed."
+echo "    binary       ${INSTALL_DIR}/mooshik"
 
 if [ "$PY_STATUS" = "ok" ]; then
-    echo "MCP servers installed into ${VENV_DIR}:"
-    echo "    ${VENV_DIR}/bin/mooshik-news-mcp"
-    echo "    ${VENV_DIR}/bin/mooshik-artifacts-mcp"
-    echo "    ${VENV_DIR}/bin/mooshik-coder-mcp"
+    echo "    MCP servers  ${VENV_DIR}  (news, artifacts, coder)"
 else
     echo ""
-    echo "The Python MCP servers were NOT installed: ${PY_REASON}"
-    echo ""
-    echo "Mooshik itself works. What you do not have without them:"
-    echo "    news       web search and article grounding"
-    echo "    artifacts  screenshot and audio ingestion into memory"
-    echo "    coder      delegating repository edits to a coding agent"
-    echo ""
-    echo "To add them later, install Python 3.10 or newer and re-run:"
-    echo "    curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sh"
-    echo "Re-running is safe; it will not disturb the binary you already have."
+    echo "The MCP servers were not installed: ${PY_REASON}"
+    echo "Mooshik works without them. You lose web search, artifact ingestion,"
+    echo "and delegating edits to a coding agent. To add them later, install"
+    echo "Python 3.10 or newer and re-run this installer. Re-running is safe."
 fi
 
-echo ""
 case ":$PATH:" in
     *":$INSTALL_DIR:"*) ;;
     *)
-        echo "Note: ${INSTALL_DIR} is not in your PATH."
-        echo "Add it to your shell configuration:"
-        echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
         echo ""
+        echo "${INSTALL_DIR} is not on your PATH. Add it:"
+        echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
         ;;
 esac
 
-if [ "$PY_STATUS" = "ok" ]; then
-    cat <<EOF
-To wire the servers up, add this to ~/.mooshik/config.toml (run 'mooshik init'
-first if you have not). 'expose' is an allowlist -- a server with an empty one
-is never spawned. Values under [mcp_servers.*.env] are vault SECRET NAMES, not
-literal values; store each with 'mooshik secret set <name>'.
-
-[permissions]
-"mcp.news.*" = "prompt"
-"mcp.artifacts.*" = "prompt"
-"mcp.coder.*" = "prompt"
-
-[mcp_servers.news]
-command = "${VENV_DIR}/bin/mooshik-news-mcp"
-expose = ["search_news", "fetch_article"]
-
-[mcp_servers.news.env]
-# Vertex: store your project id under the secret name 'gemini-project'.
-# Developer API instead: swap this line for
-#   MOOSHIK_GEMINI_API_KEY = "gemini-api-key"
-MOOSHIK_GEMINI_PROJECT = "gemini-project"
-
-[mcp_servers.artifacts]
-command = "${VENV_DIR}/bin/mooshik-artifacts-mcp"
-expose = ["extract_concepts"]
-
-[mcp_servers.artifacts.env]
-MOOSHIK_GEMINI_PROJECT = "gemini-project"
-
-[mcp_servers.coder]
-command = "${VENV_DIR}/bin/mooshik-coder-mcp"
-# The agent name is an argument, not an env value: it is not a secret, and
-# everything in the env table below is read as a vault secret NAME. One of
-# claude, omp, cursor, agy.
-args = ["--agent", "claude"]
-expose = ["delegate", "check"]
-
-[mcp_servers.coder.env]
-ANTHROPIC_API_KEY = "anthropic-api-key"
-
-The coder server does not contain a coding agent. It shells out to one, so the
-CLI you name in --agent must be installed and authenticated separately
-(Claude Code, OMP, Cursor Agent CLI, or Antigravity).
-EOF
-    echo ""
-fi
-
-echo "Run 'mooshik init' to initialize your workspace."
-echo "Documentation: https://nrynss.github.io/mooshik/"
+echo ""
+echo "Next:  mooshik init"
+echo "Docs:  https://nrynss.github.io/mooshik/"

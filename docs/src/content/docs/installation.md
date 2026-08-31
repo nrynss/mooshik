@@ -41,7 +41,7 @@ command = "/home/you/.local/share/mooshik/venv/bin/mooshik-news-mcp"
 expose = ["search_news", "fetch_article"]
 ```
 
-The installer prints the full `[mcp_servers.*]` block for all three servers when it finishes, paths already substituted. Paste it into `~/.mooshik/config.toml`. Two things to note. `expose` is an allowlist, and Mooshik never spawns a server whose allowlist is empty. Values under `[mcp_servers.*.env]` name vault **secrets**, they are not literal values, so store each one with `mooshik secret set <name>`.
+The full block for all three servers is below. Two things to note before you paste it into `~/.mooshik/config.toml`. `expose` is an allowlist, and Mooshik never spawns a server whose allowlist is empty. Values under `[mcp_servers.*.env]` name vault **secrets**, they are not literal values, so store each one with `mooshik secret set <name>`.
 
 The equivalent path-addressable invocation from a source checkout keeps working, unchanged:
 
@@ -54,7 +54,7 @@ This step needs network access to PyPI. The release ships only Mooshik's own fou
 
 ### When Python is missing
 
-If the machine has no `python3`, or has one older than 3.10, the installer skips the servers. It still installs the binary, and **it exits 0**. It names the three servers you do not have and says what each of them does.
+If the machine has no `python3`, or has one older than 3.10, the installer skips the servers. It still installs the binary, and **it exits 0**. It says which capabilities you do not have.
 
 To add them later, install Python 3.10 or newer and run the same one-liner again. Re-running is safe. The installer reuses a virtualenv that still works and upgrades it in place, never rebuilding it, so a failed second run cannot cost you a working first one.
 
