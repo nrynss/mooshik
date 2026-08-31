@@ -36,6 +36,8 @@ jobs:
       # actions/configure-pages v5.0.0
       - name: Setup Pages
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b
+        with:
+          enablement: true
 
       - name: Install dependencies
         working-directory: docs
