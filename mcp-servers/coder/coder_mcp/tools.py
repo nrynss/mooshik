@@ -101,7 +101,7 @@ def build_server(backend: Any, *, timeout_secs: float = 10.0) -> MCPServer:
         name=SERVER_NAME,
         title="Mooshik coding contractor",
         instructions=SERVER_INSTRUCTIONS,
-        version="0.1.0",
+        version="0.2.0",
         log_level="WARNING",
     )
 

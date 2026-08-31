@@ -1,5 +1,9 @@
 # Mooshik
 
+[![CI](https://img.shields.io/github/actions/workflow/status/nrynss/mooshik/ci.yml?branch=main&label=ci&logo=github)](https://github.com/nrynss/mooshik/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/nrynss/mooshik?label=release&logo=github&color=%230EA5E9)](https://github.com/nrynss/mooshik/releases/latest)
+[![License](https://img.shields.io/github/license/nrynss/mooshik?color=%2316A34A&label=license)](LICENSE)
+
 Mooshik is an ambient, local-first cowork partner that sits with you while you work. It runs in a terminal pane beside your editor, holds long-term memory across sessions, and acts on your behalf.
 
 ### [Read the documentation at nrynss.github.io/mooshik](https://nrynss.github.io/mooshik/)

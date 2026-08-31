@@ -1,6 +1,6 @@
 [project]
 name = "mooshik-coder-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "Mooshik coding contractor MCP server: delegate code changes to coding agents over stdio."
 requires-python = ">=3.10"
 dependencies = [
@@ -11,7 +11,7 @@ dependencies = [
     # No google-genai: this server spawns external agents (Claude Code, OMP,
     # Cursor Agent CLI, Antigravity CLI) rather than calling Gemini itself.
     # The only SDK dependency is MCP for the stdio wire.
-    "mooshik-common==0.1.0",
+    "mooshik-common==0.2.0",
     "mcp==2.1.1",
 ]
 

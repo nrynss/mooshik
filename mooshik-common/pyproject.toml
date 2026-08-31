@@ -1,6 +1,6 @@
 [project]
 name = "mooshik-common"
-version = "0.1.0"
+version = "0.2.0"
 description = "Shared ground for Mooshik's Python components: Vertex client, model/location defaults, concept vocabulary."
 requires-python = ">=3.10"
 dependencies = [

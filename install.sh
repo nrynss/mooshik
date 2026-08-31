@@ -216,7 +216,7 @@ install_python_servers() {
         fi
     fi
 
-    # --find-links so that mooshik-common==0.1.0 -- a dependency of all three
+    # --find-links so that mooshik-common -- a dependency of all three
     # servers and a package that exists on no index -- resolves from the bundle
     # rather than being hunted for on PyPI. The servers' third-party pins
     # (mcp, google-genai, google-adk) do come from PyPI, so this step needs

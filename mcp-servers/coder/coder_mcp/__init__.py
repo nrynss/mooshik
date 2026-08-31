@@ -16,4 +16,4 @@ working. Nothing has to marshal a diff back through a tool call.
 
 __all__ = ["__version__"]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

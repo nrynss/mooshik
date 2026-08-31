@@ -28,7 +28,7 @@ def build_server(backend: Any, timeout_secs: float = 45.0) -> MCPServer:
         name=SERVER_NAME,
         title="Mooshik artifacts extraction",
         instructions=SERVER_INSTRUCTIONS,
-        version="0.1.0",
+        version="0.2.0",
         log_level="WARNING",
     )
 
