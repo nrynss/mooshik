@@ -314,6 +314,7 @@ fn the_production_composition_redacts_secrets_behaviorally() {
         Arc::new(Echo(format!("leak: {VALUE}"))),
         Some(vault),
         grants,
+        None,
     );
     assert_eq!(
         executor.execute(
@@ -707,4 +708,110 @@ async fn lambo_err_returns_the_fixed_notice_not_the_lambo_display() {
     );
     assert_eq!(out, expected, "{out}");
     assert!(!out.contains("m7p4ssw0rd"), "{out}");
+}
+
+// --- M12d/M12e seam pins: assembly separated from acquisition --------------
+
+#[test]
+fn the_cli_still_prints_its_notices_to_stderr() {
+    // Separating assembly from acquisition must not change what `mooshik chat`
+    // does. The CLI owns its terminal, stderr is where a notice belongs there,
+    // and both notices stay prints on that path.
+    let production = include_str!("mod.rs").split("#[cfg(test)]").next().unwrap();
+    let factory = production
+        .split("pub fn executor_for_chat")
+        .nth(1)
+        .expect("executor_for_chat must exist")
+        .split("\n/// A composed tool stack")
+        .next()
+        .unwrap();
+    for notice in ["tools.vault_unavailable", "tools.chat_memory_unavailable"] {
+        assert!(
+            factory.contains(&format!(r#"eprintln!("{{}}", text::get("{notice}"))"#)),
+            "the CLI path must still print {notice}: {factory}"
+        );
+    }
+}
+
+#[test]
+fn the_over_an_open_handle_factory_never_prints_and_never_opens() {
+    // The pane's path: under the alternate screen a print corrupts the frame,
+    // and a second `Memory` is a second claim on a lease this process already
+    // holds. Both are absences, so both are pinned by source.
+    let production = include_str!("mod.rs").split("#[cfg(test)]").next().unwrap();
+    let factory = production
+        .split("pub fn executor_over_memory")
+        .nth(1)
+        .expect("executor_over_memory must exist")
+        .split("\n/// The sibling factory")
+        .next()
+        .unwrap();
+    for forbidden in ["eprintln!", "print!", "open_memory", "crate::memory::open"] {
+        assert!(
+            !factory.contains(forbidden),
+            "the pane path must not use {forbidden}: {factory}"
+        );
+    }
+    assert!(
+        factory.contains("compose_chat_stack(composite, vault, grants, Some(confirm))"),
+        "the pane path must build the SAME stack, with the caller's confirm: {factory}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_pane_path_asks_the_caller_rather_than_stdin() {
+    // A gate reading stdin while ratatui owns the terminal hangs the pane with
+    // no way out. The caller's answer is the only one this path takes.
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&asked);
+    let config = Config::from_toml_and_env("[permissions]\nscratch = 'prompt'\n", []).unwrap();
+    let stack = super::executor_over_memory(
+        &config,
+        None,
+        Arc::new(fixture_memory().await),
+        crate::memory::WriteLane::new(),
+        Box::new(move |_| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            false
+        }),
+    );
+    assert_eq!(
+        stack.tools.execute(
+            TOOL_SCRATCH,
+            &json!({ "language": "bash", "code": "echo hi" })
+        ),
+        crate::text::get("permissions.denied"),
+        "the caller's refusal must be the answer"
+    );
+    assert_eq!(
+        asked.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the gate must ask the caller exactly once"
+    );
+}
+
+#[test]
+fn a_derive_holds_the_write_lane_for_the_whole_call() {
+    // The lane exists because lambo's writers gate is a READ permit and its
+    // hybrid derive resolves races by replanning — embedder call included —
+    // with a finite budget. Entering it and releasing before the await would
+    // buy nothing, so the guard has to outlive the derive it wraps.
+    let production = include_str!("mod.rs").split("#[cfg(test)]").next().unwrap();
+    let body = production
+        .split("fn run_derive")
+        .nth(1)
+        .expect("run_derive must exist")
+        .split("\n    fn run_stats")
+        .next()
+        .unwrap();
+    let entered = body
+        .find("let _lane = writes.enter().await;")
+        .unwrap_or_else(|| panic!("run_derive must enter the lane: {body}"));
+    let derived = body
+        .find("memory.derive(&concepts, &parent_of).await")
+        .unwrap_or_else(|| panic!("run_derive must derive: {body}"));
+    assert!(
+        entered < derived,
+        "the lane must be entered before the derive it guards: {body}"
+    );
 }

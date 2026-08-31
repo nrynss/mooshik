@@ -10,7 +10,7 @@ mod reflect;
 mod resolve;
 pub mod view;
 
-pub use ops::{open, provision, recall, serve, serve_plan, stats, ServePlan};
+pub use ops::{open, provision, recall, serve, serve_plan, stats, ServePlan, WriteLane};
 pub use reflect::{
     plan_reflect, prose_for_day, read_prose_for_view, reason_for_thread, run_reflect, DayProse,
     FixtureReflector, ProseConcept, ProseIndex, ReflectError, ReflectOutcome, Reflector,

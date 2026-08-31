@@ -24,6 +24,7 @@ use std::time::Duration;
 
 use crate::companion::{NoopExecutor, RecallInjector, ToolExecutor, ToolSpec};
 use crate::config::{Config, Grants};
+use crate::memory::WriteLane;
 use crate::text;
 use crate::vault::SharedVault;
 
@@ -130,6 +131,11 @@ pub struct MemoryTools {
     /// kills the daemon and nothing ever persists. Kept alive here so
     /// [`Drop::drop`] drives a graceful close on the same runtime.
     owner: Option<tokio::runtime::Runtime>,
+    /// Held across every `derive` this executor performs, so a caller sharing
+    /// `mem` with a second writer can hand both the same lane. See
+    /// [`WriteLane`] for why lambo does not do this itself. On the chat path
+    /// there is only one writer and the lane is never contended.
+    writes: WriteLane,
 }
 
 impl Drop for MemoryTools {
@@ -156,35 +162,65 @@ impl MemoryTools {
             Arc::new(MemoryTools {
                 mem: Arc::new(memory),
                 worker: ToolRuntime::new(),
-                // M5: the permission gate ([`GatedTools`]) owns prompting at
-                // the boundary; this inner seam is held open so a prompt-mode
-                // grant asks the user exactly once.
-                scratch: ScratchConfig {
-                    secret_env: config
-                        .tools
-                        .scratch
-                        .env
-                        .iter()
-                        .map(|(var, name)| (var.clone(), name.clone()))
-                        .collect(),
-                    ..ScratchConfig::always_confirmed()
-                },
+                scratch: Self::chat_scratch(config),
                 owner: Some(owner),
                 vault,
+                writes: WriteLane::new(),
             }) as Arc<dyn ToolExecutor>
         })
+    }
+
+    /// The scratch seam every *chat-shaped* surface installs — the CLI's
+    /// session and the pane's alike.
+    ///
+    /// M5: the permission gate ([`GatedTools`]) owns prompting at the boundary;
+    /// this inner seam is held open so a prompt-mode grant asks the user
+    /// exactly once. It is a function rather than two literals because the pane
+    /// needs the identical configuration and a second copy is a second chance
+    /// for one of them to regress to `ScratchConfig::default()` and
+    /// double-prompt with nobody noticing.
+    fn chat_scratch(config: &Config) -> ScratchConfig {
+        ScratchConfig {
+            secret_env: config
+                .tools
+                .scratch
+                .env
+                .iter()
+                .map(|(var, name)| (var.clone(), name.clone()))
+                .collect(),
+            ..ScratchConfig::always_confirmed()
+        }
     }
 
     /// Build an executor over an already-open `Memory` (used by tests with a
     /// fixture memory, and by callers that own their own open). The caller
     /// keeps responsibility for closing that memory.
     pub fn from_memory(memory: Memory) -> Self {
+        Self::over(Arc::new(memory), WriteLane::new())
+    }
+
+    /// [`MemoryTools::from_memory`] for a caller that already **shares** its
+    /// handle — the pane, which holds one `Memory` and one lease for the length
+    /// of the session and writes through it from more than one task.
+    ///
+    /// Two things `from_memory` cannot express and this can: the handle arrives
+    /// as an `Arc` because the owner keeps its own reference, and the write lane
+    /// arrives from outside because the owner's *other* writer has to take the
+    /// same one. `owner` stays `None` either way — the caller closes, and the
+    /// pane's close is ordered against putting the terminal back.
+    ///
+    /// Rejected: making `from_memory` take `Arc<Memory>` and a lane. It has a
+    /// dozen call sites in tests whose whole point is a throwaway fixture
+    /// memory with nothing to share it with, and every one would have grown two
+    /// arguments that mean "no, and no".
+    pub fn over(memory: Arc<Memory>, writes: WriteLane) -> Self {
         Self {
-            mem: Arc::new(memory),
+            mem: memory,
             worker: ToolRuntime::new(),
             scratch: ScratchConfig::default(),
             owner: None,
             vault: None,
+            writes,
         }
     }
 
@@ -325,6 +361,7 @@ impl MemoryTools {
             .collect();
 
         let memory = self.mem.clone();
+        let writes = self.writes.clone();
         let result = self.worker.run(
             move |rt| {
                 let concepts: Vec<(&str, ConceptType)> = contents
@@ -341,7 +378,14 @@ impl MemoryTools {
                 } else {
                     ParentOf::from_pairs(&pairs)
                 };
-                rt.block_on(async move { memory.derive(&concepts, &parent_of).await })
+                // The lane is entered INSIDE the bounded wait, not around it:
+                // waiting for another writer is part of the 60s a tool call is
+                // allowed to take, so a busy lane times out as a tool timeout
+                // rather than stalling the caller past its own budget.
+                rt.block_on(async move {
+                    let _lane = writes.enter().await;
+                    memory.derive(&concepts, &parent_of).await
+                })
             },
             LAMBO_CALL_WAIT,
         );
@@ -514,7 +558,78 @@ pub fn executor_for_chat(config: &Config, vault: Option<SharedVault>) -> Arc<dyn
         vault.clone(),
     ));
     let composite: Arc<dyn ToolExecutor> = Arc::new(CompositeTools::new(inner, mcp));
-    compose_chat_stack(composite, vault, grants)
+    compose_chat_stack(composite, vault, grants, None)
+}
+
+/// A composed tool stack and the notices assembling it produced.
+///
+/// [`executor_for_chat`] writes its notices to stderr because the CLI owns the
+/// terminal and stderr is where a notice belongs. Under ratatui's alternate
+/// screen there is no such place: any write to stdout or stderr lands inside
+/// the frame and corrupts it. So on the path a pane uses, a notice is a value
+/// and the caller decides where it goes — into the view model, in the pane's
+/// case.
+///
+/// Rejected: a callback the factory calls with each notice. It puts the
+/// decision back at assembly time, which is exactly where it does not belong —
+/// and it is harder to test than a `Vec` a caller can assert on.
+pub struct ChatStack {
+    pub tools: Arc<dyn ToolExecutor>,
+    /// Rendered sentences from `en.toml`, in the order assembly produced them.
+    /// Empty is the ordinary case.
+    pub notices: Vec<String>,
+}
+
+/// [`executor_for_chat`] for a caller that has **already opened** `Memory` and
+/// holds the single-writer lease itself.
+///
+/// This is the half of `executor_for_chat` that is not memory acquisition. The
+/// pane takes the lease for the length of the session and documents itself as
+/// an ordinary holder of it; `executor_for_chat` opens a `Memory` of its own,
+/// and the two cannot both be true in one process — the second open is refused
+/// with Mooshik's own conflict sentence. So the composition is separated from
+/// the open rather than duplicated: both paths build **the same stack**, in the
+/// same documented order, through [`compose_chat_stack`].
+///
+/// What the caller supplies that the CLI does not:
+///
+/// * `memory` and `writes` — the handle it already owns, and the lane its
+///   *other* writer takes, so two tasks writing through one handle do not race
+///   each other through lambo's optimistic replan (see [`WriteLane`]).
+/// * `confirm` — because the default gate prompt reads **stdin**, and a gate
+///   reading stdin while ratatui owns the terminal hangs the pane with no way
+///   out. It is a required parameter, not an `Option`: a caller on this path
+///   has to have decided, and a default that hangs is not a default.
+///
+/// There is no `Memory` fallback here. `executor_for_chat` degrades to
+/// [`NoopExecutor`] when its open fails; a caller on this path has an open
+/// handle in its hand, so the case does not exist.
+pub fn executor_over_memory(
+    config: &Config,
+    vault: Option<SharedVault>,
+    memory: Arc<Memory>,
+    writes: WriteLane,
+    confirm: Confirm,
+) -> ChatStack {
+    let mut notices = Vec::new();
+    if vault.is_none() {
+        notices.push(text::get("tools.vault_unavailable").to_owned());
+    }
+    let grants = config.permissions.grants();
+    let inner: Arc<dyn ToolExecutor> = Arc::new(
+        MemoryTools::over(memory, writes)
+            .with_vault(vault.clone())
+            .with_scratch(MemoryTools::chat_scratch(config)),
+    );
+    let mcp = Arc::new(crate::mcp_host::McpTools::from_config(
+        config,
+        vault.clone(),
+    ));
+    let composite: Arc<dyn ToolExecutor> = Arc::new(CompositeTools::new(inner, mcp));
+    ChatStack {
+        tools: compose_chat_stack(composite, vault, grants, Some(confirm)),
+        notices,
+    }
 }
 
 /// The sibling factory to [`executor_for_chat`]: the [`RecallInjector`] the
@@ -540,13 +655,25 @@ pub fn recall_for_chat(config: &Config, tools: Arc<dyn ToolExecutor>) -> Arc<dyn
 /// redaction. Extracted as a named seam so dropping [`RedactingTools`] — or
 /// reordering gate/redaction — is caught by driving this function, not only
 /// by reading its source.
+/// `confirm` is how a prompted grant asks. `None` is the CLI's answer — the
+/// interactive stdin prompt [`GatedTools`] installs for itself — and `Some` is
+/// for a caller that owns the terminal and cannot let anything read stdin
+/// behind its back. It is threaded through this one seam rather than given a
+/// second composition function, because two compositions is how the gate ends
+/// up in front of one of them and behind the other.
 fn compose_chat_stack(
     inner: Arc<dyn ToolExecutor>,
     vault: Option<SharedVault>,
     grants: Grants,
+    confirm: Option<Confirm>,
 ) -> Arc<dyn ToolExecutor> {
     let redacting = Arc::new(RedactingTools::new(inner, vault));
-    Arc::new(GatedTools::new(redacting, grants))
+    // Spelled out per arm rather than `Arc::new(gated.maybe_confirm(..))`, so
+    // the wrap order is legible — and pinnable — as one expression either way.
+    match confirm {
+        Some(confirm) => Arc::new(GatedTools::new(redacting, grants).with_confirm(confirm)),
+        None => Arc::new(GatedTools::new(redacting, grants)),
+    }
 }
 
 fn open_memory(config: &Config) -> Option<(tokio::runtime::Runtime, Memory)> {

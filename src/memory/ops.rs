@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use lambo::{mcp::ServeOptions, Memory, MemoryStats, RecallQuery, RecallResult};
 
 use super::{
@@ -5,6 +7,61 @@ use super::{
     MemoryError,
 };
 use crate::config::Config;
+
+/// One in-process writer at a time on a shared [`Memory`] handle.
+///
+/// **Lambo does not serialize concurrent writes on one handle, deliberately.**
+/// Its "writers gate" is an `AsyncRwLock` whose *read* side every mutating
+/// method takes, so N writers hold it at once; the write side belongs to
+/// `Memory::close`, and excluding a close is the whole job it was given.
+/// Concurrency between writers is instead handled optimistically inside
+/// `hybrid::derive`: plan under a brief read lock, embed and query candidates
+/// with **no lock held across the await**, then commit under the write lock
+/// only if the graph epoch has not moved. Lambo's own comment is explicit that
+/// this is by design — "correctness does not depend on every writer
+/// participating in a private mutex".
+///
+/// That makes concurrent writes *safe*. It does not make them *free*, and it
+/// does not make them *certain*:
+///
+/// * Every `derive` opens an interaction first, which bumps the epoch. So two
+///   writers on one handle genuinely invalidate each other rather than merely
+///   appearing to.
+/// * A lost race re-runs the whole gather, **embedder call included**. Against
+///   a network embedder that is a fresh round trip per replan.
+/// * The replan budget is finite. Past it the call fails, and the caller gets a
+///   backend error for nothing but contention.
+///
+/// So the lane is Mooshik's, at the one place two writers exist: the pane holds
+/// a single handle that the watcher and the conversation both write through.
+/// Two writers is exactly the case that is trivial to exclude and pointless to
+/// pay for.
+///
+/// **A `tokio` mutex, not `parking_lot`.** A derive is held across an `.await`
+/// — that await *is* the embedder round trip this exists to stop replaying —
+/// which a `parking_lot` guard may never cross.
+///
+/// **Not a substitute for the lease.** The lease is what keeps a second
+/// *process* off the session; this keeps two tasks in *one* process off each
+/// other. Neither replaces the other, and a handle without the lane is still
+/// correct — only slower and more fallible under contention.
+#[derive(Clone, Default)]
+pub struct WriteLane(Arc<tokio::sync::Mutex<()>>);
+
+impl WriteLane {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Wait for the lane, and hold it until the guard is dropped.
+    ///
+    /// The guard has to live across the whole write, not just its start: a
+    /// permit released before the commit phase would let the next writer bump
+    /// the epoch under the first one and buy nothing.
+    pub async fn enter(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.0.lock().await
+    }
+}
 
 /// Open an in-process [`Memory`] for the configured session.
 ///

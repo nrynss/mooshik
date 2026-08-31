@@ -486,6 +486,7 @@ mod tests {
             Canned::new(result_json(&[&format!("the token is {VALUE}")], "")),
             Some(vault),
             config.permissions.grants(),
+            None,
         );
         let recall = super::super::recall_for_chat(&config, stack);
         let injected = recall
