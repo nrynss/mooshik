@@ -63,6 +63,8 @@ the surface landed, so the data behind it became worth building.
 | **M10** | Built 2026-08-26, `2bc5665` → `f50765f`. Review round 2 **APPROVE**, zero residue (`m10-round2.md`). MCP host: configured servers, vault-ref env, `mcp.<server>.<tool>` naming, gate+redaction integrated, live-verified against real `lambo serve`. |
 | **M11** | Built 2026-08-27, `m11-tui`. The surface is built; the data behind it is not — Today, the week and an 80x24 narrow layout draw from one view model, the `1i` palette rules are enforced in code and held by cross-screen tests, and `--demo` opens no database. Still allowed to fail: no capability lives only here. See M11 below. |
 | **M12a** | Built 2026-08-30, `cf3dcbb`. `memory::view` reads the open graph into the view model: the week ending today, each day's log, the ribbon, what keeps coming back and what was just remembered, every placement resolved through `Interaction::about_time`. `mooshik tui` now holds the session for the length of the pane and closes it on the way out. Prose is deliberately unwritten — mood, gutter summaries, notes and a thread's reason are M12c's. Review rounds 2–6: **APPROVE**, zero residue (`m12a-round6.md`) — the graph's `-wal`/`-shm` claimed private, the scratch sandbox pinned 0700/0600 under a deterministic pin, signals restored after the session. See M12 below. |
+| **M12b** | Built 2026-08-31. The tick: the redraw loop rebuilds the view model every 250 ms, so a write from the ingester, an MCP client or the reflect pass appears in the open pane without a keystroke. R1-3's deferred guard-duration item landed: the graph is copied out from under one short guard and the build runs against the copy, pinned by a structural (`syn`) guard-duration pin and measured (release embedded ~29 ms at the 4k shape vs the 250 ms budget). Review rounds 1–8: **APPROVE**, zero residue within the documented limits (`m12b-round8.md`). |
+| **M12c / M12d** | Not started. Deferred by the operator on 2026-08-31; the build stops after M12b. See the M12 section. |
 
 Lambo pin: `nrynss/lambo` git `rev = 71334f0` (`lambo-for-mooshik`). E1/E2 (path dep, then rev pin) were done as the rev pin directly; bump the SHA after a Lambo fix.
 
@@ -683,7 +685,11 @@ a change to what feeds the model.
   the view model on that tick instead of once at startup, so a write from anywhere else — the
   ingester, an MCP client, the reflect pass — appears in the pane the user left open without a
   keystroke. The cost of a rebuild against a session-sized graph is the thing to measure first;
-  M12a's builder is one pass over interactions and one over concepts, on purpose.
+  M12a's builder is one pass over interactions and one over concepts, on purpose. The rebuild also
+  closes R1-3's deferred guard-duration item: the whole pass used to run under one read guard, and
+  at a 250ms cadence that would starve a writer. The graph is now copied out from under one short
+  guard and the build runs against the copy — pinned by the guard-duration pins in
+  `view_session_tests.rs` and measured with the copy in `view_tick_tests.rs`.
 * **M12c — `mooshik reflect`.** A one-shot consolidation pass over the session. It writes the prose
   M12a deliberately leaves empty — how a day felt, its four-words-a-line gutter summary, the
   trailing notes on its detail pane, and why a thread sits where it does — and consolidates the
