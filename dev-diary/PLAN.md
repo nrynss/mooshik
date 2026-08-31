@@ -69,6 +69,7 @@ the surface landed, so the data behind it became worth building.
 | **M12e** | Built 2026-08-31, `49a504d` → `d5c5909`. `Enter` runs `Session::turn` on the pane runtime; tokens drain into the conversation; in-flight `Esc` cancels without quitting; a failed turn renders as a turn. Prompt-class tools denied on the pane path (stdin would hang). Execute-time diagnostics go through a sink, not `eprintln!`. Review rounds 1–2: **APPROVE**, zero residue (`m12e-round2.md`). See the M12 section. |
 | **M12f** | Built 2026-08-31. `mcp-servers/artifacts/`: an MCP server that extracts typed concepts from screenshots and audio recordings using ADK `LlmAgent` + Gemini 3.7 Flash at `global`, returning them over stdio for Mooshik to derive in-process. Whole-document secret scanning (pattern + vault values) runs before concepts cross the wire. Uses `mooshik-common` for model defaults, Vertex client, and concept vocabulary. 14 offline tests. Review rounds 1–3: **APPROVE**, zero residue (`m12f-round3.md`). |
 | **M12g** | Built 2026-08-31. `mcp-servers/coder/`: an MCP server that delegates code changes to external coding agents (Claude Code, Gemini CLI, Cursor Agent, Antigravity CLI) over stdio. Non-blocking fire-and-forget `delegate` returns immediately under the 60s host bound; `check` queries liveness; target repos refreshed with `AGENTS.md` standing rules from memory; ambient results captured by M12d watcher. `mooshik configure coder --agent <name>` writes config and vault secrets; grant set to `prompt`. 32 offline tests. |
+| **M12h** | Not started. `mooshik init` prints three words and leaves a configuration that cannot work: `store` is postgres with no DSN, and the companion points at `127.0.0.1:8080` with model `local-model`. The guidance exists only as comments inside the file it just wrote. See the M12 section. |
 
 Lambo pin: `nrynss/lambo` git `rev = 71334f0` (`lambo-for-mooshik`). E1/E2 (path dep, then rev pin) were done as the rev pin directly; bump the SHA after a Lambo fix.
 
@@ -742,6 +743,15 @@ a change to what feeds the model.
   or the sentences are rewritten — and drifting into the deadline without choosing is the one option
   that is actually bad.
 
+* **M12h — the guided first run.** Observed by installing v0.1.0 on a clean machine and typing
+  `mooshik init`. It answers `Mooshik home initialized.` and stops. What it has actually written is
+  a configuration in a state that cannot work: `[store]` is `postgres` with no DSN, and
+  `[companion]` points at `http://127.0.0.1:8080/v1` with model `local-model`, which is a local
+  posture nobody has running. Every instruction a user needs exists, as **comments inside the file
+  init just wrote**, which means the product's setup path is "open the config and read it". The
+  hackathon's default path is the Google one — Vertex for inference, Cloud SQL for the graph — and
+  that is also Mooshik's shared posture, so it is the path first-run should walk somebody down.
+
 **The daemon is explicitly out of scope.** A background process that outlives the terminal is a
 different product decision — install, supervision, a second lease holder, and a thing running on a
 machine when nobody asked it to. M12b's refresh happens inside the pane the user opened and stops
@@ -1047,6 +1057,49 @@ block, a delegated change edits a real repository under a standing rule drawn fr
 the edits appear in the open pane without anyone describing them. **Or:** the four sentences are
 rewritten to say what M10 already makes true — that a coding agent connects as a configured server
 like any other tool — and this milestone is closed as a decision rather than left as a claim.
+
+### M12h — what a first run has to say
+
+**The failure discipline is already right. The sequencing is not.** Exit codes are correct: a
+missing subcommand, a missing DSN and a missing store all exit `2`, and `mooshik recall` says
+plainly "No Postgres DSN is configured." Nothing is broken. What is missing is any statement of
+*what to do first*, and there are five ordered steps a new user cannot guess.
+
+**Init ends by printing what is still unset, in order, with the exact command for each.** Not a
+paragraph of prose. A numbered list, generated from the resolved config rather than hard-coded, so
+it cannot drift from what the binary actually reads. Re-runnable, because a user will do half of it
+and come back.
+
+**Do not turn `init` into an interactive prompt.** It has to stay scriptable, the Dockerfile already
+calls it unattended, and a secret typed at an init prompt is a secret in a terminal scrollback.
+Print the commands and let the user run them.
+
+**The readiness check belongs on an existing subcommand, not a new one.** `mooshik config show`
+already resolves and prints; having it also report what is unset costs no new surface. A separate
+`doctor` is a second thing to discover.
+
+**Errors should name the durable fix first.** `recall` currently says "Set MOOSHIK_POSTGRES_DSN",
+which is the environment escape hatch. The path that survives a reboot is
+`mooshik secret set <name>` plus `mooshik config set store.dsn_secret <name>`, and the message
+should lead with that and offer the variable second. As written it teaches the wrong habit at the
+first point of contact.
+
+**The Google path is the one to walk, and it has a trap in it.** Inference is
+`companion.auth google`, `companion.google_project`, `companion.google_location = global`,
+`companion.model = gemini-3.7-flash`, `companion.google_credentials`. Embedding is
+`embedder.gemini_project` with `gemini_location` left at `us-central1`. Those two locations differ
+and must differ: Vertex serves Gemini 3.x from `global` only, and `gemini-embedding-001` lives in
+the region. A user who "tidies" them into agreement breaks one or the other, so first-run should
+state it rather than leave it to be discovered as a 404.
+
+**Delete the stale example while you are here.** The template at `config.toml:36` and the
+`config set --help` text both offer `gemini-2.5-flash`, which is below the floor every component
+moved to on 2026-08-31. It is the first model name a new user reads.
+
+**Depends on:** M1 for the home and the config writer, M6 for the vault, and nothing else.
+**Done when:** a new user goes from the install one-liner to a working `mooshik chat` against
+Vertex without opening `config.toml`, and `mooshik config show` tells them at any point what is
+still missing.
 
 **Depends on:** M11 for the surface, M2 for the graph. **Done when:** `mooshik tui` opens on the
 user's own week.
