@@ -208,9 +208,9 @@ jobs:
           find release-artifacts -type f -name '*.tar.gz' -exec cp {} release-files/ \;
           find release-artifacts -type f -name '*.sha256' -exec cat {} + > release-files/checksums.txt
 
-          # 4 platform tarballs + 1 Python bundle. A missing asset here means a
-          # build job silently produced nothing; install.sh would then fail its
-          # checksum grep on the user's machine instead.
+          # 2 platform tarballs + 1 Python bundle. A missing asset here means a
+          # build job silently produced nothing, and install.sh would then fail
+          # its checksum grep on the user's machine instead.
           archives=$(find release-files -maxdepth 1 -name '*.tar.gz' | wc -l)
           sums=$(wc -l < release-files/checksums.txt)
           if [ "$archives" -ne 3 ] || [ "$sums" -ne 3 ]; then
