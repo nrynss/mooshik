@@ -750,7 +750,8 @@ a change to what feeds the model.
   posture nobody has running. Every instruction a user needs exists, as **comments inside the file
   init just wrote**, which means the product's setup path is "open the config and read it". The
   hackathon's default path is the Google one — Vertex for inference, Cloud SQL for the graph — and
-  that is also Mooshik's shared posture, so it is the path first-run should walk somebody down.
+  that is also Mooshik's shared posture, so it is the path `init` should walk somebody down, asking
+  a question at a time and writing each answer as it goes.
 
 **The daemon is explicitly out of scope.** A background process that outlives the terminal is a
 different product decision — install, supervision, a second lease holder, and a thing running on a
@@ -1065,18 +1066,28 @@ missing subcommand, a missing DSN and a missing store all exit `2`, and `mooshik
 plainly "No Postgres DSN is configured." Nothing is broken. What is missing is any statement of
 *what to do first*, and there are five ordered steps a new user cannot guess.
 
-**Init ends by printing what is still unset, in order, with the exact command for each.** Not a
-paragraph of prose. A numbered list, generated from the resolved config rather than hard-coded, so
-it cannot drift from what the binary actually reads. Re-runnable, because a user will do half of it
-and come back.
+**`init` asks.** It walks the user through the Google path a question at a time, writing each answer
+as it goes, and it ends with a Mooshik that runs. The user should not have to read a config file,
+and should not have to copy five commands out of a printed list either. This is the first thing
+anybody touches, and it is the one place where the product either sets itself up or does not.
 
-**Do not turn `init` into an interactive prompt.** It has to stay scriptable, the Dockerfile already
-calls it unattended, and a secret typed at an init prompt is a secret in a terminal scrollback.
-Print the commands and let the user run them.
+Two constraints shape it, and neither is a reason to avoid prompting:
 
-**The readiness check belongs on an existing subcommand, not a new one.** `mooshik config show`
-already resolves and prints; having it also report what is unset costs no new surface. A separate
-`doctor` is a second thing to discover.
+* **Prompt only when stdin is a TTY.** The Dockerfile calls `init` unattended and CI will too, so a
+  non-TTY run keeps exactly today's behaviour and writes the defaults. A `--non-interactive` flag
+  forces that path explicitly for a scripted run on a real terminal.
+* **Read secrets with echo off, straight into the vault.** A DSN or a credential path is never
+  echoed, never printed back, and never passed as an argument, so it reaches neither the scrollback
+  nor `ps`. This is the reason to prompt rather than to print commands: `mooshik secret set` with a
+  value on the command line is the exposure, and a no-echo prompt removes it.
+
+**Re-runnable and resumable.** A user will answer half of it, get distracted, and come back.
+Re-running `init` asks only for what is still unset, and confirms rather than clobbers anything
+already configured. It is the same code path as first contact, so it cannot rot.
+
+**`config show` reports what is still missing.** For the user who skipped the prompts, scripted the
+install, or came back a week later. It already resolves and prints, so saying what is unset costs no
+new surface, and a separate `doctor` is one more thing to discover.
 
 **Errors should name the durable fix first.** `recall` currently says "Set MOOSHIK_POSTGRES_DSN",
 which is the environment escape hatch. The path that survives a reboot is
@@ -1097,9 +1108,10 @@ state it rather than leave it to be discovered as a 404.
 moved to on 2026-08-31. It is the first model name a new user reads.
 
 **Depends on:** M1 for the home and the config writer, M6 for the vault, and nothing else.
-**Done when:** a new user goes from the install one-liner to a working `mooshik chat` against
-Vertex without opening `config.toml`, and `mooshik config show` tells them at any point what is
-still missing.
+**Done when:** a new user runs the install one-liner, runs `mooshik init`, answers its questions,
+and reaches a working `mooshik chat` against Vertex without ever opening `config.toml` or copying a
+command out of a list. A non-TTY `init` still writes the defaults and exits as it does today, and
+`mooshik config show` tells anyone who took that route what is still missing.
 
 **Depends on:** M11 for the surface, M2 for the graph. **Done when:** `mooshik tui` opens on the
 user's own week.
