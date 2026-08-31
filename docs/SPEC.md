@@ -3,10 +3,10 @@
 An ambient, local-first AI cowork partner and workspace orchestrator.
 
 Coding agents are contractors: you summon one, it edits a repository, it exits, and it remembers
-nothing. Cloud chatbots are amnesiac in a different way — they hold a conversation and forget the
-work. Mooshik is neither. It runs continuously alongside you as a peer, holds a lifelong memory of
-what you have built and decided, researches the web, connects to your tools over MCP, and hands
-heavy code changes to a specialized coding agent rather than pretending to be one.
+nothing. Cloud chatbots are amnesiac in a different way. They hold a conversation and forget the
+work. Mooshik is neither. It runs continuously alongside you as a peer. It holds a lifelong memory
+of what you have built and decided. It researches the web and connects to your tools over MCP. It
+hands heavy code changes to a specialized coding agent rather than pretending to be one.
 
 **License:** AGPLv3 (application and orchestration) · Lambo memory core: Apache 2.0
 **Platforms:** Linux, macOS
@@ -25,19 +25,19 @@ heavy code changes to a specialized coding agent rather than pretending to be on
 │  • Native MCP host & tool hub        │  • Local SQLite / shared Postgres    │
 ├──────────────────────────────────────┴──────────────────────────────────────┤
 │  ⚡ The coding contractor                                                   │
-│  • Surgical edits in repositories; reads canonical constraints from Lambo   │
+│  • Surgical edits in repositories. Reads canonical constraints from Lambo   │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Why the name
 
 **Lambodaran** (ലമ്പോദരൻ / Ganesha) is the deity of intellect, memory and the removal of
-obstacles. **Mooshik** (മൂഷികൻ) is his companion and vahana — the mount that carries him.
+obstacles. **Mooshik** (മൂഷികൻ) is his companion and vahana, the mount that carries him.
 
-The architecture follows the myth. Lambo is the vast, heavy memory; Mooshik is the companion that
+The architecture follows the myth. Lambo is the vast, heavy memory. Mooshik is the companion that
 carries it, moves through the world, and acts.
 
-The Sanskrit root *mūṣ* (मुष्) means *to extract, to gather, to scurry away with* — which is the
+The Sanskrit root *mūṣ* (मुष्) means *to extract, to gather, to scurry away with*. That is the
 job: scurry through the web, extract clean text, gather context, and bring it back to the graph.
 
 ---
@@ -76,7 +76,7 @@ graph TB
         Seam["GraphStore seam"]
     end
 
-    subgraph Vault ["Secret vault — beside the seam, never below it"]
+    subgraph Vault ["Secret vault, beside the seam, never below it"]
         V[("encrypted, local only, never synced")]
     end
 
@@ -94,21 +94,21 @@ graph TB
 
 ### The companion slot
 
-Any OpenAI-compatible `/v1` endpoint — a local model on your own GPU, or a hosted one. Local is
+Any OpenAI-compatible `/v1` endpoint works, from a local model on your own GPU to a hosted one. Local is
 the default posture: no per-prompt cost, no round trip, and it works on a plane.
 
 The companion sees a deliberately small tool surface, because a small model given forty tools
 routes badly:
 
-* `search_web` · `fetch_page` — research, returned as clean Markdown
-* `run_scratch_script` — throwaway Python or bash in a sandbox, with a hard timeout
-* `lambo_recall` · `lambo_derive` · `lambo_stats` — read, write and inspect memory
-* `delegate_to_coder` — hand a real code change to the coding agent you configured
+* `search_web` · `fetch_page`: research, returned as clean Markdown
+* `run_scratch_script`: throwaway Python or bash in a sandbox, with a hard timeout
+* `lambo_recall` · `lambo_derive` · `lambo_stats`: read, write and inspect memory
+* `delegate_to_coder`: hand a real code change to the coding agent you configured
 
 ### Memory that has to be earned
 
-Not everything said becomes a fact. Concepts enter the graph as ordinary memory and are promoted
-only as they prove themselves — recurring across sessions, surviving garbage collection,
+Not everything said becomes a fact. Concepts enter the graph as ordinary memory. They are promoted
+only as they prove themselves: recurring across sessions, surviving garbage collection,
 accumulating confirmations and successful actions, and losing ground when they are reverted.
 
 Only promoted concepts become load-bearing: surfaced as warnings before you touch something they
@@ -128,7 +128,7 @@ filtering on the way out.
 by models. **The vault** is encrypted, local only, never synced, never embedded, and never
 rendered into a prompt or a transcript.
 
-The graph may record that a credential *exists* and where it lives — genuinely useful
+The graph may record that a credential *exists* and where it lives. That is genuinely useful
 autobiographical knowledge, and safe to sync. It never holds the value. Values resolve locally at
 the moment of use and are injected into *tools*, never into a model's context. Tool output is
 scanned before it reaches the model, because output is where a secret actually escapes.
@@ -151,8 +151,8 @@ filesystem_read = ["~/work"]
 ```
 
 You widen what it may touch, and its independence widens with it. This matters more here than for
-a command agent, because Mooshik is always on: the question *"what may it do while I am not
-looking"* has to have an exact answer.
+a command agent. Mooshik is always on, so the question *"what may it do while I am not looking"*
+has to have an exact answer.
 
 The graph is never a permission authority. No concept, however canonical, can widen a grant.
 
@@ -163,17 +163,17 @@ The graph is never a permission authority. No concept, however canonical, can wi
 **Shared:** Postgres with pgvector, so a desktop and a laptop flush into one database and you get a
 single unified memory across every machine you work on.
 
-All networking and sync live below the `GraphStore` seam. The vault sits beside that seam — no
+All networking and sync live below the `GraphStore` seam. The vault sits beside that seam, so no
 storage adapter and no sync path can reach it.
 
 ---
 
 ## Roadmap
 
-**Phase 1 — Terminal.** A single Rust binary: memory in process, a streaming local companion, web
+**Phase 1: Terminal.** A single Rust binary: memory in process, a streaming local companion, web
 research, the scratch runner, and the MCP connector hub.
 
-**Phase 2 — Desktop.** A native app with a global summon hotkey, an interactive view of the memory
+**Phase 2: Desktop.** A native app with a global summon hotkey, an interactive view of the memory
 graph, tray presence and notifications, and a live activity feed.
 
 ---
