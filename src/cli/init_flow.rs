@@ -53,7 +53,12 @@ const PLACEHOLDER_BASE_URL: &str = "http://127.0.0.1:8080/v1";
 
 /// The model the shared posture derives; the floor every component moved to
 /// on 2026-08-31 (the stale `gemini-2.5-flash` example was deleted with M12h).
-const SHARED_MODEL: &str = "gemini-3.7-flash";
+///
+/// The `google/` prefix is not decoration. Vertex's OpenAI-compatible
+/// endpoint addresses models by publisher, and the bare name is rejected, so
+/// a config written without it fails its own inference probe and every turn
+/// after it. `.env` and the live workflow both carry the prefixed form.
+const SHARED_MODEL: &str = "google/gemini-3.7-flash";
 
 /// How one answer is verified, injectable so the tests stay hermetic. The
 /// production implementation makes real network calls; the tests script
@@ -667,7 +672,7 @@ impl Session<'_> {
     }
 
     /// The shared posture's inference is derived, not asked: `auth = google`,
-    /// `google_location = global`, `model = gemini-3.7-flash`. The whole
+    /// `google_location = global`, `model = google/gemini-3.7-flash`. The whole
     /// derivation is gated on the placeholder endpoint, so a real `base_url`
     /// keeps its static auth and its model — including the shipped
     /// `local-model` default, which a user endpoint does not serve.

@@ -140,7 +140,7 @@ fn shared_posture_writes_a_working_config() {
     assert_eq!(config.companion.auth, config::CompanionAuth::Google);
     assert_eq!(config.companion.google_project.as_deref(), Some("proj"));
     assert_eq!(config.companion.google_location.as_deref(), Some("global"));
-    assert_eq!(config.companion.model, "gemini-3.7-flash");
+    assert_eq!(config.companion.model, "google/gemini-3.7-flash");
     assert_eq!(
         config
             .companion
@@ -420,7 +420,7 @@ fn mcp_offer_gates_on_the_vault_and_restores_missing_gemini_secrets() {
         r#"vault = { provider = "passphrase" }
 store = { kind = "postgres", dsn = "postgres://user@db.example/mooshik" }
 embedder = { kind = "gemini", gemini_project = "proj", gemini_credentials = "/key.json" }
-companion = { auth = "google", model = "gemini-3.7-flash", google_location = "global", google_project = "proj", google_credentials = "/key.json" }
+companion = { auth = "google", model = "google/gemini-3.7-flash", google_location = "global", google_project = "proj", google_credentials = "/key.json" }
 "#,
     );
     let (output, written) = drive(

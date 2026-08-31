@@ -89,7 +89,7 @@ temperature = 0.2
 #   mooshik config set companion.auth google
 #   mooshik config set companion.google_project my-project
 #   mooshik config set companion.google_location global
-#   mooshik config set companion.model gemini-3.7-flash
+#   mooshik config set companion.model google/gemini-3.7-flash
 
 [permissions]
 # Autonomy is granted, not configured (docs/SPEC.md). Families: memory, scratch.
