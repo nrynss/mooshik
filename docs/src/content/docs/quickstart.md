@@ -1,60 +1,71 @@
 ---
-title: Quickstart Guide
-description: Initialize your workspace and run your first Mooshik session.
+title: Quickstart
+description: Install Mooshik, run guided setup, and open the terminal interface.
 ---
 
-This guide walks you through setting up and running Mooshik in your workspace.
+Get up and running with Mooshik in three steps.
 
-## Step 1: Initialize Workspace
+## 1. Install Mooshik
 
-Run the initialization command inside your workspace:
+Run the installer to download the `mooshik` binary and set up the Python MCP servers:
 
-```sh
+```bash
+curl -fsSL https://raw.githubusercontent.com/nrynss/mooshik/main/install.sh | sh
+```
+
+Verify the installation:
+
+```bash
+mooshik --help
+```
+
+## 2. Run Guided Setup
+
+Run the interactive setup wizard:
+
+```bash
 mooshik init
 ```
 
-This command creates your private configuration directory at `~/.mooshik/` with safe file permissions. It writes a default `config.toml` file and provisions an encrypted local vault.
+The wizard guides you through choosing a posture, connecting storage, and configuring model endpoints. All secrets are stored directly in the local encrypted vault.
 
-## Step 2: Configure Backends
+## 3. Launch the Terminal Pane
 
-Mooshik supports local and shared backends. By default, it provisions a local SQLite database for zero-configuration startup.
+Navigate to the parent directory containing your repositories or notes:
 
-Verify your configuration settings:
-
-```sh
-mooshik config show
+```bash
+cd ~/work
 ```
 
-## Step 3: Launch the Terminal UI
+Launch the interface:
 
-Open the interactive terminal user interface:
-
-```sh
+```bash
 mooshik tui
 ```
 
-The interface shows your current weekly timeline, active threads, and memory concepts. It rebuilds automatically whenever the underlying graph updates.
+### Why Directory Location Matters
 
-## Step 4: Recall Memory Concepts
+Mooshik watches the directory where you launch it. There is no configuration key for the workspace root.
 
-Query your memory graph from the command line:
+- **Launching from a project parent (`~/work`):** Optimal. Watches multiple project repositories efficiently.
+- **Launching inside a single repository (`~/work/mooshik`):** Tracks changes within that single repository.
+- **Launching from your home directory (`~`):** Avoid this. Walking your entire home directory exceeds the poll budget.
 
-```sh
-mooshik recall "database migration steps"
-```
+## Using the Pane
 
-Mooshik searches the concept graph and returns the most relevant context and relations.
+The pane is the primary way to interact with Mooshik.
 
-## Step 5: Consolidate Memories
+- **Conversation input:** Type your question or task and press `Enter`. Tokens stream directly into the conversation view.
+- **Cancel in-flight generation:** Press `Esc` to cancel a response without closing the interface.
+- **Live timeline:** The view model updates every 250 milliseconds. File edits, commits, and reflections appear automatically.
+- **Exit:** Press `Ctrl-C` or `q` to close the session.
 
-Run a reflection pass to clean duplicate concepts and write human-readable prose summaries:
+## Secondary CLI Commands
 
-```sh
-mooshik reflect
-```
+Mooshik provides secondary commands for scripting and quick checks:
 
-To preview the changes without modifying the database, add the dry run flag:
-
-```sh
-mooshik reflect --dry-run
-```
+- [CLI Reference](/mooshik/cli/)
+- Search memory: `mooshik recall "architecture decisions"`
+- Command-line chat: `mooshik chat`
+- Consolidate graph prose: `mooshik reflect`
+- Check memory metrics: `mooshik stats`

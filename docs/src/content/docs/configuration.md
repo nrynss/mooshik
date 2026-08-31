@@ -1,63 +1,99 @@
 ---
 title: Configuration
-description: Configure stores, embedders, companions, and environment variables.
+description: Manage configuration files, encrypted vault secrets, and environment overlays.
 ---
 
-Mooshik reads its configuration from `~/.mooshik/config.toml` and applies environment variable overrides on startup.
+Mooshik stores its configuration in `~/.mooshik/config.toml`. It manages credentials separately through an encrypted local vault.
 
-## Configuration File Format
+## Durable Configuration Management
 
-Here is an example `config.toml` file with local and shared options:
+Always configure settings using the CLI. The CLI validates types and updates `config.toml` safely.
+
+Inspect your active configuration with redacted secrets:
+
+```bash
+mooshik config show
+```
+
+Update a setting:
+
+```bash
+mooshik config set companion.model "gemini-3.7-flash"
+```
+
+### Storing Credentials in the Vault
+
+Never write credentials, passwords, or connection strings into `config.toml`.
+
+Store the secret in the encrypted vault:
+
+```bash
+mooshik secret set store-dsn
+```
+
+Link the vault secret in your configuration:
+
+```bash
+mooshik config set store.dsn_secret "store-dsn"
+```
+
+This ensures credentials remain encrypted at rest and never leak into git repositories, shell history, or process tables.
+
+## Environment Variable Escape Hatches
+
+Mooshik supports environment variables as non-durable escape hatches. Use them for temporary testing or containerized deployments.
+
+| Variable | Target Key | Notes |
+| :--- | :--- | :--- |
+| `MOOSHIK_HOME` | Home directory | Overrides `~/.mooshik` path. |
+| `MOOSHIK_POSTGRES_DSN` | `store.dsn` | Escape hatch for database DSN. Does not persist across reboots. |
+| `MOOSHIK_COMPANION_MODEL` | `companion.model` | Overrides companion model identifier. |
+| `MOOSHIK_COMPANION_BASE_URL` | `companion.base_url` | Overrides OpenAI-compatible endpoint URL. |
+| `MOOSHIK_GEMINI_PROJECT` | `embedder.gemini_project` | Overrides Google Cloud project ID. |
+| `MOOSHIK_GEMINI_LOCATION` | `embedder.gemini_location` | Names the **embedder** region (`us-central1`). |
+| `MOOSHIK_GEMINI_CREDENTIALS` | `embedder.gemini_credentials` | Path to Google Cloud service account JSON file. |
+
+> [!WARNING]
+> Environment variables do not survive reboots or session restarts. For persistent operation, store connection strings with `mooshik secret set` and set `store.dsn_secret`.
+
+## The Vertex Location Rule
+
+In shared posture deployments, inference and embedding locations must differ:
+
+- `companion.google_location = "global"`: Vertex AI serves Gemini 3.x Flash models from `global` only.
+- `embedder.gemini_location = "us-central1"`: The `gemini-embedding-001` model lives in `us-central1`.
+
+Setting both options to the same region causes connection failures.
+
+## Permissions Block
+
+Control tool execution boundaries under the `[permissions]` table:
 
 ```toml
-[session]
-id = "workspace-default"
-agent = "mooshik"
-
-[store]
-kind = "sqlite"
-path = "~/.mooshik/graph.db"
-
-[embedder]
-kind = "bge_m3"
-endpoint = "http://127.0.0.1:8080/v1"
-dim = 1024
-
-[companion]
-base_url = "http://127.0.0.1:8080/v1"
-model = "local-model"
-max_tokens = 4096
-temperature = 0.2
+[permissions]
+memory = ["recall", "derive"]
+scratch = "prompt"
+"mcp.news.*" = "allow"
+"mcp.coder.*" = "prompt"
 ```
 
-## Storage Options
+- `"allow"`: Executes without asking.
+- `"prompt"`: Prompts for confirmation in the terminal before running.
+- `"deny"`: Refuses execution.
 
-Mooshik supports two storage backends:
+## MCP Server Blocks
 
-1. **SQLite (`sqlite`)**: Stores graph nodes locally in a single SQLite database file. No external database server is required.
-2. **Postgres (`postgres`)**: Connects to a PostgreSQL database for shared multi-machine workspaces. Requires a valid database connection string.
+Configure external Model Context Protocol servers under `[mcp_servers.<name>]`:
 
-## Embedder Options
+```toml
+[mcp_servers.news]
+command = "/home/you/.local/share/mooshik/venv/bin/mooshik-news-mcp"
+expose = ["search_news", "fetch_article"]
 
-The embedder turns text into vector representations:
-
-1. **BGE-M3 (`bge_m3`)**: Connects to a local embedding server such as llama.cpp.
-2. **Gemini (`gemini`)**: Uses Google Vertex AI embeddings. Requires service account credentials or an API key.
-
-## Environment Variable Overlays
-
-You can override settings at runtime using environment variables:
-
-- `MOOSHIK_POSTGRES_DSN`: Overrides the Postgres database connection string.
-- `MOOSHIK_COMPANION_BASE_URL`: Overrides the companion endpoint URL.
-- `MOOSHIK_COMPANION_MODEL`: Overrides the companion model name.
-- `MOOSHIK_GEMINI_CREDENTIALS`: Path to Google Cloud service account JSON file.
-
-## Updating Settings via CLI
-
-You can inspect and update settings safely without editing the TOML file directly:
-
-```sh
-mooshik config show
-mooshik config set companion.model "google/gemini-3.7-flash"
+[mcp_servers.news.env]
+MOOSHIK_GEMINI_API_KEY = "gemini-api-key"
 ```
+
+Rules for MCP server blocks:
+1. `expose` is an allowlist. An empty list leaves the server disabled.
+2. Values in `[mcp_servers.<name>.env]` are vault secret names, not literal tokens. Mooshik resolves them at launch from the local vault.
