@@ -13,10 +13,15 @@
 //! into the graph. A git event carries commit metadata (SHA, repository path,
 //! author time, and message) and never a patch or diff. Both event kinds are
 //! coalesced for 250 ms and every graph write takes the pane's [`WriteLane`].
+//! Discovery runs in one `spawn_blocking` task at a time. Quiet workspaces use
+//! an adaptive 100--250 ms poll interval, trading a bounded amount of latency
+//! for keeping recursive walks and git subprocesses off the TUI runtime.
 
 use std::{
     collections::BTreeMap,
-    fs, io,
+    fs,
+    future::Future,
+    io::{self, Read},
     path::{Path, PathBuf},
     process::Command,
     sync::Arc,
@@ -30,6 +35,7 @@ use tokio::{sync::oneshot, task::JoinHandle};
 use crate::{memory::WriteLane, text, vault::SharedVault};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
+const QUIET_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const DEBOUNCE: Duration = Duration::from_millis(250);
 const MAX_CONCEPTS_PER_DERIVE: usize = 64;
 const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
@@ -66,9 +72,8 @@ impl Watcher {
         if !root.is_dir() {
             return Err(WatchError::WorkspaceUnavailable);
         }
-        let snapshot = Snapshot::discover(&root);
         let (cancel, cancelled) = oneshot::channel();
-        let task = handle.spawn(run(memory, writes, root, agent, vault, snapshot, cancelled));
+        let task = handle.spawn(run(memory, writes, root, agent, vault, cancelled));
         Ok(Self {
             cancel: Some(cancel),
             task,
@@ -128,19 +133,23 @@ enum Pending {
     Commit(Commit),
 }
 
-#[derive(Default)]
+#[derive(Default, Eq, PartialEq)]
 struct Snapshot {
     files: BTreeMap<PathBuf, FileState>,
     heads: BTreeMap<PathBuf, String>,
+    git_failures: Vec<PathBuf>,
 }
 
 impl Snapshot {
     fn discover(root: &Path) -> Self {
         let mut snapshot = Self::default();
         let mut dirs = Vec::new();
-        if root.join(".git").exists() {
-            if let Some(head) = git_head(root) {
-                snapshot.heads.insert(root.to_path_buf(), head);
+        if is_git_marker(root) {
+            match git_head(root) {
+                Ok(head) => {
+                    snapshot.heads.insert(root.to_path_buf(), head);
+                }
+                Err(()) => snapshot.git_failures.push(root.to_path_buf()),
             }
         } else {
             dirs.push(root.to_path_buf());
@@ -167,9 +176,12 @@ impl Snapshot {
                     {
                         continue;
                     }
-                    if path.join(".git").exists() {
-                        if let Some(head) = git_head(&path) {
-                            snapshot.heads.insert(path.clone(), head);
+                    if is_git_marker(&path) {
+                        match git_head(&path) {
+                            Ok(head) => {
+                                snapshot.heads.insert(path.clone(), head);
+                            }
+                            Err(()) => snapshot.git_failures.push(path.clone()),
                         }
                         continue; // repositories are metadata-only sources
                     }
@@ -201,35 +213,86 @@ async fn run(
     root: PathBuf,
     agent: String,
     vault: Option<SharedVault>,
-    mut previous: Snapshot,
     mut cancelled: oneshot::Receiver<()>,
 ) -> Result<(), WatchError> {
     let mut pending = BTreeMap::<String, Pending>::new();
     let mut changed_at = None;
-    let mut interval = tokio::time::interval(POLL_INTERVAL);
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut previous = None;
+    let mut poll_interval = POLL_INTERVAL;
     loop {
-        tokio::select! {
+        if previous.is_some() {
+            tokio::select! {
+                _ = &mut cancelled => return Ok(()),
+                _ = tokio::time::sleep(poll_interval) => {}
+            }
+        }
+
+        // Directory walks and git subprocesses are blocking operations. Keep
+        // them off the TUI runtime, and never start a second walk while the
+        // first is still running. If the pane closes during a walk, dropping
+        // this handle detaches the blocking task; it has no Memory or write
+        // lane access and therefore cannot write after shutdown.
+        let discovery = tokio::task::spawn_blocking({
+            let root = root.clone();
+            move || Snapshot::discover(&root)
+        });
+        let current = tokio::select! {
             _ = &mut cancelled => return Ok(()),
-            _ = interval.tick() => {
-                let current = Snapshot::discover(&root);
-                collect_changes(&previous, &current, &mut pending, &mut changed_at);
-                previous = current;
-                if changed_at.is_some_and(|at| at.elapsed() >= DEBOUNCE) && !pending.is_empty() {
-                    if let Err(error) =
-                        flush_pending(&memory, &writes, &agent, &vault, &root, &mut pending).await
-                    {
-                        // A transient embedder/store failure must not kill the
-                        // ambient task. Pending events stay queued and are
-                        // retried on the next poll; cancellation still wins
-                        // at the next select boundary.
-                        if !matches!(error, WatchError::Memory) {
-                            return Err(error);
-                        }
+            result = discovery => result.map_err(|_| WatchError::TaskFailed)?,
+        };
+
+        if previous.is_none() {
+            if current.git_failures.is_empty() {
+                previous = Some(current);
+                poll_interval = QUIET_POLL_INTERVAL;
+            } else {
+                // Do not baseline a repository whose head could not be read.
+                // The next discovery must succeed before any state advances.
+                poll_interval = POLL_INTERVAL;
+            }
+            continue;
+        }
+
+        let old = previous.as_ref().expect("initialized above");
+        let valid = collect_changes(old, &current, &mut pending, &mut changed_at);
+        if valid {
+            let changed = old != &current;
+            previous = Some(current);
+            poll_interval = if changed {
+                POLL_INTERVAL
+            } else {
+                (poll_interval * 2).min(QUIET_POLL_INTERVAL)
+            };
+        } else {
+            // A failed git head/log read must be retried against the old
+            // snapshot, otherwise a commit can disappear between polls.
+            poll_interval = POLL_INTERVAL;
+        }
+
+        if changed_at.is_some_and(|at| at.elapsed() >= DEBOUNCE) && !pending.is_empty() {
+            match flush_pending(
+                &memory,
+                &writes,
+                &agent,
+                &vault,
+                &root,
+                &mut pending,
+                &mut cancelled,
+            )
+            .await
+            {
+                Ok(true) => return Ok(()),
+                Ok(false) => {}
+                Err(error) => {
+                    // A transient embedder/store failure must not kill the
+                    // ambient task. Pending events stay queued and are
+                    // retried on the next poll; cancellation still wins.
+                    if !matches!(error, WatchError::Memory) {
+                        return Err(error);
                     }
-                    changed_at = (!pending.is_empty()).then(Instant::now);
                 }
             }
+            changed_at = (!pending.is_empty()).then(Instant::now);
         }
     }
 }
@@ -239,7 +302,10 @@ fn collect_changes(
     current: &Snapshot,
     pending: &mut BTreeMap<String, Pending>,
     changed_at: &mut Option<Instant>,
-) {
+) -> bool {
+    if !current.git_failures.is_empty() {
+        return false;
+    }
     for (path, state) in &current.files {
         if previous.files.get(path) != Some(state) {
             let Some(event_time) = system_time_to_utc(state.modified) else {
@@ -263,7 +329,10 @@ fn collect_changes(
         if previous_head == head {
             continue;
         }
-        for commit in git_commits_between(repo, previous_head, head) {
+        let Ok(commits) = git_commits_between(repo, previous_head, head) else {
+            return false;
+        };
+        for commit in commits {
             let key = format!("git:{}#{}", repo.display(), commit.sha);
             pending.insert(key, Pending::Commit(commit));
             *changed_at = Some(Instant::now());
@@ -271,6 +340,7 @@ fn collect_changes(
     }
     // A newly-created repository is baselined by `Snapshot::discover`, so its
     // existing history is never replayed into the open pane.
+    true
 }
 
 async fn flush_pending(
@@ -280,9 +350,10 @@ async fn flush_pending(
     vault: &Option<SharedVault>,
     root: &Path,
     pending: &mut BTreeMap<String, Pending>,
-) -> Result<(), WatchError> {
+    cancelled: &mut oneshot::Receiver<()>,
+) -> Result<bool, WatchError> {
     let mut groups = BTreeMap::<DateTime<Utc>, Vec<(String, String)>>::new();
-    let mut ready = Vec::new();
+    let mut ignored = Vec::new();
     for (key, event) in pending.iter() {
         match event_to_concept(event, vault, root) {
             Ok(Some((content, event_time))) => {
@@ -290,17 +361,13 @@ async fn flush_pending(
                     .entry(event_time)
                     .or_default()
                     .push((key.clone(), content));
-                ready.push(key.clone());
             }
-            Ok(None) => ready.push(key.clone()), // secret hit or an ignored save
-            Err(()) => {}                        // unreadable file: retry it
+            Ok(None) => ignored.push(key.clone()), // secret hit or an ignored save
+            Err(()) => {}                          // unreadable file: retry it
         }
     }
-    if groups.is_empty() {
-        for key in ready {
-            pending.remove(&key);
-        }
-        return Ok(());
+    for key in ignored {
+        pending.remove(&key);
     }
 
     for (event_time, events) in groups {
@@ -309,22 +376,45 @@ async fn flush_pending(
                 .iter()
                 .map(|(_, content)| (content.as_str(), ConceptType::Observation))
                 .collect();
-            let _lane = writes.enter().await;
-            memory
-                .derive_for_ingest_as(
+            let Some(_lane) = await_or_cancel(cancelled, writes.enter()).await else {
+                return Ok(true);
+            };
+            let result = await_or_cancel(
+                cancelled,
+                memory.derive_for_ingest_as(
                     &lambo::AgentId::new(agent),
                     Some(event_time),
                     &contents,
                     &ParentOf::none(),
-                )
-                .await
-                .map_err(|_| WatchError::Memory)?;
+                ),
+            )
+            .await;
+            let Some(result) = result else {
+                return Ok(true);
+            };
+            result.map_err(|_| WatchError::Memory)?;
+            // Remove each successful batch immediately. A later failed batch
+            // is retried, but a successful batch is never replayed.
+            remove_successful_batch(pending, batch);
         }
     }
-    for key in ready {
-        pending.remove(&key);
+    Ok(false)
+}
+
+fn remove_successful_batch(pending: &mut BTreeMap<String, Pending>, batch: &[(String, String)]) {
+    for (key, _) in batch {
+        pending.remove(key);
     }
-    Ok(())
+}
+
+async fn await_or_cancel<T>(
+    cancelled: &mut oneshot::Receiver<()>,
+    future: impl Future<Output = T>,
+) -> Option<T> {
+    tokio::select! {
+        _ = cancelled => None,
+        result = future => Some(result),
+    }
 }
 
 fn event_to_concept(
@@ -334,7 +424,7 @@ fn event_to_concept(
 ) -> Result<Option<(String, DateTime<Utc>)>, ()> {
     match event {
         Pending::File { path, event_time } => {
-            let bytes = read_nofollow(path).map_err(|_| ())?;
+            let bytes = read_nofollow(path, root).map_err(|_| ())?;
             let text = String::from_utf8_lossy(&bytes);
             let relative = path
                 .strip_prefix(root)
@@ -386,18 +476,29 @@ fn system_time_to_utc(time: SystemTime) -> Option<DateTime<Utc>> {
         })
 }
 
-fn git_head(repo: &Path) -> Option<String> {
-    git(repo, &["rev-parse", "--verify", "HEAD"]).map(|output| output.trim().to_owned())
+fn is_git_marker(path: &Path) -> bool {
+    fs::symlink_metadata(path.join(".git"))
+        .map(|metadata| {
+            let file_type = metadata.file_type();
+            !file_type.is_symlink() && (file_type.is_dir() || file_type.is_file())
+        })
+        .unwrap_or(false)
 }
 
-fn git_commits_between(repo: &Path, old: &str, new: &str) -> Vec<Commit> {
+fn git_head(repo: &Path) -> Result<String, ()> {
+    git(repo, &["rev-parse", "--verify", "HEAD"])
+        .map(|output| output.trim().to_owned())
+        .ok_or(())
+}
+
+fn git_commits_between(repo: &Path, old: &str, new: &str) -> Result<Vec<Commit>, ()> {
     let range = format!("{old}..{new}");
     let output = git(
         repo,
         &["log", "--no-patch", "--format=%H%x00%aI%x00%B%x1e", &range],
     )
-    .unwrap_or_default();
-    parse_commits(repo, &output)
+    .ok_or(())?;
+    Ok(parse_commits(repo, &output))
 }
 
 fn parse_commits(repo: &Path, output: &str) -> Vec<Commit> {
@@ -432,9 +533,21 @@ fn git(repo: &Path, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn read_nofollow(path: &Path) -> io::Result<Vec<u8>> {
+fn read_nofollow(path: &Path, root: &Path) -> io::Result<Vec<u8>> {
+    // Canonicalizing before opening rejects symlinked parents and keeps the
+    // read within the canonical workspace. On Unix, O_NOFOLLOW and inode
+    // checks below close the final-component and common parent-swap races.
+    let canonical = fs::canonicalize(path)?;
+    if !canonical.starts_with(root) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "watch path escapes workspace",
+        ));
+    }
+
     #[cfg(unix)]
     {
+        use std::os::unix::fs::MetadataExt;
         use std::os::unix::fs::OpenOptionsExt;
         let metadata = fs::symlink_metadata(path)?;
         if !metadata.file_type().is_file() || metadata.len() > MAX_FILE_BYTES {
@@ -443,26 +556,73 @@ fn read_nofollow(path: &Path) -> io::Result<Vec<u8>> {
                 "file is not a watchable text file",
             ));
         }
-        fs::OpenOptions::new()
+        let mut file = fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW)
-            .open(path)
-            .and_then(|mut file| {
-                let mut bytes = Vec::new();
-                io::Read::read_to_end(&mut file, &mut bytes)?;
-                Ok(bytes)
-            })
+            .open(path)?;
+        let opened = file.metadata()?;
+        let current = fs::symlink_metadata(path)?;
+        if !current.file_type().is_file()
+            || current.dev() != opened.dev()
+            || current.ino() != opened.ino()
+            || metadata.dev() != current.dev()
+            || metadata.ino() != current.ino()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "watch path changed while opening",
+            ));
+        }
+        let mut bytes = Vec::with_capacity((MAX_FILE_BYTES as usize).min(64 * 1024));
+        io::Read::by_ref(&mut file)
+            .take(MAX_FILE_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_FILE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "watch file exceeds size limit",
+            ));
+        }
+        Ok(bytes)
     }
     #[cfg(not(unix))]
     {
-        let metadata = fs::metadata(path)?;
+        let metadata = fs::symlink_metadata(path)?;
+        if metadata.file_type().is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "symbolic links are not watchable",
+            ));
+        }
         if !metadata.is_file() || metadata.len() > MAX_FILE_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "file is not a watchable text file",
             ));
         }
-        fs::read(path)
+        let mut file = fs::File::open(path)?;
+        let opened = file.metadata()?;
+        let current = fs::symlink_metadata(path)?;
+        if !current.is_file()
+            || current.len() != opened.len()
+            || current.modified().ok() != opened.modified().ok()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "watch path changed while opening",
+            ));
+        }
+        let mut bytes = Vec::with_capacity((MAX_FILE_BYTES as usize).min(64 * 1024));
+        io::Read::by_ref(&mut file)
+            .take(MAX_FILE_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_FILE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "watch file exceeds size limit",
+            ));
+        }
+        Ok(bytes)
     }
 }
 
@@ -553,22 +713,50 @@ fn contains_assignment(text: &str) -> bool {
     ];
     for line in text.lines() {
         let upper = line.to_ascii_uppercase();
-        if !keys.iter().any(|key| upper.contains(key)) {
-            continue;
-        }
-        let Some((_, value)) = line.split_once('=').or_else(|| line.split_once(':')) else {
-            continue;
-        };
-        let value = value.trim().trim_matches(['\'', '"']);
-        if value.len() >= 20
-            && value
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"+/=_-".contains(&byte))
-        {
-            return true;
+        for key in keys {
+            let mut search_from = 0;
+            while let Some(offset) = upper[search_from..].find(key) {
+                let begin = search_from + offset;
+                let end = begin + key.len();
+                let before_ok = begin == 0
+                    || !upper.as_bytes()[begin - 1].is_ascii_alphanumeric()
+                        && upper.as_bytes()[begin - 1] != b'_';
+                let after_ok = end == upper.len()
+                    || !upper.as_bytes()[end].is_ascii_alphanumeric()
+                        && upper.as_bytes()[end] != b'_';
+                if before_ok && after_ok {
+                    let mut suffix = &line[end..];
+                    suffix = strip_optional_quote(suffix);
+                    suffix = suffix.trim_start();
+                    let Some(separator) = suffix
+                        .strip_prefix('=')
+                        .or_else(|| suffix.strip_prefix(':'))
+                    else {
+                        search_from = end;
+                        continue;
+                    };
+                    let mut value = separator.trim_start();
+                    value = strip_optional_quote(value);
+                    let valid_prefix = value
+                        .bytes()
+                        .take_while(|byte| byte.is_ascii_alphanumeric() || b"+/=_-".contains(byte))
+                        .count();
+                    if valid_prefix >= 20 {
+                        return true;
+                    }
+                }
+                search_from = end;
+            }
         }
     }
     false
+}
+
+fn strip_optional_quote(value: &str) -> &str {
+    match value.as_bytes().first() {
+        Some(b'\'' | b'"') => &value[1..],
+        _ => value,
+    }
 }
 
 #[cfg(test)]
@@ -602,6 +790,32 @@ mod tests {
             .files
             .contains_key(&root.join("link.md")));
         remove_test_root(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_does_not_import_metadata_from_a_symlinked_git_entry() {
+        let root = test_root("symlinked-git");
+        let outside = root.with_extension("outside");
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        run_git(&outside, &["init", "-q"]);
+        run_git(&outside, &["config", "user.email", "test@example.invalid"]);
+        run_git(&outside, &["config", "user.name", "Mooshik Test"]);
+        fs::write(outside.join("note.md"), "outside").unwrap();
+        run_git(&outside, &["add", "note.md"]);
+        run_git(
+            &outside,
+            &["commit", "-qm", "external metadata must stay external"],
+        );
+        std::os::unix::fs::symlink(outside.join(".git"), root.join("sub/.git")).unwrap();
+
+        let snapshot = Snapshot::discover(&root);
+        assert!(!snapshot.heads.contains_key(&root.join("sub")));
+        assert!(snapshot.git_failures.is_empty());
+        remove_test_root(&root);
+        remove_test_root(&outside);
     }
 
     #[test]
@@ -649,8 +863,80 @@ mod tests {
     fn secret_policy_drops_content_without_exposing_the_match() {
         assert!(find_secret("AWS=AKIA1234567890ABCDEF", &None));
         assert!(find_secret("TOKEN = 'abcdefghijklmnopqrstuvwxyz'", &None));
+        assert!(find_secret("TOKEN=abcdefghijklmnopqrst!", &None));
+        assert!(find_secret(
+            "API_KEY: abcdefghijklmnopqrst # comment",
+            &None
+        ));
         assert!(find_secret("-----BEGIN PRIVATE KEY-----", &None));
         assert!(!find_secret("ordinary project notes", &None));
+    }
+
+    #[test]
+    fn failed_git_transition_does_not_advance_the_previous_snapshot() {
+        let repo = test_root("missing-git").join("repo");
+        let previous = Snapshot {
+            heads: [(repo.clone(), "old-head".to_owned())]
+                .into_iter()
+                .collect(),
+            ..Snapshot::default()
+        };
+        let current = Snapshot {
+            heads: [(repo.clone(), "new-head".to_owned())]
+                .into_iter()
+                .collect(),
+            ..Snapshot::default()
+        };
+        let mut pending = BTreeMap::new();
+        let mut changed = None;
+
+        assert!(!collect_changes(
+            &previous,
+            &current,
+            &mut pending,
+            &mut changed
+        ));
+        assert!(pending.is_empty());
+        assert_eq!(previous.heads.get(&repo), Some(&"old-head".to_owned()));
+        remove_test_root(repo.parent().unwrap());
+    }
+
+    #[test]
+    fn bounded_read_rejects_a_file_that_grows_past_the_limit() {
+        let root = test_root("read-limit");
+        let path = root.join("large.md");
+        let file = fs::File::create(&path).unwrap();
+        file.set_len(MAX_FILE_BYTES + 1).unwrap();
+        assert!(read_nofollow(&path, &root).is_err());
+        remove_test_root(&root);
+    }
+
+    #[test]
+    fn successful_batches_are_removed_while_later_batches_remain_pending() {
+        let root = test_root("partial-flush");
+        let first = root.join("first");
+        let second = root.join("second");
+        let mut pending = BTreeMap::from([
+            (
+                "first".to_owned(),
+                Pending::File {
+                    path: first,
+                    event_time: Utc::now(),
+                },
+            ),
+            (
+                "second".to_owned(),
+                Pending::File {
+                    path: second,
+                    event_time: Utc::now(),
+                },
+            ),
+        ]);
+        let batch = vec![("first".to_owned(), "first concept".to_owned())];
+        remove_successful_batch(&mut pending, &batch);
+        assert!(!pending.contains_key("first"));
+        assert!(pending.contains_key("second"));
+        remove_test_root(&root);
     }
 
     #[test]
@@ -724,6 +1010,21 @@ mod tests {
             task,
         };
         watcher.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_an_in_flight_derive_future() {
+        let (cancel, mut cancelled) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            await_or_cancel(&mut cancelled, tokio::time::sleep(Duration::from_secs(60))).await
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        cancel.send(()).unwrap();
+        assert!(tokio::time::timeout(Duration::from_millis(100), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

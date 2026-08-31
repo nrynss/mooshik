@@ -759,7 +759,7 @@ replan cap. Coalesce a burst into one derive before it reaches the lane.
 `.md,.markdown,.txt,.rst` — for good reason, and a watcher without one derives binary churn.
 `target/`, `.git/`'s internals, `node_modules/` and the scratch sandbox must never be a source of
 memory. Note the asymmetry: `.git/` internals are noise, but a *commit* is one of the strongest
-signals available, carrying a message and a file list the user wrote deliberately.
+signals available, carrying its SHA, repository, author time, and message.
 
 **Decide what a change derives, because it settles the secret question.** Deriving file *content*
 puts the watcher on the same footing as the ingester and it needs `secretscan.find_secret` with the
@@ -788,6 +788,9 @@ setting, and stops with the pane; an existing repository's history is baselined 
 replayed on open. Different historical event times are kept in separate derive groups so every
 file mtime and commit author time remains truthful, even when one debounce window contains several
 sources.
+Successful derive batches are removed immediately; a failed batch stays pending for retry. As with
+other ambient writes, a backend failure after a remote commit can therefore have at-least-once
+semantics for that batch.
 
 ### M12e — what to move, and what not to break
 
