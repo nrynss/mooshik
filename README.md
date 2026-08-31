@@ -11,7 +11,14 @@ code changes to a specialized coding agent.
 
 ## Status
 
-Early — Phase 1 under construction. Milestones M0–M11 in `dev-diary/PLAN.md`.
+Early — Phase 1 under construction. Milestones through M12d are in `dev-diary/PLAN.md`.
+
+`mooshik tui` watches the current working directory for live changes while its pane is open.
+Only `.md`, `.markdown`, `.txt`, and `.rst` files outside Git repositories are eligible; generated
+directories and symlinks are excluded. File contents are secret-scanned but only the relative path
+is remembered. Git repositories contribute commit metadata and author time, never working-tree
+files or diffs. Live watching is currently Unix-only; on unsupported non-Unix platforms it fails
+closed at TUI startup. The watcher stops with the pane.
 
 ## Build
 

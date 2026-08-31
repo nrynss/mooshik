@@ -54,7 +54,10 @@
 //! reachable from elsewhere in the crate would be a second way to name the
 //! lease, which is the thing this module exists to have exactly one of.
 
-use std::sync::{mpsc, Arc};
+use std::{
+    env,
+    sync::{mpsc, Arc},
+};
 
 use lambo::Memory;
 
@@ -76,7 +79,7 @@ use crate::{
     vault::{SharedVault, Vault},
 };
 
-use super::{resolve, runtime};
+use super::{resolve, runtime, watcher};
 
 /// What the live pane owns for its whole life, and hands to whatever the pane
 /// grows next.
@@ -225,7 +228,12 @@ fn live(layout: &HomeLayout) -> anyhow::Result<()> {
     // drop the handle before tools could use it, and a second open is refused
     // by the exclusive lock.
     let root = layout.open_existing_root().map_err(anyhow::Error::new)?;
+    let workspace_root = env::current_dir()
+        .map_err(|_| anyhow::Error::msg(text::get("tui.watcher_workspace_unavailable")))?;
     let mut config = Config::load_at(&root).map_err(anyhow::Error::new)?;
+    // Keep the one vault handle alive with the pane. The watcher scans file
+    // contents for the configured extra-forbidden values while holding this
+    // handle; those values never enter watcher state or a graph payload.
     let vault = resolve::open_vault(layout, &config, &root).ok();
     match &vault {
         Some(vault) => resolve::resolve_secrets(&mut config, vault).map_err(anyhow::Error::new)?,
@@ -236,19 +244,42 @@ fn live(layout: &HomeLayout) -> anyhow::Result<()> {
         }
         None => {}
     }
+    let shared_vault = vault.map(Vault::shared);
 
     // The runtime, the handle and the lease, for the length of the pane. What
     // used to be two locals whose declaration order carried the drop order is
     // now [`Pane`], which carries it in its field order and says why.
     let pane = Pane::open(&config)?;
 
-    let drawn = converse(&pane, &config, vault.map(Vault::shared));
+    let watcher = match watcher::Watcher::start(
+        &pane.spawner(),
+        Arc::clone(pane.memory()),
+        pane.writes().clone(),
+        workspace_root,
+        config.session.agent.clone(),
+        shared_vault.clone(),
+    ) {
+        Ok(watcher) => watcher,
+        Err(error) => {
+            // A failed watcher startup must not abandon the lease: there is
+            // no child task to join, so close the pane immediately and report
+            // the watcher diagnosis after cleanup.
+            if let Err(close_error) = pane.close() {
+                return Err(anyhow::Error::new(close_error));
+            }
+            return Err(anyhow::Error::new(error));
+        }
+    };
+
+    let drawn = converse(&pane, &config, shared_vault);
+    let stopped = pane.runtime.block_on(watcher.stop());
 
     // Both outcomes, in the order they happened: a session that failed to close
     // may have lost the tail of what it remembered, which is worse than a draw
     // that failed, so it is reported when the drawing succeeded.
     let closed = pane.close();
     drawn?;
+    stopped.map_err(anyhow::Error::new)?;
     closed?;
     Ok(())
 }

@@ -65,7 +65,7 @@ the surface landed, so the data behind it became worth building.
 | **M12a** | Built 2026-08-30, `cf3dcbb`. `memory::view` reads the open graph into the view model: the week ending today, each day's log, the ribbon, what keeps coming back and what was just remembered, every placement resolved through `Interaction::about_time`. `mooshik tui` now holds the session for the length of the pane and closes it on the way out. Prose is deliberately unwritten — mood, gutter summaries, notes and a thread's reason are M12c's. Review rounds 2–6: **APPROVE**, zero residue (`m12a-round6.md`) — the graph's `-wal`/`-shm` claimed private, the scratch sandbox pinned 0700/0600 under a deterministic pin, signals restored after the session. See M12 below. |
 | **M12b** | Built 2026-08-31. The tick: the redraw loop rebuilds the view model every 250 ms, so a write from the ingester, an MCP client or the reflect pass appears in the open pane without a keystroke. R1-3's deferred guard-duration item landed: the graph is copied out from under one short guard and the build runs against the copy, pinned by a structural (`syn`) guard-duration pin and measured (release embedded ~29 ms at the 4k shape vs the 250 ms budget). Review rounds 1–8: **APPROVE**, zero residue within the documented limits (`m12b-round8.md`). |
 | **M12c** | Built 2026-08-31. `mooshik reflect [--dry-run]`: a one-shot consolidation pass that writes the prose M12a left empty — a day's mood, its four-words-a-line gutter summary, the trailing notes, and a thread's reason — as `mooshik-prose:` concepts the pane shows on the next tick, and merges the paraphrase twins into their strongest (loser content preserved, edges rerouted, audit row per cluster; re-runs are a true no-op). First-write-only by design. Review rounds 1–3: **APPROVE**, zero residue (`m12c-round3.md`). |
-| **M12d** | Not started. The seam it builds on landed in `ac4cfdc` (pane runtime, shared `Memory`, `WriteLane`). See the M12 section. |
+| **M12d** | Built 2026-08-31. The live pane owns a cancellable polling watcher for the current workspace: `.md/.markdown/.txt/.rst` files only, generated directories and symlinks excluded, file contents scanned with the ingester's whole-document secret policy but never derived. Git changes carry SHA/message metadata only, with commit author time; file events carry mtime. A 250 ms debounce coalesces bursts, and every derive uses the pane's shared `WriteLane`. The task is joined before `Memory::close`; it is never a daemon. Focused offline tests cover discovery/filtering, debounce replacement, secret drops, git metadata/time, and cancellation. |
 | **M12e** | Built 2026-08-31, `49a504d` → `d5c5909`. `Enter` runs `Session::turn` on the pane runtime; tokens drain into the conversation; in-flight `Esc` cancels without quitting; a failed turn renders as a turn. Prompt-class tools denied on the pane path (stdin would hang). Execute-time diagnostics go through a sink, not `eprintln!`. Review rounds 1–2: **APPROVE**, zero residue (`m12e-round2.md`). See the M12 section. |
 | **M12f** | Built 2026-08-31. `mcp-servers/artifacts/`: an MCP server that extracts typed concepts from screenshots and audio recordings using ADK `LlmAgent` + Gemini 3.7 Flash at `global`, returning them over stdio for Mooshik to derive in-process. Whole-document secret scanning (pattern + vault values) runs before concepts cross the wire. Uses `mooshik-common` for model defaults, Vertex client, and concept vocabulary. 14 offline tests. Review rounds 1–3: **APPROVE**, zero residue (`m12f-round3.md`). |
 
@@ -759,7 +759,7 @@ replan cap. Coalesce a burst into one derive before it reaches the lane.
 `.md,.markdown,.txt,.rst` — for good reason, and a watcher without one derives binary churn.
 `target/`, `.git/`'s internals, `node_modules/` and the scratch sandbox must never be a source of
 memory. Note the asymmetry: `.git/` internals are noise, but a *commit* is one of the strongest
-signals available, carrying a message and a file list the user wrote deliberately.
+signals available, carrying its SHA, repository, author time, and message.
 
 **Decide what a change derives, because it settles the secret question.** Deriving file *content*
 puts the watcher on the same footing as the ingester and it needs `secretscan.find_secret` with the
@@ -775,6 +775,35 @@ the pathology `backdate.py` exists to prevent, arriving by a different route.
 **Depends on:** the seam (`ac4cfdc`), M2 for the graph, M12b for the tick that shows the result.
 **Done when:** work done in an editor and a commit made in a terminal both appear in the open pane
 with nothing typed into it.
+
+**Implementation decision:** M12d takes the metadata-only option. A saved file is scanned in full,
+including configured vault values while the vault lock is held, and a clean event derives only
+`workspace file changed: <relative allowlisted path>` as an `Observation`; allowlisted files inside
+repositories are deliberately excluded because repositories are metadata-only sources. A commit is scanned
+for the same secret classes and derives `git commit <sha> in <repo>: <message>` as an `Observation`;
+the git command is `--no-patch` and requests no parent, stat, or patch fields. This keeps the
+ambient signal useful for recall without putting workspace prose or credentials into the graph.
+The watcher polls the process's current working directory, because M12d has no separate workspace
+setting, and stops with the pane; an existing repository's history is baselined rather than
+replayed on open. Different historical event times are kept in separate derive groups so every
+file mtime and commit author time remains truthful, even when one debounce window contains several
+sources.
+Successful derive batches are removed immediately; a failed batch stays pending for retry. As with
+other ambient writes, a backend failure after a remote commit can therefore have at-least-once
+semantics for that batch.
+Discovery treats an empty repository with no `HEAD` as healthy and continues watching unrelated files;
+Git command output is capped at 2 MiB, a poll admits at most 256 commits, and the pending queue holds
+at most 2,048 events. Hitting a cap retains only the affected repository's old head and retries with
+explicit backpressure; unrelated file state advances, and history is never silently dropped. Recursive
+file reads use descriptor-relative `openat` traversal with
+`O_NOFOLLOW` on Unix; the live watcher is disabled on platforms without an equivalent race-safe
+descriptor/reparse-point primitive. A failed Git discovery — including a repository that appears
+after the first poll — retains an explicit unknown-head state and replays reachable history after
+recovery; only a genuinely new healthy repository is baselined. The live watcher is Unix-only and
+fails closed at TUI startup (`WatchError::WorkspaceUnavailable`); the pane does not run without it.
+Commit messages are byte-preserving for valid UTF-8, including
+embedded NUL and record-separator bytes; invalid UTF-8 is replaced with U+FFFD at the graph boundary
+so a valid commit can advance the repository head.
 
 ### M12e — what to move, and what not to break
 
