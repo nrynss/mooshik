@@ -247,6 +247,10 @@ Build, push, deploy, execute:
 
 ```bash
 docker build -f ingester/Dockerfile -t ingester:m9 .
+# On rootless Docker, add --network=host: the daemon cannot create veth
+# pairs for the default bridge and every RUN step dies with
+# "failed to set up container networking ... operation not supported".
+# Cloud Build does not need it.
 docker tag ingester:m9 us-central1-docker.pkg.dev/mooshik/ingest/ingester:m9
 gcloud auth configure-docker us-central1-docker.pkg.dev
 docker push us-central1-docker.pkg.dev/mooshik/ingest/ingester:m9
