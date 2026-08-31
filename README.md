@@ -39,6 +39,24 @@ Read the [Lambo documentation](https://nrynss.github.io/lambo) for full scoring 
 
 ---
 
+## Storage, Embeddings, and Inference
+
+Mooshik supports flexible configurations across storage, vector embeddings, and language model inference.
+
+### 1. Database and Storage
+- **Cloud SQL PostgreSQL + pgvector (Preferred):** The recommended backend for cloud-based and multi-system Mooshik. Enables desktops, laptops, and background batch jobs to share a single continuous memory graph.
+- **Local SQLite (Alternate):** Stores the graph in a local file (`~/.mooshik/mooshik.db`). Ideal for single-machine, completely offline operation.
+
+### 2. Companion Inference
+- **Google Vertex AI Gemini (Preferred):** Runs `gemini-3.7-flash` at Vertex AI location `global`. Delivers fast streaming responses and large context windows in the terminal pane.
+- **OpenAI-Compatible `/v1` Endpoint (Alternate):** Connects to local model servers (such as `llama-server`, Ollama, or vLLM) or private remote endpoints using `none` or `bearer` authentication.
+
+### 3. Vector Embedder
+- **Google Vertex AI Gemini Embedder (Preferred):** Uses `gemini-embedding-001` (1536 dimensions, region `us-central1`). Ensures consistent embedding spaces across all connected systems.
+- **BGE-M3 (Alternate):** Uses local BGE-M3 (`bge_m3`, 1024 dimensions) for local offline vector recall.
+
+---
+
 ## What Mooshik does
 
 - **Watches your workspace.** Observes file edits and git commits in your project root. Records that changes occurred without storing raw file text in memory.
